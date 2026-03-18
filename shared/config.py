@@ -1,0 +1,37 @@
+# Server
+SERVER_TICK_RATE = 20  # ticks per second
+TICK_DURATION = 1.0 / SERVER_TICK_RATE  # seconds per tick
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 7777
+MAX_PLAYERS = 10
+
+# Client
+CLIENT_FPS = 60
+SCREEN_WIDTH = 1280
+SCREEN_HEIGHT = 720
+
+# Map
+MAP_WIDTH = 6000
+MAP_HEIGHT = 4000
+
+# Gameplay
+HERO_RADIUS = 20
+HERO_MOVE_SPEED = 250  # units per second
+HERO_BASE_HP = 600
+HERO_BASE_MANA = 200
+SPAWN_POSITIONS = {
+    1: (300, 300),   # Team 1 spawn (near base)
+    2: (5700, 3700), # Team 2 spawn (near base)
+}
+
+# Vision
+VISION_RADIUS = 1500
+
+# Colors
+COLOR_BG = (40, 60, 30)
+COLOR_TEAM1 = (70, 130, 255)   # Blue
+COLOR_TEAM2 = (255, 70, 70)    # Red
+COLOR_HEALTH_BG = (60, 60, 60)
+COLOR_HEALTH = (50, 200, 50)
+COLOR_GRID = (50, 70, 40)
+COLOR_TEXT = (240, 240, 240)
