@@ -171,7 +171,58 @@ def system_movement(state: GameState, dt: float) -> None:
             entity.y = max(entity.radius, min(MAP_HEIGHT - entity.radius, entity.y))
         elif isinstance(entity, Minion):
             if find_attack_target(state, entity) is None:
-                entity.advance(dt)
+                _advance_minion(state, entity, dt)
+
+
+_MINION_AVOID_BUFFER = 45  # extra clearance when steering around a structure
+
+
+def _advance_minion(state: GameState, minion: Minion, dt: float) -> None:
+    """Walk toward the lane destination, steering around any structure (tower or
+    core) blocking the path instead of stalling against it."""
+    dx = minion.dest_x - minion.x
+    dy = minion.dest_y - minion.y
+    dist = math.hypot(dx, dy)
+    if dist < 1.0:
+        return
+    dirx, diry = dx / dist, dy / dist
+
+    obstacle = _blocking_structure(state, minion, dirx, diry)
+    if obstacle is not None:
+        # Slide around the obstacle: move along the tangent that best preserves
+        # forward progress, blended with a little forward bias to round it off.
+        ax, ay = minion.x - obstacle.x, minion.y - obstacle.y
+        al = math.hypot(ax, ay) or 1.0
+        ax, ay = ax / al, ay / al
+        t1 = (-ay, ax)
+        t2 = (ay, -ax)
+        tang = t1 if (t1[0] * dirx + t1[1] * diry) >= (t2[0] * dirx + t2[1] * diry) else t2
+        dirx, diry = tang[0] + dirx * 0.4, tang[1] + diry * 0.4
+        sl = math.hypot(dirx, diry) or 1.0
+        dirx, diry = dirx / sl, diry / sl
+
+    step = min(minion.move_speed * dt, dist)
+    minion.x += dirx * step
+    minion.y += diry * step
+
+
+def _blocking_structure(state: GameState, minion: Minion, dirx: float, diry: float):
+    """Nearest alive structure ahead of the minion and close enough to require
+    steering around it, or None."""
+    best = None
+    best_d = None
+    for e in state.entities.values():
+        if not isinstance(e, Structure) or not e.alive:
+            continue
+        ox, oy = e.x - minion.x, e.y - minion.y
+        od = math.hypot(ox, oy)
+        if od < 1e-6 or od > e.radius + minion.radius + _MINION_AVOID_BUFFER:
+            continue
+        if ox * dirx + oy * diry <= 0:
+            continue  # behind the minion's travel direction; not in the way
+        if best_d is None or od < best_d:
+            best, best_d = e, od
+    return best
 
 
 def _update_focus_chase(state: GameState, hero: Hero) -> None:

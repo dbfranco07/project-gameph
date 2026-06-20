@@ -6,6 +6,7 @@ from server.game_state import GameState
 from server.entity import Hero, Minion, Structure
 from server.systems import (
     system_combat,
+    system_movement,
     system_damage_death,
     system_respawn,
     system_win_check,
@@ -152,6 +153,22 @@ class TestCreepsAndEconomy(unittest.TestCase):
         kinds = {ev["k"] for ev in state.combat_events}
         self.assertIn("gold", kinds)
         self.assertIn("xp", kinds)
+
+
+class TestMinionPathing(unittest.TestCase):
+    def test_minion_routes_around_blocking_tower(self):
+        from shared.config import LANE_Y, TICK_DURATION, TOWER_RADIUS
+        state = GameState()
+        m = Minion(team=Team.TEAM1, x=2000, y=LANE_Y, dest_x=5500, dest_y=LANE_Y)
+        state.entities[m.entity_id] = m
+        tower = Structure(team=Team.TEAM1, x=2300, y=LANE_Y, radius=TOWER_RADIUS)
+        state.entities[tower.entity_id] = tower
+        for _ in range(200):  # 10s
+            system_movement(state, TICK_DURATION)
+            system_collision(state, TICK_DURATION)
+        # It got past the tower and kept advancing down the lane.
+        self.assertGreater(m.x, tower.x + TOWER_RADIUS + m.radius)
+        self.assertGreater(m.x, 3000)
 
 
 class TestCollision(unittest.TestCase):
