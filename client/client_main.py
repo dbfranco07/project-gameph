@@ -167,7 +167,11 @@ class GameClient:
                 if ent["id"] == self.my_entity_id:
                     self.camera.follow(ent["x"], ent["y"])
                     return
-        if not pygame.mouse.get_focused():
+        # Pause panning only when the window truly loses focus (e.g. alt-tab).
+        # Use KEYBOARD focus, not mouse focus: on macOS fullscreen the cursor
+        # grazing the top menu-bar zone drops mouse focus for a frame, which
+        # would stutter upward panning. Keyboard focus stays put.
+        if not pygame.key.get_focused():
             return
         mx, my = pygame.mouse.get_pos()
         # Don't edge-pan while hovering the minimap (it lives in the corner).
