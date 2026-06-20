@@ -115,14 +115,14 @@ class GameClient:
             for msg in messages:
                 self._send(msg)
 
-            # 3. Receive and process server messages
+            # 4. Receive and process server messages
             self._receive()
 
-            # 4. Free camera: hold 1 to recenter on the hero, otherwise edge-pan.
+            # 5. Free camera: hold 1 to recenter on the hero, otherwise edge-pan.
             entities = self.interpolator.get_entities()
             self._update_camera(entities, dt)
 
-            # 5. Render
+            # 6. Render
             self.renderer.pending_cast = self.input_handler.pending_cast
             self.renderer.attack_armed = self.input_handler.attack_armed
             self.renderer.shop_open = self.input_handler.shop_open

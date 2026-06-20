@@ -9,6 +9,7 @@ from server.systems import (
     system_damage_death,
     system_respawn,
     system_win_check,
+    system_collision,
     find_attack_target,
     step,
 )
@@ -137,6 +138,42 @@ class TestCreepsAndEconomy(unittest.TestCase):
         system_damage_death(state, 0.05)
         self.assertGreater(hero.gold, 0)
         self.assertNotIn(minion.entity_id, state.entities)  # cleaned up
+
+    def test_kill_emits_gold_and_xp_reward_events(self):
+        state = GameState()
+        hero = state.add_hero(1, "H", Team.TEAM1, hero_id="brawler")
+        hero.x, hero.y = 100, 100
+        minion = Minion(team=Team.TEAM2, x=100, y=100)
+        minion.hp = 1
+        state.entities[minion.entity_id] = minion
+        state.damage_events.append(
+            {"src": hero.entity_id, "tgt": minion.entity_id, "amt": 10})
+        system_damage_death(state, 0.05)
+        kinds = {ev["k"] for ev in state.combat_events}
+        self.assertIn("gold", kinds)
+        self.assertIn("xp", kinds)
+
+
+class TestCollision(unittest.TestCase):
+    def test_overlapping_units_pushed_apart(self):
+        state = GameState()
+        a = state.add_hero(1, "A", Team.TEAM1, hero_id="brawler")
+        b = state.add_hero(2, "B", Team.TEAM1, hero_id="brawler")
+        a.x, a.y = 1000, 1000
+        b.x, b.y = 1000, 1000  # exactly overlapping
+        system_collision(state, 0.05)
+        dist = a.distance_to(b)
+        self.assertGreaterEqual(dist + 1e-6, a.radius + b.radius)
+
+    def test_non_overlapping_units_unchanged(self):
+        state = GameState()
+        a = state.add_hero(1, "A", Team.TEAM1, hero_id="brawler")
+        b = state.add_hero(2, "B", Team.TEAM2, hero_id="brawler")
+        a.x, a.y = 1000, 1000
+        b.x, b.y = 1500, 1000  # far apart
+        system_collision(state, 0.05)
+        self.assertEqual((a.x, a.y), (1000, 1000))
+        self.assertEqual((b.x, b.y), (1500, 1000))
 
     def test_last_hit_gold_split_and_full_xp(self):
         from shared.config import (MINION_GOLD, MINION_ASSIST_GOLD_FRACTION,

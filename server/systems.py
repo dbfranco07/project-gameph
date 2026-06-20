@@ -221,9 +221,9 @@ def _separate(a, b) -> None:
     if dist >= mind:
         return
     if dist < 1e-6:
-        dx, dy, dist = 1.0, 0.0, 1.0  # coincident: nudge along +x
-    push = (mind - dist) / 2.0
-    nx, ny = dx / dist, dy / dist
+        nx, ny, push = 1.0, 0.0, mind / 2.0  # coincident: split along +x
+    else:
+        nx, ny, push = dx / dist, dy / dist, (mind - dist) / 2.0
     a.x -= nx * push
     a.y -= ny * push
     b.x += nx * push
@@ -238,10 +238,11 @@ def _push_out_of(u, s) -> None:
     if dist >= mind:
         return
     if dist < 1e-6:
-        dx, dy, dist = 1.0, 0.0, 1.0
-    overlap = mind - dist
-    u.x += dx / dist * overlap
-    u.y += dy / dist * overlap
+        nx, ny, overlap = 1.0, 0.0, mind
+    else:
+        nx, ny, overlap = dx / dist, dy / dist, mind - dist
+    u.x += nx * overlap
+    u.y += ny * overlap
 
 
 # ---------------------------------------------------------------------------
