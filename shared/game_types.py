@@ -28,10 +28,11 @@ class CastType(IntEnum):
     its targeting UX: NONE casts immediately; the others enter a "pending cast"
     state and wait for a click to resolve the target.
     """
-    NONE = 0    # instant self/auto cast (no target needed)
-    POINT = 1   # ground-target: resolves to a world point (tx, ty)
-    UNIT = 2    # unit-target: resolves to an entity under the cursor (tid)
-    VECTOR = 3  # directional: (tx, ty) interpreted as a direction from the caster
+    NONE = 0     # instant self/auto cast (no target needed)
+    POINT = 1    # ground-target: resolves to a world point (tx, ty)
+    UNIT = 2     # unit-target: resolves to an entity under the cursor (tid)
+    VECTOR = 3   # directional: (tx, ty) interpreted as a direction from the caster
+    PASSIVE = 4  # not castable; shown on the bar, effect lives in hero hooks
 
 
 class MsgType(IntEnum):

@@ -102,6 +102,8 @@ class InputHandler:
         state resolved by the next left-click. Re-pressing the same key cancels."""
         self.attack_armed = False
         cast = self.ability_cast_types.get(key, int(CastType.POINT))
+        if cast == int(CastType.PASSIVE):
+            return  # passives can't be cast
         if cast == int(CastType.NONE):
             self.pending_cast = None
             messages.append({"t": int(MsgType.USE_ABILITY), "key": key,

@@ -57,6 +57,10 @@ class Entity:
         """Euclidean distance to another entity."""
         return math.hypot(self.x - other.x, self.y - other.y)
 
+    def effective_attack_range(self) -> float:
+        """Attack range including any bonuses (base entities have none)."""
+        return self.attack_range
+
     def to_snapshot(self) -> dict:
         """Minimal data sent to clients each tick."""
         return {
@@ -115,6 +119,9 @@ class Hero(Entity):
     inventory: list[str] = field(default_factory=list)
     item_cooldowns: dict[str, float] = field(default_factory=dict)
 
+    # Free-form per-hero ability state (e.g. Manananggal split). Not networked.
+    ability_state: dict = field(default_factory=dict)
+
     # Respawn
     respawn_timer: float = 0.0
 
@@ -127,8 +134,18 @@ class Hero(Entity):
     def is_stunned(self) -> bool:
         return any(b.get("stun") for b in self.buffs)
 
+    def is_invulnerable(self) -> bool:
+        return any(b.get("invuln") for b in self.buffs)
+
     def bonus_speed(self) -> float:
         return sum(b.get("speed_bonus", 0) for b in self.buffs)
+
+    def slow_pct(self) -> float:
+        # Slows stack additively, capped so a unit is never fully rooted by them.
+        return min(0.8, sum(b.get("slow_pct", 0) for b in self.buffs))
+
+    def effective_move_speed(self) -> float:
+        return (self.move_speed + self.bonus_speed()) * (1.0 - self.slow_pct())
 
     def bonus_damage(self) -> int:
         return int(sum(b.get("dmg_bonus", 0) for b in self.buffs))
@@ -136,10 +153,22 @@ class Hero(Entity):
     def effective_damage(self) -> int:
         return self.attack_damage + self.bonus_damage()
 
+    def bonus_range(self) -> float:
+        return sum(b.get("range_bonus", 0) for b in self.buffs)
+
+    def effective_attack_range(self) -> float:
+        return self.attack_range + self.bonus_range()
+
+    def attack_speed_bonus(self) -> float:
+        return sum(b.get("atkspd_pct", 0) for b in self.buffs)
+
+    def effective_attack_interval(self) -> float:
+        return self.attack_interval / (1.0 + self.attack_speed_bonus())
+
     def move_toward_target(self, dt: float) -> None:
         if self.target_x is None or self.target_y is None:
             return
-        speed = self.move_speed + self.bonus_speed()
+        speed = self.effective_move_speed()
         dx = self.target_x - self.x
         dy = self.target_y - self.y
         dist = math.hypot(dx, dy)
@@ -242,4 +271,20 @@ class Projectile(Entity):
     def to_snapshot(self) -> dict:
         d = super().to_snapshot()
         d["b"] = self.is_basic
+        return d
+
+
+@dataclass
+class SplitBody(Entity):
+    """A hero's detached lower body (Manananggal ult). Stationary and vulnerable:
+    it does not move or attack, takes `dmg_mult` times damage, and if destroyed
+    the owning hero dies. Rendered as a MINION-type blip on the client."""
+
+    entity_type: EntityType = EntityType.MINION
+    owner_id: int = 0
+    dmg_mult: float = 2.0
+
+    def to_snapshot(self) -> dict:
+        d = super().to_snapshot()
+        d["body"] = True  # let the client tint it as a hero body
         return d

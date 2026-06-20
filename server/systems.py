@@ -35,9 +35,10 @@ from shared.config import (
     BASIC_PROJECTILE_RADIUS,
 )
 from shared.game_types import EntityType, Team, GamePhase
-from server.entity import Hero, Minion, Structure, Projectile
+from server.entity import Hero, Minion, Structure, Projectile, SplitBody
 from server.game_state import GameState, enemy_team
 from server.heroes.base import CastContext
+from shared.game_types import CastType
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +80,10 @@ def find_attack_target(state: GameState, attacker):
             continue
         if isinstance(e, Structure) and not state.is_structure_vulnerable(e):
             continue
+        if isinstance(e, Hero) and e.is_invulnerable():
+            continue  # can't be targeted while invulnerable (e.g. split upper half)
         d = attacker.distance_to(e)
-        if d > attacker.attack_range + e.radius:
+        if d > attacker.effective_attack_range() + e.radius:
             continue
         key = (prio, d)
         if best_key is None or key < best_key:
@@ -109,15 +112,18 @@ def system_status(state: GameState, dt: float) -> None:
 
 
 def _regen(hero: Hero, dt: float) -> None:
-    """Accrue slow hp/mana regen, applying whole points as the carry fills."""
-    if hero.hp < hero.max_hp and hero.hp_regen > 0:
-        hero.regen_hp_acc += hero.hp_regen * dt
+    """Accrue slow hp/mana regen (plus temporary buff bonuses), applying whole
+    points as the carry fills."""
+    hp_regen = hero.hp_regen + sum(b.get("hp_regen_bonus", 0) for b in hero.buffs)
+    mana_regen = hero.mana_regen + sum(b.get("mana_regen_bonus", 0) for b in hero.buffs)
+    if hero.hp < hero.max_hp and hp_regen > 0:
+        hero.regen_hp_acc += hp_regen * dt
         whole = int(hero.regen_hp_acc)
         if whole:
             hero.hp = min(hero.max_hp, hero.hp + whole)
             hero.regen_hp_acc -= whole
-    if hero.mana < hero.max_mana and hero.mana_regen > 0:
-        hero.regen_mana_acc += hero.mana_regen * dt
+    if hero.mana < hero.max_mana and mana_regen > 0:
+        hero.regen_mana_acc += mana_regen * dt
         whole = int(hero.regen_mana_acc)
         if whole:
             hero.mana = min(hero.max_mana, hero.mana + whole)
@@ -235,7 +241,7 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
             or (isinstance(target, Structure) and not state.is_structure_vulnerable(target))):
         hero.forced_target_id = None
         return
-    in_range = hero.distance_to(target) <= hero.attack_range + target.radius
+    in_range = hero.distance_to(target) <= hero.effective_attack_range() + target.radius
     if in_range:
         hero.target_x = hero.target_y = None  # stand and attack
     else:
@@ -316,8 +322,8 @@ def system_ability_cast(state: GameState, dt: float) -> None:
         if ab is None or caster.hero_def is None:
             continue
         adef = caster.hero_def.ability(ab["key"])
-        if adef is None:
-            continue
+        if adef is None or adef.cast_type == CastType.PASSIVE:
+            continue  # passives are not castable
         if caster.cooldowns.get(ab["key"], 0.0) > 0:
             continue
         if caster.mana < ab["mana"]:
@@ -327,6 +333,10 @@ def system_ability_cast(state: GameState, dt: float) -> None:
         ctx = CastContext(state, caster,
                           cast.get("tx", 0.0), cast.get("ty", 0.0), cast.get("tid"))
         adef.fn(ctx)
+        # "On skill use" passive hook (e.g. Manananggal Bloodlust).
+        hook = getattr(caster.hero_def, "on_ability_cast", None)
+        if hook is not None:
+            hook(ctx, ab["key"])
     state.ability_casts.clear()
 
 
@@ -444,7 +454,8 @@ def system_combat(state: GameState, dt: float) -> None:
             state.damage_events.append(
                 {"src": e.entity_id, "tgt": target.entity_id, "amt": dmg}
             )
-        e.attack_timer = e.attack_interval
+        e.attack_timer = (e.effective_attack_interval()
+                          if isinstance(e, Hero) else e.attack_interval)
 
 
 def _combat_target(state: GameState, attacker):
@@ -454,8 +465,9 @@ def _combat_target(state: GameState, attacker):
         t = state.entities.get(attacker.forced_target_id)
         if (t is not None and t.alive and t.team != attacker.team
                 and not isinstance(t, Projectile)
+                and not (isinstance(t, Hero) and t.is_invulnerable())
                 and not (isinstance(t, Structure) and not state.is_structure_vulnerable(t))
-                and attacker.distance_to(t) <= attacker.attack_range + t.radius):
+                and attacker.distance_to(t) <= attacker.effective_attack_range() + t.radius):
             return t
     return find_attack_target(state, attacker)
 
@@ -471,7 +483,7 @@ def _spawn_basic_projectile(state: GameState, attacker, target, dmg: int) -> Non
         homing=True,
         target_id=target.entity_id,
         speed=getattr(attacker, "attack_proj_speed", 1000.0),
-        range_left=attacker.attack_range * 3.0,
+        range_left=attacker.effective_attack_range() * 3.0,
         is_basic=True,
     )
     state.entities[proj.entity_id] = proj
@@ -505,14 +517,19 @@ def system_damage_death(state: GameState, dt: float) -> None:
             continue
         if isinstance(tgt, Structure) and not state.is_structure_vulnerable(tgt):
             continue
-        tgt.hp -= ev["amt"]
+        if isinstance(tgt, Hero) and tgt.is_invulnerable():
+            continue  # invulnerable (e.g. split upper half) takes no damage
+        amt = ev["amt"]
+        if isinstance(tgt, SplitBody):
+            amt = int(amt * tgt.dmg_mult)  # the lower body takes amplified damage
+        tgt.hp -= amt
         if tgt.hp <= 0:
             _kill(state, tgt, ev.get("src"))
     state.damage_events.clear()
 
-    # Remove dead minions (heroes respawn; structures linger as rubble).
+    # Remove dead minions + detached bodies (heroes respawn; structures linger).
     dead = [eid for eid, e in state.entities.items()
-            if isinstance(e, Minion) and not e.alive]
+            if isinstance(e, (Minion, SplitBody)) and not e.alive]
     for eid in dead:
         state.entities.pop(eid, None)
 
@@ -553,7 +570,22 @@ def _kill(state: GameState, victim, src_id) -> None:
     victim.hp = 0
     killer = state.entities.get(src_id) if src_id is not None else None
 
+    # Destroying a Manananggal's detached lower body kills the owning hero.
+    if isinstance(victim, SplitBody):
+        owner = state.entities.get(victim.owner_id)
+        if isinstance(owner, Hero) and owner.alive:
+            owner.ability_state.pop("split", None)
+            _kill(state, owner, src_id)
+        return
+
     if isinstance(victim, Hero):
+        # Dying while split: clean up the detached body too.
+        st = victim.ability_state.pop("split", None)
+        if st is not None:
+            body = state.entities.get(st.get("body_id"))
+            if body is not None:
+                body.alive = False
+                state.entities.pop(body.entity_id, None)
         victim.respawn_timer = HERO_RESPAWN_BASE + victim.level * HERO_RESPAWN_PER_LEVEL
         victim.target_x = victim.target_y = None
         victim.buffs.clear()
@@ -571,6 +603,19 @@ def _kill(state: GameState, victim, src_id) -> None:
         if isinstance(killer, Hero):
             killer.gold += STRUCTURE_GOLD
             _reward(state, killer, "gold", STRUCTURE_GOLD)
+
+
+# ---------------------------------------------------------------------------
+# Per-hero tick hooks (stateful abilities)
+# ---------------------------------------------------------------------------
+
+def system_hero_hooks(state: GameState, dt: float) -> None:
+    """Run each hero definition's optional on_tick hook (e.g. the Manananggal
+    split leash + auto-recombine). Runs after movement so position clamps stick."""
+    for hero in state.heroes():
+        hd = hero.hero_def
+        if hd is not None and getattr(hd, "on_tick", None) is not None:
+            hd.on_tick(state, hero, dt)
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +686,7 @@ def step(state: GameState, dt: float) -> None:
     system_movement(state, dt)
     system_ability_cast(state, dt)
     system_collision(state, dt)
+    system_hero_hooks(state, dt)
     system_projectiles(state, dt)
     system_combat(state, dt)
     system_damage_death(state, dt)

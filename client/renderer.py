@@ -197,6 +197,12 @@ class Renderer:
             self._draw_structure(ent, sx, sy, radius)
             return
         if et == EntityType.MINION:
+            if ent.get("body"):  # a Manananggal's detached lower body
+                color = _team_color(ent.get("tm", 0))
+                pygame.draw.circle(self.screen, color, (sx, sy), radius)
+                pygame.draw.circle(self.screen, (200, 40, 40), (sx, sy), radius + 3, 3)
+                self._draw_hp_bar(ent, sx, sy, radius)
+                return
             self._draw_unit(ent, sx, sy, radius, hp_bar=True, name=False, ring=False)
             return
         # Hero

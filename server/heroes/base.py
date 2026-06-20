@@ -96,6 +96,14 @@ class HeroDef:
     # Populated by __init_subclass__ from decorated methods.
     abilities: list[Ability] = []
 
+    # Optional lifecycle hooks (override in a hero as @staticmethod):
+    #   on_ability_cast(ctx, key) -> called after any active ability this hero
+    #       casts (drives "on skill use" passives).
+    #   on_tick(state, hero, dt)  -> called every simulation tick for stateful
+    #       heroes (e.g. the Manananggal split: leash + auto-recombine).
+    on_ability_cast = None
+    on_tick = None
+
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
         collected: list[Ability] = []

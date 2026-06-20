@@ -17,9 +17,10 @@ from server.heroes.base import HeroDef, Ability, CastContext, ability
 from server.heroes.ranger import Ranger
 from server.heroes.brawler import Brawler
 from server.heroes.mender import Mender
+from server.heroes.manananggal import Manananggal
 
 HERO_REGISTRY: dict[str, type[HeroDef]] = {
-    cls.hero_id: cls for cls in (Ranger, Brawler, Mender)
+    cls.hero_id: cls for cls in (Ranger, Brawler, Mender, Manananggal)
 }
 
 DEFAULT_HERO = "ranger"

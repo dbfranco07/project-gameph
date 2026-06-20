@@ -137,6 +137,21 @@ def buff(ctx, duration, speed_bonus=0, dmg_bonus=0, radius=0) -> list:
     return targets
 
 
+def dash_to_target(ctx, dist) -> Hero:
+    """Dash up to `dist` toward the targeted unit's current position (falls back
+    to the cursor point if no unit was targeted)."""
+    target = ctx.state.entities.get(ctx.tid) if ctx.tid else None
+    if target is not None:
+        ctx.tx, ctx.ty = target.x, target.y
+    return dash(ctx, dist)
+
+
+def slow(ctx, target, pct, duration) -> None:
+    """Apply a movement slow to a single enemy (heroes carry the debuff buff)."""
+    if isinstance(target, Hero):
+        target.buffs.append({"slow_pct": pct, "remaining": duration})
+
+
 def stun_nearby(ctx, radius, duration) -> list:
     """Stun enemy heroes within `radius` of the caster (can't move/attack)."""
     stunned = [e for e in enemies_in_radius(
