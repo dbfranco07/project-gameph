@@ -14,7 +14,8 @@ from shared.config import (
     SCREEN_HEIGHT,
     MAP_WIDTH,
     MAP_HEIGHT,
-    LANE_Y,
+    LANE_PATHS,
+    JUNGLE_CAMPS,
     COLOR_BG,
     COLOR_TEAM1,
     COLOR_TEAM2,
@@ -162,9 +163,14 @@ class Renderer:
                 pygame.draw.line(self.screen, COLOR_GRID, (sx, sy), (ex, ey), 1)
 
     def _draw_lane(self) -> None:
-        left = self.camera.world_to_screen(0, LANE_Y)
-        right = self.camera.world_to_screen(MAP_WIDTH, LANE_Y)
-        pygame.draw.line(self.screen, COLOR_LANE, left, right, 90)
+        # Three lanes, each a polyline (mid is the diagonal; top/bot bend at the
+        # corners). Jungle camps marked as faint circles in the dead zones.
+        for path in LANE_PATHS.values():
+            pts = [self.camera.world_to_screen(wx, wy) for wx, wy in path]
+            pygame.draw.lines(self.screen, COLOR_LANE, False, pts, 90)
+        for cx, cy, _count in JUNGLE_CAMPS:
+            c = self.camera.world_to_screen(cx, cy)
+            pygame.draw.circle(self.screen, COLOR_LANE, c, 55, 3)
 
     def _draw_map_border(self) -> None:
         corners = [
@@ -375,9 +381,10 @@ class Renderer:
             return (int(mm.left + wx / MAP_WIDTH * mm.width),
                     int(mm.top + wy / MAP_HEIGHT * mm.height))
 
-        # Lane line for orientation.
-        pygame.draw.line(self.screen, COLOR_LANE,
-                         to_mm(0, LANE_Y), to_mm(MAP_WIDTH, LANE_Y), 1)
+        # Lane lines for orientation.
+        for path in LANE_PATHS.values():
+            pygame.draw.lines(self.screen, COLOR_LANE, False,
+                              [to_mm(wx, wy) for wx, wy in path], 1)
 
         for ent in entities:
             et = ent.get("et")

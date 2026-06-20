@@ -1,8 +1,9 @@
-# project-gameph — a single-lane Lite MOBA
+# project-gameph — a 3-lane Lite MOBA
 
 A small authoritative-server MOBA in Python (pygame-ce client, asyncio server) you
-can play with friends in 2v2–5v5. One lane, towers + core, creep waves, gold/XP/levels,
-and data-driven heroes with abilities. Built to grow feature-by-feature.
+can play with friends in 2v2–5v5. Three lanes (top/mid/bot), towers + core, creep
+waves with cart minions, a neutral jungle, gold/XP/levels, and data-driven heroes with
+abilities. Built to grow feature-by-feature.
 
 ---
 
@@ -108,24 +109,41 @@ the shooter's team.
 **Goal:** be the first team to either reach the **kill target** (default 20, set with
 `--ktarget`) **or destroy the enemy core.**
 
-**The map** is a single horizontal lane. Each side has three structures along it:
+**The map** is a square with the two bases in opposite corners and **three lanes**
+connecting them: **mid** runs diagonally, **top** hugs the left/top edges, and **bot**
+hugs the bottom/right edges. Each lane has **three towers per side** (outer → inner →
+base), and each team has a single **core** at its base.
 
 ```
-[Core] — [Inner tower] — [Outer tower] —— mid —— [Outer tower] — [Inner tower] — [Core]
-   \________ Team 1 ________/                        \________ Team 2 ________/
+        +------------- TOP -------------+
+        |  o   o   o                    |
+        | o                          \  |    o = lane tower
+   (T1) BASE                       (MID) BASE (T2)
+        |  \                          o |    jungle camps sit in the
+        |   (MID)                     o |    dead zones between lanes
+        +------------- BOT -------------+
 ```
 
 **Structures (towers + core):**
 - Towers and the core auto-attack enemies in range and hit hard.
-- A structure is **invulnerable until the more-outer structure on its side is destroyed**
-  — you must kill the outer tower, then the inner tower, before you can damage the core.
+- Within a lane, a tower is **invulnerable until the more-outer tower in that same lane is
+  destroyed** (outer → inner → base).
+- The **core becomes attackable once any one lane's three towers are destroyed.** Destroy
+  the core to win.
 - Destroying a structure rewards the killing hero with gold.
 
 **Creeps (minions):**
-- A wave of minions spawns for each team roughly every 25 seconds and pushes down the lane.
+- Every ~25 seconds each team spawns a wave **in every lane**: 3 melee + 1 ranged minion.
+- Every **4th wave** also adds a **cart (siege) minion** to each lane — tankier and slower,
+  but worth much more gold and XP.
 - Minions auto-attack enemy minions, heroes, and (vulnerable) structures, and stop to fight
   when an enemy is in range.
 - Killing a minion grants gold and XP.
+
+**Jungle (neutral camps):**
+- Neutral monster camps sit in the no-lane dead zones between the lanes.
+- They are **passive** — they idle until attacked, then the whole camp fights back.
+- A cleared camp **respawns after a delay**. Clearing a camp rewards the killer's team.
 
 **Heroes:**
 - Auto-attack the nearest valid enemy in range (heroes prefer enemy heroes, then minions,

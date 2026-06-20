@@ -15,9 +15,10 @@ SCREEN_HEIGHT = 720
 EDGE_PAN_MARGIN = 40             # px from a screen edge that triggers panning
 CAMERA_PAN_SPEED = 1400          # world units/sec while edge-panning
 
-# Map
+# Map (square so the three lanes are symmetric corner-to-corner).
 MAP_WIDTH = 6000
-MAP_HEIGHT = 4000
+MAP_HEIGHT = 6000
+MAP_CENTER = (MAP_WIDTH / 2, MAP_HEIGHT / 2)  # 3000, 3000
 
 # Gameplay
 HERO_RADIUS = 20
@@ -25,14 +26,23 @@ HERO_MOVE_SPEED = 250  # units per second
 HERO_BASE_HP = 600
 HERO_BASE_MANA = 200
 
-# Single lane runs horizontally across the middle of the map.
-LANE_Y = MAP_HEIGHT / 2          # 2000
-MID_X = MAP_WIDTH / 2            # 3000
+# Bases sit in opposite corners. Team 1 bottom-left, Team 2 top-right.
+T1_CORE = (800, 5200)
+T2_CORE = (5200, 800)
 
-# Each side: core (deepest) -> inner tower -> outer tower (closest to mid).
+# Each lane is a polyline from Team 1's base to Team 2's base. Mid is the
+# diagonal; top hugs the left+top edges, bot hugs the bottom+right edges.
+LANES = ("top", "mid", "bot")
+LANE_PATHS = {
+    "mid": [T1_CORE, T2_CORE],
+    "top": [T1_CORE, (700, 700), T2_CORE],
+    "bot": [T1_CORE, (5300, 5300), T2_CORE],
+}
+
+# Each side spawns minions at, and respawns heroes at, its core.
 SPAWN_POSITIONS = {
-    1: (500, LANE_Y),    # Team 1 spawn (at their core)
-    2: (5500, LANE_Y),   # Team 2 spawn (at their core)
+    1: T1_CORE,
+    2: T2_CORE,
 }
 
 # Combat (base hero melee/ranged stats; data-driven heroes override these)
@@ -62,21 +72,16 @@ CORE_DAMAGE = 150
 CORE_RADIUS = 60
 STRUCTURE_GOLD = 150             # gold to the killer when a structure falls
 
-# Lane structure positions (x along LANE_Y). Index by team.
-STRUCTURES = {
-    1: [  # (lane_order, x, kind)  kind in {"outer", "inner", "core"}
-        (0, 2300, "outer"),
-        (1, 1400, "inner"),
-        (2, 500, "core"),
-    ],
-    2: [
-        (0, 3700, "outer"),
-        (1, 4600, "inner"),
-        (2, 5500, "core"),
-    ],
+# Tower placement along each lane polyline, as arc-length fractions from the
+# Team 1 base (t=0) to the Team 2 base (t=1). lane_order: outer=0 (closest to
+# mid, falls first) -> inner=1 -> base tower=2 (closest to own core).
+# Index by team -> list of (lane_order, t, kind).
+LANE_TOWERS = {
+    1: [(2, 0.18, "base"), (1, 0.30, "inner"), (0, 0.42, "outer")],
+    2: [(0, 0.58, "outer"), (1, 0.70, "inner"), (2, 0.82, "base")],
 }
 
-# Creeps / minions
+# Creeps / minions. Base values double as the melee minion's stats.
 MINION_HP = 130
 MINION_DAMAGE = 18
 MINION_RANGE = 160
@@ -85,8 +90,47 @@ MINION_SPEED = 130
 MINION_RADIUS = 12
 MINION_GOLD = 25
 MINION_XP = 30
+
+# Ranged minion: fragile, hits from afar (fires a projectile), worth a bit more.
+RANGED_MINION_HP = 90
+RANGED_MINION_DAMAGE = 22
+RANGED_MINION_RANGE = 500
+RANGED_MINION_GOLD = 30
+RANGED_MINION_XP = 35
+RANGED_MINION_PROJECTILE_SPEED = 900
+
+# Cart (siege) minion: tanky, slow, big bounty. Added every 4th wave per lane.
+CART_MINION_HP = 600
+CART_MINION_DAMAGE = 30
+CART_MINION_RANGE = 200
+CART_MINION_SPEED = 100
+CART_MINION_RADIUS = 18
+CART_MINION_GOLD = 60
+CART_MINION_XP = 80
+
+# Wave composition (per lane, per team, per wave).
 CREEP_WAVE_INTERVAL = 25.0       # seconds between waves
-CREEP_WAVE_SIZE = 4              # minions per wave per team
+CREEP_MELEE_PER_WAVE = 3
+CREEP_RANGED_PER_WAVE = 1
+CREEP_CART_EVERY = 4             # a cart joins each lane every Nth wave
+
+# Neutral jungle camps (passive: idle until attacked, then fight back; respawn).
+NEUTRAL_HP = 200
+NEUTRAL_DAMAGE = 20
+NEUTRAL_RANGE = 160
+NEUTRAL_INTERVAL = 1.0
+NEUTRAL_RADIUS = 14
+NEUTRAL_GOLD = 40
+NEUTRAL_XP = 45
+NEUTRAL_RESPAWN = 60.0           # seconds to respawn a cleared camp
+# Camps sit in the two triangular dead zones between mid and the side lanes.
+# (center_x, center_y, monster_count)
+JUNGLE_CAMPS = [
+    (2100, 1800, 3),   # upper-left zone (between top and mid)
+    (1700, 3100, 3),
+    (3900, 4200, 3),   # lower-right zone (between mid and bot)
+    (4300, 2900, 3),
+]
 
 # Economy / leveling
 HERO_KILL_GOLD = 200

@@ -99,19 +99,34 @@ class TestStructures(unittest.TestCase):
         self.state = GameState()
         self.state.start_match(kill_target=10)
 
+    def _tower(self, team, lane, lane_order):
+        return next(e for e in self.state.entities.values()
+                    if isinstance(e, Structure) and e.team == team
+                    and e.lane == lane and e.lane_order == lane_order)
+
     def test_inner_invulnerable_until_outer_dead(self):
-        structs = [e for e in self.state.entities.values()
-                   if isinstance(e, Structure) and e.team == Team.TEAM1]
-        outer = next(s for s in structs if s.lane_order == 0)
-        inner = next(s for s in structs if s.lane_order == 1)
+        outer = self._tower(Team.TEAM1, "mid", 0)
+        inner = self._tower(Team.TEAM1, "mid", 1)
         self.assertFalse(self.state.is_structure_vulnerable(inner))
         outer.alive = False
         self.assertTrue(self.state.is_structure_vulnerable(inner))
 
+    def test_vulnerability_is_per_lane(self):
+        # A different lane's outer dying must not expose this lane's inner.
+        self._tower(Team.TEAM1, "top", 0).alive = False
+        mid_inner = self._tower(Team.TEAM1, "mid", 1)
+        self.assertFalse(self.state.is_structure_vulnerable(mid_inner))
+
+    def test_core_exposed_after_one_lane_cleared(self):
+        core = self.state.core_of(Team.TEAM1)
+        self.assertFalse(self.state.is_structure_vulnerable(core))
+        for lo in (0, 1, 2):
+            self._tower(Team.TEAM1, "bot", lo).alive = False
+        self.assertTrue(self.state.lane_cleared(Team.TEAM1, "bot"))
+        self.assertTrue(self.state.is_structure_vulnerable(core))
+
     def test_invulnerable_structure_takes_no_damage(self):
-        inner = next(e for e in self.state.entities.values()
-                     if isinstance(e, Structure) and e.team == Team.TEAM1
-                     and e.lane_order == 1)
+        inner = self._tower(Team.TEAM1, "mid", 1)
         before = inner.hp
         self.state.damage_events.append(
             {"src": None, "tgt": inner.entity_id, "amt": 500})
@@ -157,11 +172,12 @@ class TestCreepsAndEconomy(unittest.TestCase):
 
 class TestMinionPathing(unittest.TestCase):
     def test_minion_routes_around_blocking_tower(self):
-        from shared.config import LANE_Y, TICK_DURATION, TOWER_RADIUS
+        from shared.config import TICK_DURATION, TOWER_RADIUS
         state = GameState()
-        m = Minion(team=Team.TEAM1, x=2000, y=LANE_Y, dest_x=5500, dest_y=LANE_Y)
+        y = 3000
+        m = Minion(team=Team.TEAM1, x=2000, y=y, dest_x=5500, dest_y=y)
         state.entities[m.entity_id] = m
-        tower = Structure(team=Team.TEAM1, x=2300, y=LANE_Y, radius=TOWER_RADIUS)
+        tower = Structure(team=Team.TEAM1, x=2300, y=y, radius=TOWER_RADIUS)
         state.entities[tower.entity_id] = tower
         for _ in range(200):  # 10s
             system_movement(state, TICK_DURATION)

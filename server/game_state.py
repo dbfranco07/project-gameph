@@ -6,11 +6,11 @@ import math
 
 from shared.config import (
     SPAWN_POSITIONS,
-    LANE_Y,
     HERO_RADIUS,
     STARTING_GOLD,
     DEFAULT_KILL_TARGET,
-    STRUCTURES,
+    LANE_PATHS,
+    LANE_TOWERS,
     CORE_HP,
     CORE_DAMAGE,
     CORE_RADIUS,
@@ -21,6 +21,7 @@ from shared.config import (
     MINION_VISION_RADIUS,
     TOWER_VISION_RADIUS,
 )
+from shared.geometry import point_along
 from shared.game_types import GamePhase, Team, EntityType
 from server.heroes import get_hero_def
 from server.entity import Entity, Hero, Minion, Structure
@@ -53,6 +54,10 @@ class GameState:
         # Timers
         self.creep_timer: float = 0.0
         self.econ_accum: float = 0.0
+        self.wave_count: int = 0
+
+        # Jungle camps: camp_id -> {"timer": seconds until respawn or 0.0 if up}.
+        self.neutral_camps: dict[int, dict] = {}
 
     # ----- Heroes -----------------------------------------------------------
     def set_hero_choice(self, client_id: int, hero_id: str) -> None:
@@ -117,36 +122,69 @@ class GameState:
         self.winner = None
         self.creep_timer = 0.0
         self.econ_accum = 0.0
+        self.wave_count = 0
+        self.neutral_camps = {}
         self._spawn_structures()
         self.phase = GamePhase.PLAYING
 
     def _spawn_structures(self) -> None:
-        for team_int, layout in STRUCTURES.items():
+        # Lane towers: three per lane per team, positioned along each lane
+        # polyline by arc-length fraction.
+        for team_int, towers in LANE_TOWERS.items():
             team = Team(team_int)
-            for lane_order, x, kind in layout:
-                is_core = kind == "core"
-                struct = Structure(
-                    team=team,
-                    x=x,
-                    y=LANE_Y,
-                    lane_order=lane_order,
-                    is_core=is_core,
-                    attack_proj_speed=TOWER_PROJECTILE_SPEED,
-                )
-                if is_core:
-                    struct.hp = struct.max_hp = CORE_HP
-                    struct.attack_damage = CORE_DAMAGE
-                    struct.radius = CORE_RADIUS
-                    struct.entity_type = EntityType.BASE
-                self.entities[struct.entity_id] = struct
+            for lane in LANE_PATHS:
+                path = LANE_PATHS[lane]
+                for lane_order, t, _kind in towers:
+                    x, y = point_along(path, t)
+                    struct = Structure(
+                        team=team,
+                        x=x,
+                        y=y,
+                        lane_order=lane_order,
+                        lane=lane,
+                        attack_proj_speed=TOWER_PROJECTILE_SPEED,
+                    )
+                    self.entities[struct.entity_id] = struct
+        # One core per team at its base corner.
+        for team_int, (cx, cy) in SPAWN_POSITIONS.items():
+            team = Team(team_int)
+            core = Structure(
+                team=team,
+                x=cx,
+                y=cy,
+                lane_order=99,
+                is_core=True,
+                hp=CORE_HP,
+                max_hp=CORE_HP,
+                attack_damage=CORE_DAMAGE,
+                radius=CORE_RADIUS,
+                entity_type=EntityType.BASE,
+                attack_proj_speed=TOWER_PROJECTILE_SPEED,
+            )
+            self.entities[core.entity_id] = core
+
+    def lane_cleared(self, team: Team, lane: str) -> bool:
+        """True if every one of `team`'s towers in `lane` has been destroyed."""
+        for e in self.entities.values():
+            if (isinstance(e, Structure) and e.team == team
+                    and e.lane == lane and e.alive):
+                return False
+        return True
+
+    def core_exposed(self, team: Team) -> bool:
+        """A team's core is attackable once any one of its lanes is fully cleared."""
+        return any(self.lane_cleared(team, lane) for lane in LANE_PATHS)
 
     def is_structure_vulnerable(self, struct: Structure) -> bool:
-        """A structure can only be damaged once all more-outer same-team
-        structures are destroyed (outer -> inner -> core)."""
+        """Lane towers fall outer -> inner -> base within their own lane. The
+        core is attackable only once some lane is fully cleared."""
+        if struct.is_core:
+            return self.core_exposed(struct.team)
         for e in self.entities.values():
             if (
                 isinstance(e, Structure)
                 and e.team == struct.team
+                and e.lane == struct.lane
                 and e.alive
                 and e.lane_order < struct.lane_order
             ):

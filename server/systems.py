@@ -13,13 +13,11 @@ from shared.config import (
     MAP_WIDTH,
     MAP_HEIGHT,
     SPAWN_POSITIONS,
-    LANE_Y,
+    LANE_PATHS,
     HERO_RESPAWN_BASE,
     HERO_RESPAWN_PER_LEVEL,
     HERO_KILL_GOLD,
     HERO_KILL_XP,
-    MINION_GOLD,
-    MINION_XP,
     STRUCTURE_GOLD,
     PASSIVE_GOLD_PER_SEC,
     MINION_ASSIST_GOLD_FRACTION,
@@ -31,11 +29,19 @@ from shared.config import (
     HP_PER_LEVEL,
     DAMAGE_PER_LEVEL,
     CREEP_WAVE_INTERVAL,
-    CREEP_WAVE_SIZE,
+    CREEP_MELEE_PER_WAVE,
+    CREEP_RANGED_PER_WAVE,
+    CREEP_CART_EVERY,
+    JUNGLE_CAMPS,
+    NEUTRAL_RESPAWN,
     BASIC_PROJECTILE_RADIUS,
 )
+from shared.geometry import point_along
 from shared.game_types import EntityType, Team, GamePhase
-from server.entity import Hero, Minion, Structure, Projectile, SplitBody
+from server.entity import (
+    Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
+    Structure, Projectile, SplitBody,
+)
 from server.game_state import GameState, enemy_team
 from server.heroes.base import CastContext
 from shared.game_types import CastType
@@ -65,13 +71,19 @@ def _attacker_kind(attacker) -> str:
 def find_attack_target(state: GameState, attacker):
     """Nearest valid enemy within range, respecting per-type priority and
     structure invulnerability. Returns an entity or None."""
+    # Neutral jungle monsters only fight back once provoked (damaged).
+    if isinstance(attacker, Minion) and attacker.is_neutral and not attacker.provoked:
+        return None
     order = _PRIORITY[_attacker_kind(attacker)]
     best = None
     best_key = None
     for e in state.entities.values():
         if e is attacker or not e.alive:
             continue
-        if e.team == attacker.team or e.team == Team.NONE:
+        if e.team == attacker.team:
+            continue
+        # Teamless entities aren't targetable, except neutral jungle monsters.
+        if e.team == Team.NONE and not (isinstance(e, Minion) and e.is_neutral):
             continue
         if isinstance(e, Projectile):
             continue
@@ -139,24 +151,87 @@ def system_spawn_creeps(state: GameState, dt: float) -> None:
     if state.creep_timer > 0:
         return
     state.creep_timer = CREEP_WAVE_INTERVAL
+    state.wave_count += 1
     _spawn_wave(state)
 
 
 def _spawn_wave(state: GameState) -> None:
+    cart = state.wave_count % CREEP_CART_EVERY == 0
     for team_int in (1, 2):
         team = Team(team_int)
-        spawn = SPAWN_POSITIONS[team_int]
-        dest = SPAWN_POSITIONS[int(enemy_team(team))]
-        direction = 1 if dest[0] > spawn[0] else -1
-        for i in range(CREEP_WAVE_SIZE):
-            minion = Minion(
-                team=team,
-                x=spawn[0] + direction * (i * 35) - direction * 60,
-                y=LANE_Y,
-                dest_x=dest[0],
-                dest_y=LANE_Y,
-            )
-            state.entities[minion.entity_id] = minion
+        for lane in LANE_PATHS:
+            _spawn_lane_group(state, team, lane, cart)
+
+
+def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> None:
+    """Spawn one team's wave for one lane: melee, then ranged, then an optional
+    cart, marching out from the team's base along the lane polyline."""
+    # Waypoints run base -> enemy base; Team 2 walks the lane in reverse.
+    path = list(LANE_PATHS[lane])
+    if team == Team.TEAM2:
+        path = path[::-1]
+
+    classes = ([MeleeMinion] * CREEP_MELEE_PER_WAVE
+               + [RangedMinion] * CREEP_RANGED_PER_WAVE
+               + ([CartMinion] if cart else []))
+
+    spawn = path[0]
+    # March direction toward the first waypoint, for spacing the column.
+    nxt = path[1] if len(path) > 1 else path[0]
+    dx, dy = nxt[0] - spawn[0], nxt[1] - spawn[1]
+    d = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / d, dy / d
+
+    for i, cls in enumerate(classes):
+        waypoints = path[1:]  # remaining waypoints after the spawn point
+        minion = cls(
+            team=team,
+            x=spawn[0] + ux * (i * 35 - 60),
+            y=spawn[1] + uy * (i * 35 - 60),
+            dest_x=waypoints[0][0],
+            dest_y=waypoints[0][1],
+            path=waypoints[1:],
+        )
+        state.entities[minion.entity_id] = minion
+
+
+# ---------------------------------------------------------------------------
+# Jungle camps (neutral monsters)
+# ---------------------------------------------------------------------------
+
+def system_neutral_camps(state: GameState, dt: float) -> None:
+    """Spawn jungle camps at match start and respawn each camp after it is
+    cleared. Camps are passive: their monsters idle until provoked."""
+    for camp_id, (cx, cy, count) in enumerate(JUNGLE_CAMPS):
+        camp = state.neutral_camps.get(camp_id)
+        if camp is None:
+            _spawn_camp(state, camp_id, cx, cy, count)
+            state.neutral_camps[camp_id] = {"timer": 0.0}
+            continue
+        alive = any(isinstance(e, NeutralMinion) and e.camp_id == camp_id and e.alive
+                    for e in state.entities.values())
+        if alive:
+            camp["timer"] = 0.0
+            continue
+        # Camp cleared: count down, then respawn.
+        if camp["timer"] <= 0.0:
+            camp["timer"] = NEUTRAL_RESPAWN
+        else:
+            camp["timer"] -= dt
+            if camp["timer"] <= 0.0:
+                _spawn_camp(state, camp_id, cx, cy, count)
+
+
+def _spawn_camp(state: GameState, camp_id: int, cx: float, cy: float,
+                count: int) -> None:
+    for i in range(count):
+        angle = (2 * math.pi / count) * i
+        mob = NeutralMinion(
+            x=cx + math.cos(angle) * 40,
+            y=cy + math.sin(angle) * 40,
+            camp_id=camp_id,
+        )
+        state.entities[mob.entity_id] = mob
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +251,8 @@ def system_movement(state: GameState, dt: float) -> None:
             entity.x = max(entity.radius, min(MAP_WIDTH - entity.radius, entity.x))
             entity.y = max(entity.radius, min(MAP_HEIGHT - entity.radius, entity.y))
         elif isinstance(entity, Minion):
+            if entity.is_neutral:
+                continue  # jungle monsters hold their camp
             if find_attack_target(state, entity) is None:
                 _advance_minion(state, entity, dt)
 
@@ -184,13 +261,20 @@ _MINION_AVOID_BUFFER = 45  # extra clearance when steering around a structure
 
 
 def _advance_minion(state: GameState, minion: Minion, dt: float) -> None:
-    """Walk toward the lane destination, steering around any structure (tower or
-    core) blocking the path instead of stalling against it."""
+    """Walk toward the current waypoint, advancing along the lane path as each is
+    reached, steering around any structure (tower or core) blocking the way."""
     dx = minion.dest_x - minion.x
     dy = minion.dest_y - minion.y
     dist = math.hypot(dx, dy)
-    if dist < 1.0:
-        return
+    if dist < minion.radius + 5.0:
+        # Reached this waypoint; pick up the next one if the lane bends onward.
+        if minion.path:
+            minion._next_waypoint()
+            dx = minion.dest_x - minion.x
+            dy = minion.dest_y - minion.y
+            dist = math.hypot(dx, dy)
+        if dist < 1.0:
+            return
     dirx, diry = dx / dist, dy / dist
 
     obstacle = _blocking_structure(state, minion, dirx, diry)
@@ -523,6 +607,8 @@ def system_damage_death(state: GameState, dt: float) -> None:
         if isinstance(tgt, SplitBody):
             amt = int(amt * tgt.dmg_mult)  # the lower body takes amplified damage
         tgt.hp -= amt
+        if isinstance(tgt, Minion) and tgt.is_neutral:
+            _provoke_camp(state, tgt.camp_id)  # whole camp aggros when one is hit
         if tgt.hp <= 0:
             _kill(state, tgt, ev.get("src"))
     state.damage_events.clear()
@@ -542,16 +628,34 @@ def _reward(state: GameState, hero: Hero, kind: str, amt: int) -> None:
              "y": round(hero.y, 1), "eid": hero.entity_id})
 
 
+def _provoke_camp(state: GameState, camp_id: int) -> None:
+    """Mark every monster in a camp as provoked so the whole camp fights back."""
+    if camp_id < 0:
+        return
+    for e in state.entities.values():
+        if isinstance(e, Minion) and e.is_neutral and e.camp_id == camp_id:
+            e.provoked = True
+
+
 def _award_minion_bounty(state: GameState, victim: Minion, killer) -> None:
     """Last-hit economy: the killer (if a hero) gets full gold; other allied
     heroes near the dying minion get a gold share; all nearby allied heroes get
-    full XP regardless of who last-hit."""
-    if isinstance(killer, Hero) and killer.team != victim.team:
-        killer.gold += MINION_GOLD
-        _reward(state, killer, "gold", MINION_GOLD)
-    share = int(MINION_GOLD * MINION_ASSIST_GOLD_FRACTION)
+    full XP regardless of who last-hit. Bounty values come from the minion type.
+    Neutral (jungle) kills only reward the killer's team."""
+    gold, xp = victim.gold_value, victim.xp_value
+    if victim.is_neutral:
+        if not isinstance(killer, Hero):
+            return  # neutral killed by a tower/minion: no hero benefits
+        beneficiary = killer.team
+    else:
+        beneficiary = enemy_team(victim.team)
+
+    if isinstance(killer, Hero) and killer.team == beneficiary:
+        killer.gold += gold
+        _reward(state, killer, "gold", gold)
+    share = int(gold * MINION_ASSIST_GOLD_FRACTION)
     for hero in state.heroes():
-        if not hero.alive or hero.team == victim.team:
+        if not hero.alive or hero.team != beneficiary:
             continue
         d = hero.distance_to(victim)
         # Gold share to nearby allies who did NOT land the last hit.
@@ -561,8 +665,8 @@ def _award_minion_bounty(state: GameState, victim: Minion, killer) -> None:
             _reward(state, hero, "gold", share)
         # XP is awarded in full to every nearby allied hero (incl. the killer).
         if d <= XP_SHARE_RADIUS + victim.radius:
-            _grant_xp(hero, MINION_XP)
-            _reward(state, hero, "xp", MINION_XP)
+            _grant_xp(hero, xp)
+            _reward(state, hero, "xp", xp)
 
 
 def _kill(state: GameState, victim, src_id) -> None:
@@ -683,6 +787,7 @@ def step(state: GameState, dt: float) -> None:
     state.combat_events.clear()  # one-shot reward popups for this tick
     system_status(state, dt)
     system_spawn_creeps(state, dt)
+    system_neutral_camps(state, dt)
     system_movement(state, dt)
     system_ability_cast(state, dt)
     system_collision(state, dt)

@@ -13,6 +13,28 @@ from shared.config import (
     MINION_INTERVAL,
     MINION_SPEED,
     MINION_RADIUS,
+    MINION_GOLD,
+    MINION_XP,
+    RANGED_MINION_HP,
+    RANGED_MINION_DAMAGE,
+    RANGED_MINION_RANGE,
+    RANGED_MINION_GOLD,
+    RANGED_MINION_XP,
+    RANGED_MINION_PROJECTILE_SPEED,
+    CART_MINION_HP,
+    CART_MINION_DAMAGE,
+    CART_MINION_RANGE,
+    CART_MINION_SPEED,
+    CART_MINION_RADIUS,
+    CART_MINION_GOLD,
+    CART_MINION_XP,
+    NEUTRAL_HP,
+    NEUTRAL_DAMAGE,
+    NEUTRAL_RANGE,
+    NEUTRAL_INTERVAL,
+    NEUTRAL_RADIUS,
+    NEUTRAL_GOLD,
+    NEUTRAL_XP,
     TOWER_HP,
     TOWER_DAMAGE,
     TOWER_RANGE,
@@ -213,20 +235,80 @@ class Minion(Entity):
     attack_range: float = MINION_RANGE
     attack_interval: float = MINION_INTERVAL
     move_speed: float = MINION_SPEED
-    # Lane destination (enemy core position)
+    # Bounty granted when this minion dies (subtypes override).
+    gold_value: int = MINION_GOLD
+    xp_value: int = MINION_XP
+    # Current waypoint the minion walks toward, plus any remaining waypoints.
     dest_x: float = 0.0
     dest_y: float = 0.0
+    path: list[tuple[float, float]] = field(default_factory=list)
+    # Neutral jungle monsters are teamless, stationary, and only fight back once
+    # provoked (i.e. after taking damage).
+    is_neutral: bool = False
+    provoked: bool = False
+    camp_id: int = -1  # index into JUNGLE_CAMPS for neutral monsters
 
     def advance(self, dt: float) -> None:
-        """Walk toward the lane destination (called when no enemy is in range)."""
+        """Walk toward the current waypoint, advancing along the path as each is
+        reached (called when no enemy is in range)."""
         dx = self.dest_x - self.x
         dy = self.dest_y - self.y
         dist = math.hypot(dx, dy)
         if dist < 1.0:
+            self._next_waypoint()
             return
         step = min(self.move_speed * dt, dist)
         self.x += (dx / dist) * step
         self.y += (dy / dist) * step
+
+    def _next_waypoint(self) -> None:
+        """Advance dest to the next waypoint in the path, if any remain."""
+        if self.path:
+            self.dest_x, self.dest_y = self.path.pop(0)
+
+
+@dataclass
+class MeleeMinion(Minion):
+    """The default frontline minion (uses the base Minion stats)."""
+
+
+@dataclass
+class RangedMinion(Minion):
+    radius: float = MINION_RADIUS
+    hp: int = RANGED_MINION_HP
+    max_hp: int = RANGED_MINION_HP
+    attack_damage: int = RANGED_MINION_DAMAGE
+    attack_range: float = RANGED_MINION_RANGE
+    attack_type: str = "ranged"
+    attack_proj_speed: float = RANGED_MINION_PROJECTILE_SPEED
+    gold_value: int = RANGED_MINION_GOLD
+    xp_value: int = RANGED_MINION_XP
+
+
+@dataclass
+class CartMinion(Minion):
+    radius: float = CART_MINION_RADIUS
+    hp: int = CART_MINION_HP
+    max_hp: int = CART_MINION_HP
+    attack_damage: int = CART_MINION_DAMAGE
+    attack_range: float = CART_MINION_RANGE
+    move_speed: float = CART_MINION_SPEED
+    gold_value: int = CART_MINION_GOLD
+    xp_value: int = CART_MINION_XP
+
+
+@dataclass
+class NeutralMinion(Minion):
+    team: Team = Team.NONE
+    radius: float = NEUTRAL_RADIUS
+    hp: int = NEUTRAL_HP
+    max_hp: int = NEUTRAL_HP
+    attack_damage: int = NEUTRAL_DAMAGE
+    attack_range: float = NEUTRAL_RANGE
+    attack_interval: float = NEUTRAL_INTERVAL
+    gold_value: int = NEUTRAL_GOLD
+    xp_value: int = NEUTRAL_XP
+    is_neutral: bool = True
 
 
 @dataclass
@@ -242,6 +324,7 @@ class Structure(Entity):
     attack_interval: float = TOWER_INTERVAL
     attack_type: str = "ranged"
     lane_order: int = 0
+    lane: str = ""        # "top"/"mid"/"bot"; empty for the (laneless) core
     is_core: bool = False
 
     def to_snapshot(self) -> dict:
