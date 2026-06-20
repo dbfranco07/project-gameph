@@ -30,6 +30,8 @@ class MsgType(IntEnum):
     BUY_ITEM = 5
     SELL_ITEM = 6
     START_GAME = 7
+    CHAT = 8
+    STOP = 9
 
     # Server -> Client
     SNAPSHOT = 10

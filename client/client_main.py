@@ -22,10 +22,13 @@ from client.renderer import Renderer
 
 
 class GameClient:
-    def __init__(self, host: str, port: int, player_name: str) -> None:
+    def __init__(self, host: str, port: int, player_name: str,
+                 hero: str = "", kill_target: int = 0) -> None:
         self.host = host
         self.port = port
         self.player_name = player_name
+        self.hero = hero
+        self.kill_target = kill_target
 
         # Network
         self.sock: socket.socket | None = None
@@ -36,6 +39,9 @@ class GameClient:
         self.my_team: int | None = None
         self.phase: int = GamePhase.WAITING
         self.tick: int = 0
+        self.score: dict = {}
+        self.ktarget: int = 0
+        self.winner: int = 0
 
         # Client systems
         self.camera = Camera()
@@ -54,6 +60,7 @@ class GameClient:
             join_msg = pack_message({
                 "t": int(MsgType.JOIN),
                 "name": self.player_name,
+                "hero": self.hero,
             })
             self.sock.sendall(join_msg)
             return True
@@ -84,12 +91,15 @@ class GameClient:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_SPACE:
-                        self._send({
-                            "t": int(MsgType.START_GAME),
-                        })
+                        msg = {"t": int(MsgType.START_GAME)}
+                        if self.kill_target:
+                            msg["ktarget"] = self.kill_target
+                        self._send(msg)
 
-            # 2. Send input messages to server
-            messages = self.input_handler.process_events(events)
+            # 2. Send input messages to server (needs current entities for targeting)
+            entities = self.interpolator.get_entities()
+            messages = self.input_handler.process_events(
+                events, entities, self.my_team)
             for msg in messages:
                 self._send(msg)
 
@@ -111,6 +121,9 @@ class GameClient:
                 self.my_team,
                 self.phase,
                 self.tick,
+                self.score,
+                self.ktarget,
+                self.winner,
             )
 
             clock.tick(CLIENT_FPS)
@@ -155,11 +168,14 @@ class GameClient:
         elif msg_type == MsgType.SNAPSHOT:
             self.phase = msg.get("phase", self.phase)
             self.tick = msg.get("tick", self.tick)
+            self.score = msg.get("score", self.score)
+            self.ktarget = msg.get("ktarget", self.ktarget)
+            self.winner = msg.get("winner", self.winner)
             self.interpolator.push_snapshot(msg.get("entities", []))
 
         elif msg_type == MsgType.GAME_OVER:
-            winner = msg.get("winner")
-            print(f"[CLIENT] Game Over! Team {winner} wins!")
+            self.winner = msg.get("winner", 0)
+            print(f"[CLIENT] Game Over! Team {self.winner} wins!")
 
     def _disconnect(self) -> None:
         if self.sock:
@@ -174,6 +190,8 @@ def run_client() -> None:
     host = DEFAULT_HOST
     port = DEFAULT_PORT
     name = "Player"
+    hero = ""
+    kill_target = 0
 
     args = sys.argv[1:]
     for i, arg in enumerate(args):
@@ -183,6 +201,11 @@ def run_client() -> None:
             port = int(args[i + 1])
         elif arg == "--name" and i + 1 < len(args):
             name = args[i + 1]
+        elif arg == "--hero" and i + 1 < len(args):
+            hero = args[i + 1]
+        elif arg == "--ktarget" and i + 1 < len(args):
+            kill_target = int(args[i + 1])
 
-    client = GameClient(host=host, port=port, player_name=name)
+    client = GameClient(host=host, port=port, player_name=name,
+                        hero=hero, kill_target=kill_target)
     client.run()
