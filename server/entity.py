@@ -18,6 +18,9 @@ from shared.config import (
     TOWER_RANGE,
     TOWER_INTERVAL,
     TOWER_RADIUS,
+    XP_BASE,
+    XP_PER_LEVEL,
+    MAX_LEVEL,
 )
 
 
@@ -92,12 +95,25 @@ class Hero(Entity):
     mana: int = 200
     max_mana: int = 200
 
-    # Abilities: loadout (list of dicts) + per-key cooldown remaining (seconds)
+    # Regeneration (per second). Defaults overridden from the hero definition.
+    hp_regen: float = 0.0
+    mana_regen: float = 5.0
+    # Fractional carry so slow regen accrues correctly across ticks.
+    regen_hp_acc: float = 0.0
+    regen_mana_acc: float = 0.0
+
+    # Abilities: loadout (list of metadata dicts) + per-key cooldown remaining.
+    # `hero_def` is the HeroDef subclass holding the actual cast code.
     abilities: list[dict] = field(default_factory=list)
     cooldowns: dict[str, float] = field(default_factory=dict)
+    hero_def: object | None = None
 
     # Temporary buffs: list of {speed_bonus, dmg_bonus, remaining}
     buffs: list[dict] = field(default_factory=list)
+
+    # Inventory: list of item_id strings + per-slot active cooldown remaining.
+    inventory: list[str] = field(default_factory=list)
+    item_cooldowns: dict[str, float] = field(default_factory=dict)
 
     # Respawn
     respawn_timer: float = 0.0
@@ -107,6 +123,9 @@ class Hero(Entity):
             if ab.get("key") == key:
                 return ab
         return None
+
+    def is_stunned(self) -> bool:
+        return any(b.get("stun") for b in self.buffs)
 
     def bonus_speed(self) -> float:
         return sum(b.get("speed_bonus", 0) for b in self.buffs)
@@ -143,8 +162,15 @@ class Hero(Entity):
         d["mana"] = self.mana
         d["mmana"] = self.max_mana
         d["resp"] = round(self.respawn_timer, 1)
+        # Extra stats for the HUD panel.
+        d["ad"] = self.effective_damage()
+        d["ms"] = int(self.move_speed + self.bonus_speed())
+        d["xp"] = self.xp
+        d["xpn"] = 0 if self.level >= MAX_LEVEL else XP_BASE + (self.level - 1) * XP_PER_LEVEL
         # Ability cooldown state for the owning client's HUD.
         d["cds"] = {k: round(v, 1) for k, v in self.cooldowns.items()}
+        d["inv"] = list(self.inventory)
+        d["icds"] = {k: round(v, 1) for k, v in self.item_cooldowns.items()}
         return d
 
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
+
 from shared.config import (
     SPAWN_POSITIONS,
     LANE_Y,
     HERO_RADIUS,
-    HERO_MOVE_SPEED,
+    STARTING_GOLD,
     DEFAULT_KILL_TARGET,
     STRUCTURES,
     CORE_HP,
@@ -15,10 +17,13 @@ from shared.config import (
     CREEP_WAVE_INTERVAL,
     BASIC_PROJECTILE_SPEED,
     TOWER_PROJECTILE_SPEED,
+    HERO_VISION_RADIUS,
+    MINION_VISION_RADIUS,
+    TOWER_VISION_RADIUS,
 )
 from shared.game_types import GamePhase, Team, EntityType
-from shared.hero_schema import get_hero_def
-from server.entity import Entity, Hero, Structure
+from server.heroes import get_hero_def
+from server.entity import Entity, Hero, Minion, Structure
 
 
 def enemy_team(team: Team) -> Team:
@@ -41,6 +46,9 @@ class GameState:
         # Per-tick queues processed by the systems pipeline
         self.damage_events: list[dict] = []   # {"src", "tgt", "amt"} or {"tgt","heal"}
         self.ability_casts: list[dict] = []    # {"caster", "key", "tx", "ty", "tid"}
+        # One-shot reward popups for the client (gold/xp gained). Rebuilt each
+        # tick; broadcast in the snapshot, filtered by team vision.
+        self.combat_events: list[dict] = []   # {"k", "amt", "x", "y", "eid"}
 
         # Timers
         self.creep_timer: float = 0.0
@@ -55,26 +63,30 @@ class GameState:
         hero_id = hero_id or self.player_hero_choice.get(client_id)
         hdef = get_hero_def(hero_id)
         spawn = SPAWN_POSITIONS[int(team)]
-        abilities = [dict(a) for a in hdef.get("abilities", [])]
+        abilities = [ab.describe() for ab in hdef.abilities]
         hero = Hero(
             team=team,
             name=name,
-            hero_id=hero_id or hdef["name"].lower(),
+            hero_id=hdef.hero_id,
             x=spawn[0],
             y=spawn[1],
             radius=HERO_RADIUS,
-            hp=hdef["hp"],
-            max_hp=hdef["hp"],
-            mana=hdef["mana"],
-            max_mana=hdef["mana"],
-            move_speed=hdef.get("move_speed", HERO_MOVE_SPEED),
-            attack_damage=hdef["atk_dmg"],
-            attack_range=hdef["atk_range"],
-            attack_interval=hdef["atk_interval"],
-            attack_type=hdef.get("atk_type", "melee"),
+            hp=hdef.hp,
+            max_hp=hdef.hp,
+            mana=hdef.mana,
+            max_mana=hdef.mana,
+            move_speed=hdef.move_speed,
+            attack_damage=hdef.atk_dmg,
+            attack_range=hdef.atk_range,
+            attack_interval=hdef.atk_interval,
+            attack_type=hdef.atk_type,
             attack_proj_speed=BASIC_PROJECTILE_SPEED,
+            gold=STARTING_GOLD,
+            hp_regen=hdef.hp_regen,
+            mana_regen=hdef.mana_regen,
             abilities=abilities,
-            cooldowns={a["key"]: 0.0 for a in abilities},
+            cooldowns={ab.key: 0.0 for ab in hdef.abilities},
+            hero_def=hdef,
         )
         self.entities[hero.entity_id] = hero
         self.player_heroes[client_id] = hero.entity_id
@@ -147,10 +159,43 @@ class GameState:
                 return e
         return None
 
-    # ----- Snapshot ---------------------------------------------------------
+    # ----- Snapshot / vision ------------------------------------------------
     def build_snapshot(self) -> list[dict]:
-        """Build a list of entity snapshots for broadcast."""
+        """Build a list of entity snapshots for broadcast (no fog)."""
         return [e.to_snapshot() for e in self.entities.values()]
+
+    def _vision_sources(self, team: Team):
+        """Yield (x, y, radius) for each alive vision-granting unit of `team`."""
+        for e in self.entities.values():
+            if not e.alive or e.team != team:
+                continue
+            if isinstance(e, Hero):
+                yield e.x, e.y, HERO_VISION_RADIUS
+            elif isinstance(e, Minion):
+                yield e.x, e.y, MINION_VISION_RADIUS
+            elif isinstance(e, Structure):
+                yield e.x, e.y, TOWER_VISION_RADIUS
+
+    def visible_entity_ids_for(self, team: Team) -> set[int]:
+        """Ids visible to `team`: own units + all structures, plus enemy/neutral
+        units within line-of-sight of one of the team's vision sources."""
+        sources = list(self._vision_sources(team))
+        visible: set[int] = set()
+        for e in self.entities.values():
+            if e.team == team or isinstance(e, Structure):
+                visible.add(e.entity_id)  # own units + static map structures
+                continue
+            for sx, sy, r in sources:
+                if math.hypot(e.x - sx, e.y - sy) <= r + e.radius:
+                    visible.add(e.entity_id)
+                    break
+        return visible
+
+    def build_snapshot_for(self, team: Team) -> list[dict]:
+        """Fog-of-war snapshot: only entities `team` can currently see."""
+        visible = self.visible_entity_ids_for(team)
+        return [e.to_snapshot() for e in self.entities.values()
+                if e.entity_id in visible]
 
     def assign_team(self) -> Team:
         """Assign the team with fewer heroes."""

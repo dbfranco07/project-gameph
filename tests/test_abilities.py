@@ -13,7 +13,7 @@ from server.systems import (
     xp_to_next,
 )
 from shared.game_types import Team
-from shared.hero_schema import validate_all, get_hero_def, list_hero_ids
+from server.heroes import validate_all, get_hero_def, list_hero_ids
 
 
 class TestHeroData(unittest.TestCase):
@@ -29,6 +29,38 @@ class TestHeroData(unittest.TestCase):
         self.assertEqual(hero.hero_id, "ranger")
         self.assertEqual(len(hero.abilities), 4)
         self.assertIn("Q", hero.cooldowns)
+        self.assertIsNotNone(hero.hero_def)
+
+    def test_describe_metadata_is_wire_safe(self):
+        """JOIN_ACK ability metadata must carry cast-type and exclude cast code."""
+        meta = get_hero_def("ranger").describe()
+        keys = [a["key"] for a in meta["abilities"]]
+        self.assertEqual(keys, ["Q", "W", "E", "R"])
+        for ab in meta["abilities"]:
+            self.assertIn("cast", ab)            # cast-type for client targeting
+            self.assertIn("mana", ab)
+            self.assertNotIn("fn", ab)           # no server cast code on the wire
+
+
+class TestStun(unittest.TestCase):
+    def test_stun_blocks_movement_and_clears(self):
+        from server.skills import stun_nearby
+        from server.heroes.base import CastContext
+        from server.systems import system_movement, system_status
+        state = GameState()
+        caster = state.add_hero(1, "A", Team.TEAM1, hero_id="brawler")
+        victim = state.add_hero(2, "B", Team.TEAM2, hero_id="ranger")
+        caster.x, caster.y = 1000, 1000
+        victim.x, victim.y = 1050, 1000
+        stun_nearby(CastContext(state, caster, 0, 0, None), radius=200, duration=1.0)
+        self.assertTrue(victim.is_stunned())
+        victim.target_x, victim.target_y = 2000, 1000  # try to walk away
+        x0 = victim.x
+        system_movement(state, 0.05)
+        self.assertEqual(victim.x, x0)               # stunned -> can't move
+        for _ in range(30):                          # tick the stun out (~1.5s)
+            system_status(state, 0.05)
+        self.assertFalse(victim.is_stunned())
 
 
 class TestAbilityCast(unittest.TestCase):

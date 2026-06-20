@@ -12,9 +12,19 @@ class Camera:
         """Center the camera on a world position, clamped to map edges."""
         self.x = world_x - SCREEN_WIDTH / 2
         self.y = world_y - SCREEN_HEIGHT / 2
-        # Clamp so we don't show beyond the map
-        self.x = max(0, min(MAP_WIDTH - SCREEN_WIDTH, self.x))
-        self.y = max(0, min(MAP_HEIGHT - SCREEN_HEIGHT, self.y))
+        self._clamp()
+
+    def pan(self, dx: float, dy: float) -> None:
+        """Move the camera by a delta (free roam), clamped to map edges."""
+        self.x += dx
+        self.y += dy
+        self._clamp()
+
+    def _clamp(self) -> None:
+        # Clamp so we don't show beyond the map. If the map is smaller than the
+        # screen on an axis, pin to 0.
+        self.x = max(0, min(max(0, MAP_WIDTH - SCREEN_WIDTH), self.x))
+        self.y = max(0, min(max(0, MAP_HEIGHT - SCREEN_HEIGHT), self.y))
 
     def world_to_screen(self, wx: float, wy: float) -> tuple[int, int]:
         """Convert world coordinates to screen pixel coordinates."""

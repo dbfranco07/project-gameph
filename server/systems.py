@@ -22,7 +22,9 @@ from shared.config import (
     MINION_XP,
     STRUCTURE_GOLD,
     PASSIVE_GOLD_PER_SEC,
-    MANA_REGEN_PER_SEC,
+    MINION_ASSIST_GOLD_FRACTION,
+    GOLD_SHARE_RADIUS,
+    XP_SHARE_RADIUS,
     MAX_LEVEL,
     XP_BASE,
     XP_PER_LEVEL,
@@ -35,7 +37,7 @@ from shared.config import (
 from shared.game_types import EntityType, Team, GamePhase
 from server.entity import Hero, Minion, Structure, Projectile
 from server.game_state import GameState, enemy_team
-from server.abilities import ABILITY_KINDS
+from server.heroes.base import CastContext
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +97,31 @@ def system_status(state: GameState, dt: float) -> None:
         for key in hero.cooldowns:
             if hero.cooldowns[key] > 0:
                 hero.cooldowns[key] = max(0.0, hero.cooldowns[key] - dt)
+        for key in hero.item_cooldowns:
+            if hero.item_cooldowns[key] > 0:
+                hero.item_cooldowns[key] = max(0.0, hero.item_cooldowns[key] - dt)
         if hero.buffs:
             for b in hero.buffs:
                 b["remaining"] -= dt
             hero.buffs[:] = [b for b in hero.buffs if b["remaining"] > 0]
-        if hero.alive and hero.mana < hero.max_mana:
-            hero.mana = min(hero.max_mana, int(hero.mana + MANA_REGEN_PER_SEC * dt + 0.999))
+        if hero.alive:
+            _regen(hero, dt)
+
+
+def _regen(hero: Hero, dt: float) -> None:
+    """Accrue slow hp/mana regen, applying whole points as the carry fills."""
+    if hero.hp < hero.max_hp and hero.hp_regen > 0:
+        hero.regen_hp_acc += hero.hp_regen * dt
+        whole = int(hero.regen_hp_acc)
+        if whole:
+            hero.hp = min(hero.max_hp, hero.hp + whole)
+            hero.regen_hp_acc -= whole
+    if hero.mana < hero.max_mana and hero.mana_regen > 0:
+        hero.regen_mana_acc += hero.mana_regen * dt
+        whole = int(hero.regen_mana_acc)
+        if whole:
+            hero.mana = min(hero.max_mana, hero.mana + whole)
+            hero.regen_mana_acc -= whole
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +163,8 @@ def system_movement(state: GameState, dt: float) -> None:
         if not entity.alive:
             continue
         if isinstance(entity, Hero):
+            if entity.is_stunned():
+                continue  # stunned heroes hold position
             _update_focus_chase(state, entity)
             entity.move_toward_target(dt)
             entity.x = max(entity.radius, min(MAP_WIDTH - entity.radius, entity.x))
@@ -169,6 +192,59 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Collision (units cannot share space)
+# ---------------------------------------------------------------------------
+
+def system_collision(state: GameState, dt: float) -> None:
+    """Push overlapping units apart so heroes/minions don't stack. Structures
+    are immovable: units get shoved out of them."""
+    units = [e for e in state.entities.values()
+             if isinstance(e, (Hero, Minion)) and e.alive]
+    for i in range(len(units)):
+        a = units[i]
+        for j in range(i + 1, len(units)):
+            _separate(a, units[j])
+    structs = [e for e in state.entities.values()
+               if isinstance(e, Structure) and e.alive]
+    for u in units:
+        for s in structs:
+            _push_out_of(u, s)
+        u.x = max(u.radius, min(MAP_WIDTH - u.radius, u.x))
+        u.y = max(u.radius, min(MAP_HEIGHT - u.radius, u.y))
+
+
+def _separate(a, b) -> None:
+    """Split the overlap between two movable units evenly."""
+    dx, dy = b.x - a.x, b.y - a.y
+    dist = math.hypot(dx, dy)
+    mind = a.radius + b.radius
+    if dist >= mind:
+        return
+    if dist < 1e-6:
+        dx, dy, dist = 1.0, 0.0, 1.0  # coincident: nudge along +x
+    push = (mind - dist) / 2.0
+    nx, ny = dx / dist, dy / dist
+    a.x -= nx * push
+    a.y -= ny * push
+    b.x += nx * push
+    b.y += ny * push
+
+
+def _push_out_of(u, s) -> None:
+    """Move a unit fully out of an immovable structure it overlaps."""
+    dx, dy = u.x - s.x, u.y - s.y
+    dist = math.hypot(dx, dy)
+    mind = u.radius + s.radius
+    if dist >= mind:
+        return
+    if dist < 1e-6:
+        dx, dy, dist = 1.0, 0.0, 1.0
+    overlap = mind - dist
+    u.x += dx / dist * overlap
+    u.y += dy / dist * overlap
+
+
+# ---------------------------------------------------------------------------
 # Abilities
 # ---------------------------------------------------------------------------
 
@@ -177,20 +253,49 @@ def system_ability_cast(state: GameState, dt: float) -> None:
         caster = state.entities.get(cast["caster"])
         if not isinstance(caster, Hero) or not caster.alive:
             continue
+        if caster.is_stunned():
+            continue
+        key = cast["key"]
+        # Item actives use slot keys "I1".."I6"; hero abilities use "Q".."R".
+        if isinstance(key, str) and key.startswith("I") and key[1:].isdigit():
+            _cast_item_active(state, caster, cast, int(key[1:]) - 1)
+            continue
         ab = caster.ability_by_key(cast["key"])
-        if ab is None:
+        if ab is None or caster.hero_def is None:
+            continue
+        adef = caster.hero_def.ability(ab["key"])
+        if adef is None:
             continue
         if caster.cooldowns.get(ab["key"], 0.0) > 0:
             continue
         if caster.mana < ab["mana"]:
             continue
-        fn = ABILITY_KINDS.get(ab["kind"])
-        if fn is None:
-            continue
         caster.mana -= ab["mana"]
         caster.cooldowns[ab["key"]] = ab["cd"]
-        fn(state, caster, ab, cast.get("tx", 0.0), cast.get("ty", 0.0), cast.get("tid"))
+        ctx = CastContext(state, caster,
+                          cast.get("tx", 0.0), cast.get("ty", 0.0), cast.get("tid"))
+        adef.fn(ctx)
     state.ability_casts.clear()
+
+
+def _cast_item_active(state: GameState, caster: Hero, cast: dict, slot: int) -> None:
+    """Cast the active of the item in the given inventory slot, if any."""
+    from server.items import get_item_def
+    if slot < 0 or slot >= len(caster.inventory):
+        return
+    item = get_item_def(caster.inventory[slot])
+    if item is None or item.active is None:
+        return
+    active = item.active
+    if caster.item_cooldowns.get(item.item_id, 0.0) > 0:
+        return
+    if caster.mana < active.mana:
+        return
+    caster.mana -= active.mana
+    caster.item_cooldowns[item.item_id] = active.cd
+    ctx = CastContext(state, caster,
+                      cast.get("tx", 0.0), cast.get("ty", 0.0), cast.get("tid"))
+    active.fn(ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +377,8 @@ def system_combat(state: GameState, dt: float) -> None:
     for e in list(state.entities.values()):
         if not e.alive or e.attack_damage <= 0 or isinstance(e, Projectile):
             continue
+        if isinstance(e, Hero) and e.is_stunned():
+            continue  # stunned heroes can't auto-attack
         if e.attack_timer > 0:
             e.attack_timer = max(0.0, e.attack_timer - dt)
             continue
@@ -358,6 +465,37 @@ def system_damage_death(state: GameState, dt: float) -> None:
         state.entities.pop(eid, None)
 
 
+def _reward(state: GameState, hero: Hero, kind: str, amt: int) -> None:
+    """Record a gold/xp reward popup for the client (rendered as floating text)."""
+    if amt:
+        state.combat_events.append(
+            {"k": kind, "amt": int(amt), "x": round(hero.x, 1),
+             "y": round(hero.y, 1), "eid": hero.entity_id})
+
+
+def _award_minion_bounty(state: GameState, victim: Minion, killer) -> None:
+    """Last-hit economy: the killer (if a hero) gets full gold; other allied
+    heroes near the dying minion get a gold share; all nearby allied heroes get
+    full XP regardless of who last-hit."""
+    if isinstance(killer, Hero) and killer.team != victim.team:
+        killer.gold += MINION_GOLD
+        _reward(state, killer, "gold", MINION_GOLD)
+    share = int(MINION_GOLD * MINION_ASSIST_GOLD_FRACTION)
+    for hero in state.heroes():
+        if not hero.alive or hero.team == victim.team:
+            continue
+        d = hero.distance_to(victim)
+        # Gold share to nearby allies who did NOT land the last hit.
+        if (hero is not killer and share > 0
+                and d <= GOLD_SHARE_RADIUS + victim.radius):
+            hero.gold += share
+            _reward(state, hero, "gold", share)
+        # XP is awarded in full to every nearby allied hero (incl. the killer).
+        if d <= XP_SHARE_RADIUS + victim.radius:
+            _grant_xp(hero, MINION_XP)
+            _reward(state, hero, "xp", MINION_XP)
+
+
 def _kill(state: GameState, victim, src_id) -> None:
     victim.alive = False
     victim.hp = 0
@@ -373,13 +511,14 @@ def _kill(state: GameState, victim, src_id) -> None:
         if isinstance(killer, Hero) and killer.team != victim.team:
             killer.gold += HERO_KILL_GOLD
             _grant_xp(killer, HERO_KILL_XP)
+            _reward(state, killer, "gold", HERO_KILL_GOLD)
+            _reward(state, killer, "xp", HERO_KILL_XP)
     elif isinstance(victim, Minion):
-        if isinstance(killer, Hero):
-            killer.gold += MINION_GOLD
-            _grant_xp(killer, MINION_XP)
+        _award_minion_bounty(state, victim, killer)
     elif isinstance(victim, Structure):
         if isinstance(killer, Hero):
             killer.gold += STRUCTURE_GOLD
+            _reward(state, killer, "gold", STRUCTURE_GOLD)
 
 
 # ---------------------------------------------------------------------------
@@ -444,10 +583,12 @@ def _finish(state: GameState, winner: Team) -> None:
 
 def step(state: GameState, dt: float) -> None:
     """Run one full simulation tick in dependency order."""
+    state.combat_events.clear()  # one-shot reward popups for this tick
     system_status(state, dt)
     system_spawn_creeps(state, dt)
     system_movement(state, dt)
     system_ability_cast(state, dt)
+    system_collision(state, dt)
     system_projectiles(state, dt)
     system_combat(state, dt)
     system_damage_death(state, dt)

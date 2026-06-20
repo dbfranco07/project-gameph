@@ -15,7 +15,10 @@ from shared.config import (
     MAP_HEIGHT,
 )
 from shared.game_types import MsgType, GamePhase, Team
-from shared.hero_schema import validate_all
+from shared.config import ITEM_SLOTS
+from server.heroes import validate_all
+from server.items import (
+    validate_all as validate_items, get_item_def, item_catalog)
 from server.game_state import GameState
 from server.net_handler import ClientHandler
 from server.systems import step
@@ -65,7 +68,8 @@ class GameServer:
             Exception: Propagated from ``validate_all`` if any hero definition
                 is malformed.
         """
-        validate_all()  # fail fast on malformed hero definitions
+        validate_all()    # fail fast on malformed hero definitions
+        validate_items()  # fail fast on malformed item definitions
         server = await asyncio.start_server(
             self._on_connect, self.host, self.port
         )
@@ -162,6 +166,10 @@ class GameServer:
             self._handle_stop(client_id)
         elif msg_type == MsgType.USE_ABILITY:
             self._handle_use_ability(client_id, msg)
+        elif msg_type == MsgType.BUY_ITEM:
+            self._handle_buy_item(client_id, msg)
+        elif msg_type == MsgType.SELL_ITEM:
+            self._handle_sell_item(client_id, msg)
         elif msg_type == MsgType.START_GAME:
             self._handle_start_game(msg)
 
@@ -191,6 +199,11 @@ class GameServer:
                 "team": int(team),
                 "name": name,
                 "hero": hero.hero_id,
+                # Ability metadata (key/name/cd/mana/cast-type) so the client can
+                # draw the ability bar and drive targeting without server code.
+                "hero_def": hero.hero_def.describe() if hero.hero_def else None,
+                # Shop catalog (item metadata) so the client can show the shop.
+                "items": item_catalog(),
             })
 
     def _handle_move(self, client_id: int, msg: dict) -> None:
@@ -286,6 +299,46 @@ class GameServer:
             "tid": msg.get("tid"),
         })
 
+    def _handle_buy_item(self, client_id: int, msg: dict) -> None:
+        """Buys an item: checks gold + inventory space, applies stat bonuses.
+
+        Args:
+            client_id: Server-assigned id of the buying client.
+            msg: ``BUY_ITEM`` message with ``"item"`` (item_id).
+        """
+        hero = self.state.get_hero(client_id)
+        if hero is None:
+            return
+        item = get_item_def(msg.get("item"))
+        if item is None:
+            return
+        if len(hero.inventory) >= ITEM_SLOTS or hero.gold < item.cost:
+            return
+        hero.gold -= item.cost
+        hero.inventory.append(item.item_id)
+        item.apply(hero)
+
+    def _handle_sell_item(self, client_id: int, msg: dict) -> None:
+        """Sells the item in a given inventory slot for a partial refund.
+
+        Args:
+            client_id: Server-assigned id of the selling client.
+            msg: ``SELL_ITEM`` message with ``"slot"`` (inventory index).
+        """
+        hero = self.state.get_hero(client_id)
+        if hero is None:
+            return
+        slot = msg.get("slot")
+        if not isinstance(slot, int) or slot < 0 or slot >= len(hero.inventory):
+            return
+        item = get_item_def(hero.inventory[slot])
+        if item is None:
+            return
+        item.remove(hero)
+        hero.gold += item.cost // 2  # 50% refund
+        hero.inventory.pop(slot)
+        hero.item_cooldowns.pop(item.item_id, None)
+
     def _handle_start_game(self, msg: dict) -> None:
         """Transitions from the lobby to an active match.
 
@@ -326,12 +379,10 @@ class GameServer:
         """
         if not self.clients:
             return
-        snapshot = self.state.build_snapshot()
-        msg = {
+        base = {
             "t": int(MsgType.SNAPSHOT),
             "tick": self.state.tick,
             "phase": int(self.state.phase),
-            "entities": snapshot,
             "score": {
                 "1": self.state.team_kills[Team.TEAM1],
                 "2": self.state.team_kills[Team.TEAM2],
@@ -339,8 +390,22 @@ class GameServer:
             "ktarget": self.state.kill_target,
             "winner": int(self.state.winner) if self.state.winner else 0,
         }
-        for handler in self.clients.values():
-            handler.send(msg)
+        # Fog-of-war: compute each team's visible set once, reuse per client.
+        events = self.state.combat_events
+        per_team = {}
+        for team in (Team.TEAM1, Team.TEAM2):
+            vis = self.state.visible_entity_ids_for(team)
+            ents = [e.to_snapshot() for e in self.state.entities.values()
+                    if e.entity_id in vis]
+            evs = [ev for ev in events if ev.get("eid") in vis]
+            per_team[team] = (ents, evs)
+        for client_id, handler in self.clients.items():
+            hero = self.state.get_hero(client_id)
+            if hero is not None and hero.team in per_team:
+                entities, evs = per_team[hero.team]
+            else:
+                entities, evs = self.state.build_snapshot(), events  # spectator
+            handler.send({**base, "entities": entities, "events": evs})
         # Flush all writers
         for handler in self.clients.values():
             await handler.flush()

@@ -12,6 +12,8 @@ from shared.config import (
     CLIENT_FPS,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    EDGE_PAN_MARGIN,
+    CAMERA_PAN_SPEED,
 )
 from shared.game_types import MsgType, GamePhase
 from shared.protocol import pack_message, unpack_from_buffer
@@ -47,6 +49,7 @@ class GameClient:
         self.camera = Camera()
         self.interpolator = Interpolator()
         self.input_handler = InputHandler(self.camera)
+        self.renderer: Renderer | None = None
 
     def connect(self) -> bool:
         """Connect to the game server via TCP."""
@@ -71,10 +74,14 @@ class GameClient:
     def run(self) -> None:
         """Main client loop."""
         pygame.init()
-        screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        # Fullscreen, but keep a fixed logical resolution: SCALED letterboxes /
+        # scales to the display so all HUD layout + mouse coords stay in
+        # SCREEN_WIDTH x SCREEN_HEIGHT space.
+        screen = pygame.display.set_mode(
+            (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.FULLSCREEN | pygame.SCALED)
         pygame.display.set_caption(f"MOBA Lite — {self.player_name}")
         clock = pygame.time.Clock()
-        renderer = Renderer(screen, self.camera)
+        self.renderer = Renderer(screen, self.camera)
 
         if not self.connect():
             pygame.quit()
@@ -82,6 +89,8 @@ class GameClient:
 
         running = True
         while running:
+            dt = clock.get_time() / 1000.0  # seconds since last frame
+
             # 1. Handle Pygame events
             events = pygame.event.get()
             for event in events:
@@ -96,7 +105,10 @@ class GameClient:
                             msg["ktarget"] = self.kill_target
                         self._send(msg)
 
-            # 2. Send input messages to server (needs current entities for targeting)
+            # 2. Minimap clicks recenter the camera (consumed before gameplay input).
+            events = self._consume_minimap_clicks(events)
+
+            # 3. Send input messages to server (needs current entities for targeting)
             entities = self.interpolator.get_entities()
             messages = self.input_handler.process_events(
                 events, entities, self.my_team)
@@ -106,16 +118,15 @@ class GameClient:
             # 3. Receive and process server messages
             self._receive()
 
-            # 4. Update camera to follow our hero
+            # 4. Free camera: hold 1 to recenter on the hero, otherwise edge-pan.
             entities = self.interpolator.get_entities()
-            if self.my_entity_id is not None:
-                for ent in entities:
-                    if ent["id"] == self.my_entity_id:
-                        self.camera.follow(ent["x"], ent["y"])
-                        break
+            self._update_camera(entities, dt)
 
             # 5. Render
-            renderer.draw_frame(
+            self.renderer.pending_cast = self.input_handler.pending_cast
+            self.renderer.attack_armed = self.input_handler.attack_armed
+            self.renderer.shop_open = self.input_handler.shop_open
+            self.renderer.draw_frame(
                 entities,
                 self.my_entity_id,
                 self.my_team,
@@ -130,6 +141,50 @@ class GameClient:
 
         self._disconnect()
         pygame.quit()
+
+    def _consume_minimap_clicks(self, events):
+        """Recenter the camera on left-clicks inside the minimap; drop those
+        events so they don't also trigger a world attack/move."""
+        if self.renderer is None:
+            return events
+        kept = []
+        for event in events:
+            if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1):
+                world = self.renderer.minimap_to_world(*event.pos)
+                if world is not None:
+                    self.camera.follow(*world)
+                    continue
+            kept.append(event)
+        return kept
+
+    def _update_camera(self, entities, dt: float) -> None:
+        """Dota-style free camera: hold/press 1 to recenter on the hero,
+        otherwise pan when the mouse is near a screen edge."""
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_1] and not self.input_handler.shop_open \
+                and self.my_entity_id is not None:
+            for ent in entities:
+                if ent["id"] == self.my_entity_id:
+                    self.camera.follow(ent["x"], ent["y"])
+                    return
+        if not pygame.mouse.get_focused():
+            return
+        mx, my = pygame.mouse.get_pos()
+        # Don't edge-pan while hovering the minimap (it lives in the corner).
+        if self.renderer is not None and self.renderer.minimap.collidepoint(mx, my):
+            return
+        step = CAMERA_PAN_SPEED * dt
+        dx = dy = 0.0
+        if mx <= EDGE_PAN_MARGIN:
+            dx = -step
+        elif mx >= SCREEN_WIDTH - EDGE_PAN_MARGIN:
+            dx = step
+        if my <= EDGE_PAN_MARGIN:
+            dy = -step
+        elif my >= SCREEN_HEIGHT - EDGE_PAN_MARGIN:
+            dy = step
+        if dx or dy:
+            self.camera.pan(dx, dy)
 
     def _send(self, msg: dict) -> None:
         if self.sock is None:
@@ -163,6 +218,15 @@ class GameClient:
         if msg_type == MsgType.JOIN_ACK:
             self.my_entity_id = msg["eid"]
             self.my_team = msg["team"]
+            hero_def = msg.get("hero_def") or {}
+            abilities = hero_def.get("abilities", [])
+            catalog = msg.get("items", [])
+            # Hand ability metadata to the renderer (ability bar) and input
+            # handler (targeting cast-types), delivered over the wire.
+            self.renderer.set_hero_abilities(abilities)
+            self.input_handler.set_hero_abilities(abilities)
+            self.renderer.set_item_catalog(catalog)
+            self.input_handler.set_item_catalog(catalog)
             print(f"[CLIENT] Joined as entity {self.my_entity_id}, Team {self.my_team}")
 
         elif msg_type == MsgType.SNAPSHOT:
@@ -172,6 +236,8 @@ class GameClient:
             self.ktarget = msg.get("ktarget", self.ktarget)
             self.winner = msg.get("winner", self.winner)
             self.interpolator.push_snapshot(msg.get("entities", []))
+            if self.renderer is not None:
+                self.renderer.add_combat_events(msg.get("events", []))
 
         elif msg_type == MsgType.GAME_OVER:
             self.winner = msg.get("winner", 0)

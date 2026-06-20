@@ -138,6 +138,51 @@ class TestCreepsAndEconomy(unittest.TestCase):
         self.assertGreater(hero.gold, 0)
         self.assertNotIn(minion.entity_id, state.entities)  # cleaned up
 
+    def test_last_hit_gold_split_and_full_xp(self):
+        from shared.config import (MINION_GOLD, MINION_ASSIST_GOLD_FRACTION,
+                                   GOLD_SHARE_RADIUS)
+        state = GameState()
+        killer = state.add_hero(1, "K", Team.TEAM1, hero_id="brawler")
+        ally = state.add_hero(2, "A", Team.TEAM1, hero_id="ranger")
+        far = state.add_hero(3, "F", Team.TEAM1, hero_id="mender")
+        minion = Minion(team=Team.TEAM2, x=100, y=100)
+        minion.hp = 1
+        state.entities[minion.entity_id] = minion
+        killer.x, killer.y = 100, 100              # last hit, in range
+        ally.x, ally.y = 100, 100 + GOLD_SHARE_RADIUS - 50   # near -> share + xp
+        far.x, far.y = 100, 100 + GOLD_SHARE_RADIUS + 5000   # far -> nothing
+        g0_k, g0_a, g0_f = killer.gold, ally.gold, far.gold
+        state.damage_events.append(
+            {"src": killer.entity_id, "tgt": minion.entity_id, "amt": 10})
+        system_damage_death(state, 0.05)
+        self.assertEqual(killer.gold - g0_k, MINION_GOLD)               # full gold
+        self.assertEqual(ally.gold - g0_a,
+                         int(MINION_GOLD * MINION_ASSIST_GOLD_FRACTION))  # share
+        self.assertEqual(far.gold - g0_f, 0)                            # nothing
+        self.assertGreater(killer.xp + killer.level, 1)                # killer got xp
+        self.assertGreater(ally.xp, 0)                                 # nearby ally full xp
+        self.assertEqual(far.xp, 0)                                    # far ally none
+
+
+class TestRegen(unittest.TestCase):
+    def test_hp_and_mana_regen_clamp_and_pause_when_dead(self):
+        from server.systems import system_status
+        state = GameState()
+        hero = state.add_hero(1, "R", Team.TEAM1, hero_id="ranger")
+        hero.hp = hero.max_hp - 50
+        hero.mana = hero.max_mana - 50
+        for _ in range(200):  # ~10s of regen
+            system_status(state, 0.05)
+        self.assertGreater(hero.hp, hero.max_hp - 50)
+        self.assertLessEqual(hero.hp, hero.max_hp)        # never exceeds max
+        self.assertLessEqual(hero.mana, hero.max_mana)
+        # Dead heroes do not regen.
+        hero.alive = False
+        hero.hp = 10
+        for _ in range(40):
+            system_status(state, 0.05)
+        self.assertEqual(hero.hp, 10)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,19 @@ class GamePhase(IntEnum):
     FINISHED = 2  # Game over
 
 
+class CastType(IntEnum):
+    """How an ability is aimed by the client before it is sent to the server.
+
+    The client reads this (delivered as ability metadata in JOIN_ACK) to decide
+    its targeting UX: NONE casts immediately; the others enter a "pending cast"
+    state and wait for a click to resolve the target.
+    """
+    NONE = 0    # instant self/auto cast (no target needed)
+    POINT = 1   # ground-target: resolves to a world point (tx, ty)
+    UNIT = 2    # unit-target: resolves to an entity under the cursor (tid)
+    VECTOR = 3  # directional: (tx, ty) interpreted as a direction from the caster
+
+
 class MsgType(IntEnum):
     # Client -> Server
     JOIN = 1
