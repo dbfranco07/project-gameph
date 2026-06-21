@@ -189,15 +189,18 @@ class TestMinionPathing(unittest.TestCase):
 
 
 class TestCollision(unittest.TestCase):
-    def test_overlapping_units_pushed_apart(self):
+    def test_overlapping_idle_units_not_pushed_apart(self):
+        # Units block each other during movement, but system_collision never
+        # elastic-shoves overlapping units apart (we don't push other entities).
         state = GameState()
         a = state.add_hero(1, "A", Team.TEAM1, hero_id="brawler")
         b = state.add_hero(2, "B", Team.TEAM1, hero_id="brawler")
         a.x, a.y = 1000, 1000
-        b.x, b.y = 1000, 1000  # exactly overlapping
+        b.x, b.y = 1000, 1000  # exactly overlapping, both idle
         system_collision(state, 0.05)
-        dist = a.distance_to(b)
-        self.assertGreaterEqual(dist + 1e-6, a.radius + b.radius)
+        # Neither idle unit was moved.
+        self.assertEqual((a.x, a.y), (1000, 1000))
+        self.assertEqual((b.x, b.y), (1000, 1000))
 
     def test_non_overlapping_units_unchanged(self):
         state = GameState()

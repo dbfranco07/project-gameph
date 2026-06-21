@@ -6,6 +6,7 @@ import math
 
 from shared.config import (
     SPAWN_POSITIONS,
+    CORE_POSITIONS,
     HERO_RADIUS,
     STARTING_GOLD,
     DEFAULT_KILL_TARGET,
@@ -21,10 +22,11 @@ from shared.config import (
     TOWER_VISION_RADIUS,
     WALLS,
     TREES,
+    RIVER,
     PREGAME_COUNTDOWN,
 )
 from shared.config import MAX_PLAYERS
-from shared.geometry import point_along, segment_intersects_rect
+from shared.geometry import point_along, segment_capsule_intersect
 from shared.game_types import GamePhase, Team, EntityType
 from server.heroes import get_hero_def, DEFAULT_HERO, list_hero_ids, hero_catalog
 from server.entity import Entity, Hero, Minion, Structure, Wall, Tree, Obstacle
@@ -268,8 +270,8 @@ class GameState:
                         attack_proj_speed=TOWER_PROJECTILE_SPEED,
                     )
                     self.entities[struct.entity_id] = struct
-        # One core per team at its base corner.
-        for team_int, (cx, cy) in SPAWN_POSITIONS.items():
+        # One core per team, inland between its fountain and mid base tower.
+        for team_int, (cx, cy) in CORE_POSITIONS.items():
             team = Team(team_int)
             core = Structure(
                 team=team,
@@ -287,23 +289,32 @@ class GameState:
             self.entities[core.entity_id] = core
 
     def _spawn_map(self) -> None:
-        """Spawn static obstacles (walls + destructible trees) from the config."""
-        for (x, y, w, h) in WALLS:
-            wall = Wall(x=x, y=y, w=w, h=h, radius=math.hypot(w, h) / 2)
+        """Spawn static obstacles (walls + destructible trees) from the config.
+        Each obstacle is an oriented capsule (p1, p2, thickness)."""
+        for cap in WALLS:
+            p1, p2 = cap["p1"], cap["p2"]
+            wall = Wall(x1=p1[0], y1=p1[1], x2=p2[0], y2=p2[1],
+                        thickness=cap["thickness"])
             self.entities[wall.entity_id] = wall
-        for (x, y, w, h) in TREES:
-            tree = Tree(x=x, y=y, w=w, h=h, radius=math.hypot(w, h) / 2)
+        for cap in TREES:
+            p1, p2 = cap["p1"], cap["p2"]
+            tree = Tree(x1=p1[0], y1=p1[1], x2=p2[0], y2=p2[1],
+                        thickness=cap["thickness"])
             self.entities[tree.entity_id] = tree
 
-    def obstacle_rects(self) -> list[tuple[float, float, float, float]]:
-        """Rects that block walking (walls + alive trees)."""
-        return [e.rect() for e in self.entities.values()
+    def obstacle_capsules(self) -> list[tuple[float, float, float, float, float]]:
+        """Capsules that block walking (walls + alive trees)."""
+        return [e.capsule() for e in self.entities.values()
                 if isinstance(e, Obstacle) and e.alive]
 
-    def vision_blocker_rects(self) -> list[tuple[float, float, float, float]]:
-        """Rects that block line-of-sight (walls + alive trees)."""
-        return [e.rect() for e in self.entities.values()
+    def vision_blocker_capsules(self) -> list[tuple[float, float, float, float, float]]:
+        """Capsules that block line-of-sight (walls + alive trees)."""
+        return [e.capsule() for e in self.entities.values()
                 if isinstance(e, Obstacle) and e.alive and e.blocks_vision]
+
+    def in_river(self, x: float, y: float) -> bool:
+        """True if (x, y) lies in the walkable river band (for river effects)."""
+        return RIVER is not None and RIVER.contains(x, y)
 
     def lane_cleared(self, team: Team, lane: str) -> bool:
         """True if every one of `team`'s towers in `lane` has been destroyed."""
@@ -363,7 +374,7 @@ class GameState:
         enemy/neutral units within unobstructed line-of-sight of one of the
         team's vision sources (walls and alive trees block the sight line)."""
         sources = list(self._vision_sources(team))
-        blockers = self.vision_blocker_rects()
+        blockers = self.vision_blocker_capsules()
         visible: set[int] = set()
         for e in self.entities.values():
             # Own units + static map features (structures, walls, trees) are
@@ -374,8 +385,9 @@ class GameState:
             for sx, sy, r in sources:
                 if math.hypot(e.x - sx, e.y - sy) > r + e.radius:
                     continue
-                if any(segment_intersects_rect(sx, sy, e.x, e.y, rect)
-                       for rect in blockers):
+                if any(segment_capsule_intersect(sx, sy, e.x, e.y,
+                                                  cx0, cy0, cx1, cy1, th)
+                       for (cx0, cy0, cx1, cy1, th) in blockers):
                     continue  # sight line is blocked by a wall/tree
                 visible.add(e.entity_id)
                 break

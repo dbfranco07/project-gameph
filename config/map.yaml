@@ -7,8 +7,13 @@
 # top-right. Coordinates are world units. Rects are [x, y, w, h] (top-left
 # anchored). All distances are pre-mirror (Team 1 frame).
 
-# Team 1 core (Team 2's is the mirror). Heroes also spawn here.
-core: [800, 5200]
+# Three distinct base points (Team 1; Team 2's are the mirror):
+#   fountain - the well/spawn point. Heroes spawn and fast-heal here.
+#   core     - the win-condition structure, sitting INLAND between the fountain
+#              and the mid-lane base tower (NOT on top of the fountain).
+# Minions spawn at each lane's base tower (lane_order 2), not here.
+fountain: [800, 5200]
+core: [1150, 4850]
 
 # Lane polylines (full path, base-to-base). Symmetric, so listed in full.
 # `mid` is the diagonal; `top` bends at the top-left corner, `bot` at the
@@ -36,13 +41,15 @@ towers:
   - { lane_order: 0, t: 0.42, kind: outer }
 
 # Neutral jungle camps (Team 1 frame; mirror builds the rest). (x, y, count).
+# The last entry sits at the bottom-right river end; its mirror lands at the
+# top-left river end, so both river mouths get a camp.
 jungle_camps:
-  - [1600, 2600, 3]
-  - [2000, 3100, 2]
-  - [2200, 4600, 3]
-  - [3000, 4000, 2]
-  - [3000, 4600, 3]
-  - [3600, 4600, 2]
+  - [1500, 4400, 3]
+  - [2100, 3900, 2]
+  - [2700, 4500, 3]
+  - [2400, 3000, 2]
+  - [3300, 4300, 3]
+  - [4700, 4700, 3]   # bottom-right river end (mirror -> top-left river end)
 
 
 # Wave-1 minion meeting points per lane (single, shared between sides). Wave-1
@@ -56,18 +63,27 @@ meet_points:
 # enemies inside take damage at the same rate).
 spawn_zone_radius: 700
 
+# The river: a single WALKABLE band running the anti-diagonal (top-left to
+# bottom-right), crossing the mid lane to form an X. Center-symmetric, so it is
+# authored once. Units walk through it freely; future hero effects may key off
+# standing in it.
+river: { p1: [800, 800], p2: [5200, 5200], thickness: 520 }
+
 # Runes: roaming neutrals that patrol near their spawn, fight back, and on death
 # grant the killer a timed buff. `buff` in: haste | double_damage | cdr_50 |
-# regen_10x. `patrol` is the wander radius around the spawn point.
+# regen_10x. Each rune (re)spawns at a UNIFORM-random point inside `zone`
+# (x, y, w, h); `patrol` is the wander radius around that spawn point.
 runes:
-  - { pos: [2300, 2300], buff: haste, patrol: 350 }   # off-lane jungle (mirrored)
+  - { zone: [1900, 3100, 700, 700], buff: haste, patrol: 350 }   # off-lane jungle (mirrored)
 
-# Walls: permanently unwalkable rects that also block vision. (Team 1 frame.)
+# Walls: permanent, unwalkable, vision-blocking. Trees: like walls but
+# destructible (have hp) and clear when killed. Both are oriented CAPSULES:
+# a centerline p1->p2 plus a thickness (so they can run diagonally). Team 1
+# frame; the mirror builds Team 2's set.
 walls:
-  - [1500, 4400, 60, 600]
-  - [2400, 3600, 600, 60]
+  - { p1: [1500, 5000], p2: [1900, 4400], thickness: 60 }
+  - { p1: [2400, 3650], p2: [3000, 3750], thickness: 60 }
 
-# Trees: like walls but destructible (have hp) and clear when killed.
 trees:
-  - [1900, 4600, 240, 80]
-  - [3300, 4000, 80, 240]
+  - { p1: [1900, 4600], p2: [2150, 4520], thickness: 80 }
+  - { p1: [3300, 4000], p2: [3380, 4250], thickness: 80 }

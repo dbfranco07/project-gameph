@@ -29,6 +29,7 @@ from shared.config import (
     COLOR_STRUCTURE_DEAD,
     COLOR_LANE,
     PASSIVE_GOLD_PER_SEC,
+    RIVER,
 )
 from shared.game_types import Team, GamePhase, EntityType
 from client.camera import Camera
@@ -41,6 +42,18 @@ def _team_color(team: int) -> tuple[int, int, int]:
     if team == Team.TEAM2:
         return COLOR_TEAM2
     return (180, 180, 180)
+
+
+def _capsule_corners(p1, p2, thpx):
+    """Four corners of the rectangle body of a screen-space capsule (p1->p2 with
+    pixel thickness ``thpx``), for drawing its outline. [] if p1 == p2."""
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = (dx * dx + dy * dy) ** 0.5
+    if length < 1e-6:
+        return []
+    nx, ny = -dy / length * thpx / 2.0, dx / length * thpx / 2.0
+    return [(p1[0] + nx, p1[1] + ny), (p2[0] + nx, p2[1] + ny),
+            (p2[0] - nx, p2[1] - ny), (p1[0] - nx, p1[1] - ny)]
 
 
 class Renderer:
@@ -108,6 +121,7 @@ class Renderer:
                    score=None, ktarget=0, winner=0, clock=0.0) -> None:
         self.screen.fill(COLOR_BG)
         self._draw_grid()
+        self._draw_river()
         self._draw_lane()
         self._draw_map_border()
 
@@ -171,12 +185,28 @@ class Renderer:
             if -1 <= sy <= SCREEN_HEIGHT + 1:
                 pygame.draw.line(self.screen, COLOR_GRID, (sx, sy), (ex, ey), 1)
 
+    def _draw_river(self) -> None:
+        """The walkable river: a translucent diagonal band drawn under the
+        lanes. Crosses the mid lane to form an X."""
+        if RIVER is None:
+            return
+        p1 = self.camera.world_to_screen(RIVER.x1, RIVER.y1)
+        p2 = self.camera.world_to_screen(RIVER.x2, RIVER.y2)
+        thpx = max(2, int(RIVER.thickness))
+        band = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        pygame.draw.line(band, (70, 130, 210, 70), p1, p2, thpx)
+        self.screen.blit(band, (0, 0))
+
     def _draw_lane(self) -> None:
         # Three lanes, each a polyline (mid is the diagonal; top/bot bend at the
-        # corners). Jungle camps marked as faint circles in the dead zones.
+        # corners). A filled circle at each vertex rounds the joint so the lane
+        # body stays continuous through the corner bends (no notch). Jungle camps
+        # marked as faint circles in the dead zones.
         for path in LANE_PATHS.values():
             pts = [self.camera.world_to_screen(wx, wy) for wx, wy in path]
             pygame.draw.lines(self.screen, COLOR_LANE, False, pts, LANE_WIDTH)
+            for p in pts:
+                pygame.draw.circle(self.screen, COLOR_LANE, p, LANE_WIDTH // 2)
         for cx, cy, _count in JUNGLE_CAMPS:
             c = self.camera.world_to_screen(cx, cy)
             pygame.draw.circle(self.screen, COLOR_LANE, c, 55, 3)
@@ -293,19 +323,30 @@ class Renderer:
     def _draw_obstacle(self, ent) -> None:
         if not ent.get("a", True):
             return  # destroyed tree: no longer blocks, don't draw
-        sx, sy = self.camera.world_to_screen(ent["x"], ent["y"])
-        w, h = int(ent.get("w", 40)), int(ent.get("h", 40))
-        if sx + w < 0 or sx > SCREEN_WIDTH or sy + h < 0 or sy > SCREEN_HEIGHT:
+        if ent.get("x1") is None:
+            return
+        p1 = self.camera.world_to_screen(ent["x1"], ent["y1"])
+        p2 = self.camera.world_to_screen(ent["x2"], ent["y2"])
+        thpx = max(2, int(ent.get("th", 60)))
+        # Cull when the whole capsule is off-screen.
+        lo_x, hi_x = min(p1[0], p2[0]) - thpx, max(p1[0], p2[0]) + thpx
+        lo_y, hi_y = min(p1[1], p2[1]) - thpx, max(p1[1], p2[1]) + thpx
+        if hi_x < 0 or lo_x > SCREEN_WIDTH or hi_y < 0 or lo_y > SCREEN_HEIGHT:
             return
         is_tree = ent.get("et") == EntityType.TREE
         fill = (40, 95, 45) if is_tree else (90, 88, 96)
         edge = (60, 140, 65) if is_tree else (130, 128, 140)
-        rect = pygame.Rect(sx, sy, w, h)
-        pygame.draw.rect(self.screen, fill, rect, border_radius=4 if is_tree else 2)
-        pygame.draw.rect(self.screen, edge, rect, 2, border_radius=4 if is_tree else 2)
-        if is_tree:  # show a damage bar on hurt trees
+        # Oriented band: a thick line + rounded caps, outlined by its rectangle.
+        pygame.draw.line(self.screen, fill, p1, p2, thpx)
+        pygame.draw.circle(self.screen, fill, p1, thpx // 2)
+        pygame.draw.circle(self.screen, fill, p2, thpx // 2)
+        corners = _capsule_corners(p1, p2, thpx)
+        if corners:
+            pygame.draw.polygon(self.screen, edge, corners, 2)
+        if is_tree:  # show a damage bar on hurt trees, at the capsule midpoint
             if ent.get("hp", 1) < ent.get("mhp", 1):
-                self._draw_hp_bar(ent, sx + w // 2, sy, max(w, h) // 2)
+                mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
+                self._draw_hp_bar(ent, mx, my - thpx // 2, thpx // 2)
 
     def _draw_structure(self, ent, sx, sy, radius) -> None:
         rect = pygame.Rect(sx - radius, sy - radius, radius * 2, radius * 2)
@@ -419,20 +460,23 @@ class Renderer:
             self.screen.blit(self.font.render(text, True, color), (10, 8 + i * 18))
 
     def _draw_ult_columns(self, entities, my_team) -> None:
-        """Left edge: allied heroes; right edge: enemy heroes. Each is a circle —
-        green if the ultimate is ready, red otherwise — with a respawn countdown
-        beneath when dead."""
+        """Two horizontal rows at the top flanking the match timer: allied heroes
+        grow leftwards, enemy heroes grow rightwards. Each is a circle — green if
+        the ultimate is ready, red otherwise — with a respawn countdown below
+        when dead."""
         allies, enemies = [], []
         for e in entities:
             if e.get("et") != EntityType.HERO:
                 continue
             (allies if e.get("tm") == my_team else enemies).append(e)
-        self._draw_ult_side(allies, x=22, top=120)
-        self._draw_ult_side(enemies, x=SCREEN_WIDTH - 22, top=120)
+        cx = SCREEN_WIDTH // 2
+        self._draw_ult_row(allies, anchor_x=cx - 95, top=18, direction=-1)
+        self._draw_ult_row(enemies, anchor_x=cx + 95, top=18, direction=1)
 
-    def _draw_ult_side(self, heroes, x: int, top: int) -> None:
+    def _draw_ult_row(self, heroes, anchor_x: int, top: int, direction: int) -> None:
+        step = 30
         for i, h in enumerate(heroes):
-            cy = top + i * 56
+            x = anchor_x + direction * i * step
             alive = h.get("a", True)
             r_rank = h.get("alvl", {}).get("R", 0)
             r_cd = h.get("cds", {}).get("R", 0)
@@ -442,12 +486,12 @@ class Renderer:
                 color = (60, 210, 90)    # ult ready
             else:
                 color = (210, 70, 70)    # not leveled / on cooldown
-            pygame.draw.circle(self.screen, color, (x, cy), 14)
-            pygame.draw.circle(self.screen, (20, 20, 24), (x, cy), 14, 2)
-            # Respawn timer beneath (blank while alive).
+            pygame.draw.circle(self.screen, color, (x, top), 12)
+            pygame.draw.circle(self.screen, (20, 20, 24), (x, top), 12, 2)
+            # Respawn timer below the indicator (blank while alive).
             if not alive and h.get("resp", 0) > 0:
                 t = self.font.render(f"{h['resp']:.0f}", True, (220, 180, 180))
-                self.screen.blit(t, (x - t.get_width() // 2, cy + 16))
+                self.screen.blit(t, (x - t.get_width() // 2, top + 14))
 
     def _draw_ability_bar(self, me: dict) -> None:
         """Skills as a 2x2 grid (Q W / E R) at the bottom, left of the items.
@@ -559,7 +603,11 @@ class Renderer:
             return (int(mm.left + wx / MAP_WIDTH * mm.width),
                     int(mm.top + wy / MAP_HEIGHT * mm.height))
 
-        # Lane lines for orientation.
+        # River + lane lines for orientation.
+        if RIVER is not None:
+            pygame.draw.line(self.screen, (70, 110, 170),
+                             to_mm(RIVER.x1, RIVER.y1),
+                             to_mm(RIVER.x2, RIVER.y2), 1)
         for path in LANE_PATHS.values():
             pygame.draw.lines(self.screen, COLOR_LANE, False,
                               [to_mm(wx, wy) for wx, wy in path], 1)
@@ -573,9 +621,14 @@ class Renderer:
             if et in (EntityType.WALL, EntityType.TREE):
                 if not ent.get("a", True):
                     continue
-                mx, my = to_mm(ent["x"], ent["y"])
                 col = (60, 110, 60) if et == EntityType.TREE else (110, 110, 120)
-                pygame.draw.rect(self.screen, col, (mx, my, 2, 2))
+                if ent.get("x1") is not None:
+                    pygame.draw.line(self.screen, col,
+                                     to_mm(ent["x1"], ent["y1"]),
+                                     to_mm(ent["x2"], ent["y2"]), 1)
+                else:
+                    mx, my = to_mm(ent["x"], ent["y"])
+                    pygame.draw.rect(self.screen, col, (mx, my, 2, 2))
                 continue
             mx, my = to_mm(ent["x"], ent["y"])
             color = _team_color(ent.get("tm", 0))

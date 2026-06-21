@@ -1,12 +1,13 @@
 """Phase 3: walls/trees (collision + vision), runes, spawn zones, meet points."""
+import math
 import unittest
 
 from shared.game_types import Team
 from server.entity import Hero, Wall, Tree, RuneCreature, MeleeMinion
 from server.game_state import GameState
 from server.systems import (
-    system_collision, system_damage_death, system_runes, system_spawn_zone,
-    apply_rune_buff, _kill, _advance_minion,
+    system_collision, system_movement, system_damage_death, system_runes,
+    system_spawn_zone, apply_rune_buff, _kill, _advance_minion,
 )
 
 
@@ -20,27 +21,55 @@ class TestObstacles(unittest.TestCase):
         self.assertTrue(trees)
 
     def test_wall_blocks_walking(self):
-        from shared.geometry import circle_rect_overlap
+        from shared.geometry import circle_capsule_overlap
         state = GameState()
-        wall = Wall(x=200, y=200, w=100, h=100, radius=70)
-        hero = Hero(team=Team.TEAM1, x=250, y=250, radius=20)  # inside the wall
+        # Vertical capsule wall centred at (200, 250).
+        wall = Wall(x1=200, y1=150, x2=200, y2=350, thickness=100)
+        hero = Hero(team=Team.TEAM1, x=200, y=250, radius=20)  # on the centerline
         state.entities[wall.entity_id] = wall
         state.entities[hero.entity_id] = hero
-        self.assertTrue(circle_rect_overlap(hero.x, hero.y, hero.radius, wall.rect()))
+        self.assertTrue(circle_capsule_overlap(hero.x, hero.y, hero.radius,
+                                               *wall.capsule()))
         system_collision(state, 0.05)
-        # Pushed out: the hero's circle no longer overlaps the wall rect.
-        self.assertFalse(circle_rect_overlap(hero.x, hero.y, hero.radius, wall.rect()))
+        # Pushed out: the hero's circle no longer overlaps the wall capsule.
+        self.assertFalse(circle_capsule_overlap(hero.x, hero.y, hero.radius,
+                                                *wall.capsule()))
 
     def test_tree_destructible_then_walkable(self):
         state = GameState()
-        tree = Tree(x=500, y=500, w=80, h=80, radius=60, hp=30, max_hp=30)
+        tree = Tree(x1=500, y1=460, x2=500, y2=540, thickness=80, hp=30, max_hp=30)
         state.entities[tree.entity_id] = tree
-        self.assertEqual(len(state.obstacle_rects()), 1)
+        self.assertEqual(len(state.obstacle_capsules()), 1)
         state.damage_events.append(
             {"src": None, "tgt": tree.entity_id, "amt": 50, "dtype": "true"})
         system_damage_death(state, 0.05)
         self.assertFalse(tree.alive)
-        self.assertEqual(state.obstacle_rects(), [])  # no longer blocks
+        self.assertEqual(state.obstacle_capsules(), [])  # no longer blocks
+
+    def test_hero_blocked_by_unit_without_pushing_it(self):
+        """A hero walking into another unit stops at it but never pushes it."""
+        state = GameState()
+        blocker = Hero(team=Team.TEAM1, x=300, y=300, radius=20)
+        mover = Hero(team=Team.TEAM1, x=240, y=300, radius=20)
+        mover.target_x, mover.target_y = 400, 300  # walk right, into the blocker
+        state.entities[blocker.entity_id] = blocker
+        state.entities[mover.entity_id] = mover
+        bx, by = blocker.x, blocker.y
+        for _ in range(40):
+            system_movement(state, 0.05)
+            system_collision(state, 0.05)
+        # The blocker never moved; the mover stopped short (no overlap).
+        self.assertEqual((blocker.x, blocker.y), (bx, by))
+        gap = math.hypot(mover.x - blocker.x, mover.y - blocker.y)
+        self.assertGreaterEqual(gap, mover.radius + blocker.radius - 1.0)
+
+
+class TestRiver(unittest.TestCase):
+    def test_in_river(self):
+        state = GameState()
+        # The configured river runs the anti-diagonal through the map centre.
+        self.assertTrue(state.in_river(3000, 3000))
+        self.assertFalse(state.in_river(800, 5200))  # a base corner
 
 
 class TestVisionBlocking(unittest.TestCase):
@@ -48,7 +77,7 @@ class TestVisionBlocking(unittest.TestCase):
         state = GameState()
         seer = Hero(team=Team.TEAM1, x=0, y=300)
         enemy = Hero(team=Team.TEAM2, x=600, y=300)
-        wall = Wall(x=280, y=200, w=40, h=200, radius=110)  # between them
+        wall = Wall(x1=300, y1=200, x2=300, y2=400, thickness=40)  # between them
         for e in (seer, enemy, wall):
             state.entities[e.entity_id] = e
         self.assertNotIn(enemy.entity_id,

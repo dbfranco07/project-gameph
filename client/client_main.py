@@ -222,16 +222,21 @@ class GameClient:
                 return
 
     def _consume_minimap_clicks(self, events):
-        """Recenter the camera on left-clicks inside the minimap; drop those
-        events so they don't also trigger a world attack/move."""
+        """Handle clicks inside the minimap and drop them so they don't also
+        trigger a world action: left-click recenters the camera, right-click
+        issues a move order to that world point."""
         if self.renderer is None:
             return events
         kept = []
         for event in events:
-            if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1):
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 3):
                 world = self.renderer.minimap_to_world(*event.pos)
                 if world is not None:
-                    self.camera.follow(*world)
+                    if event.button == 1:
+                        self.camera.follow(*world)
+                    else:  # right-click: move the hero there
+                        self._send({"t": int(MsgType.MOVE),
+                                    "tx": world[0], "ty": world[1]})
                     continue
             kept.append(event)
         return kept

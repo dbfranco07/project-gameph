@@ -75,9 +75,9 @@ def circle_rect_overlap(cx: float,
     return dx * dx + dy * dy <= r * r
 
 
-def segment_intersects_rect(x0: float, 
-                            y0: float, 
-                            x1: float, 
+def segment_intersects_rect(x0: float,
+                            y0: float,
+                            x1: float,
                             y1: float,
                             rect: tuple[float, float, float, float]) -> bool:
     """True if segment (x0,y0)->(x1,y1) crosses or starts inside an (x,y,w,h) rect.
@@ -107,3 +107,74 @@ def segment_intersects_rect(x0: float,
             if r < t1:
                 t1 = r
     return t0 <= t1
+
+
+# ----- Capsules (oriented walls/trees/river: a segment + a thickness) --------
+#
+# An obstacle is a "thick segment" (capsule): the centerline runs (x0,y0)->(x1,y1)
+# and the solid extends half the thickness to either side, with rounded ends.
+# A point is inside when its distance to the centerline is <= thickness / 2.
+
+def closest_point_on_segment(px: float, py: float,
+                             x0: float, y0: float,
+                             x1: float, y1: float) -> tuple[float, float]:
+    """Closest point to (px, py) on the segment (x0,y0)->(x1,y1)."""
+    dx, dy = x1 - x0, y1 - y0
+    seg2 = dx * dx + dy * dy
+    if seg2 <= 1e-9:
+        return (x0, y0)  # degenerate segment: it's a point
+    t = ((px - x0) * dx + (py - y0) * dy) / seg2
+    t = max(0.0, min(1.0, t))
+    return (x0 + dx * t, y0 + dy * t)
+
+
+def point_segment_distance(px: float, py: float,
+                           x0: float, y0: float,
+                           x1: float, y1: float) -> float:
+    """Distance from (px, py) to the segment (x0,y0)->(x1,y1)."""
+    cx, cy = closest_point_on_segment(px, py, x0, y0, x1, y1)
+    return math.hypot(px - cx, py - cy)
+
+
+def circle_capsule_overlap(cx: float, cy: float, r: float,
+                           x0: float, y0: float, x1: float, y1: float,
+                           thickness: float) -> bool:
+    """True if a circle overlaps the capsule (segment + thickness)."""
+    return point_segment_distance(cx, cy, x0, y0, x1, y1) <= r + thickness / 2.0
+
+
+def _segments_intersect(ax: float, ay: float, bx: float, by: float,
+                        cx: float, cy: float, dx: float, dy: float) -> bool:
+    """True if segments A(a->b) and B(c->d) cross (proper or touching)."""
+    def orient(ox, oy, px, py, qx, qy) -> float:
+        return (px - ox) * (qy - oy) - (py - oy) * (qx - ox)
+
+    d1 = orient(cx, cy, dx, dy, ax, ay)
+    d2 = orient(cx, cy, dx, dy, bx, by)
+    d3 = orient(ax, ay, bx, by, cx, cy)
+    d4 = orient(ax, ay, bx, by, dx, dy)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+        return True
+    return False
+
+
+def segment_segment_distance(ax: float, ay: float, bx: float, by: float,
+                             cx: float, cy: float, dx: float, dy: float) -> float:
+    """Shortest distance between segments A(a->b) and B(c->d)."""
+    if _segments_intersect(ax, ay, bx, by, cx, cy, dx, dy):
+        return 0.0
+    return min(
+        point_segment_distance(ax, ay, cx, cy, dx, dy),
+        point_segment_distance(bx, by, cx, cy, dx, dy),
+        point_segment_distance(cx, cy, ax, ay, bx, by),
+        point_segment_distance(dx, dy, ax, ay, bx, by),
+    )
+
+
+def segment_capsule_intersect(ax: float, ay: float, bx: float, by: float,
+                              x0: float, y0: float, x1: float, y1: float,
+                              thickness: float) -> bool:
+    """True if the sight segment (ax,ay)->(bx,by) touches the capsule. Used for
+    line-of-sight: a target is hidden when the sight line crosses a wall/tree."""
+    return segment_segment_distance(ax, ay, bx, by,
+                                    x0, y0, x1, y1) <= thickness / 2.0

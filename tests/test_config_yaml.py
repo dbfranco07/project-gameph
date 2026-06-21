@@ -27,11 +27,14 @@ class TestConfigLoad(unittest.TestCase):
         self.assertIsInstance(c.COLOR_TEAM1, tuple)
 
     def test_map_constants(self):
-        self.assertEqual(c.T1_CORE, (800, 5200))
-        self.assertEqual(c.T2_CORE, (5200, 800))
+        # The fountain (spawn/well) is the base corner; heroes spawn here.
+        self.assertEqual(c.T1_FOUNTAIN, (800, 5200))
         self.assertEqual(c.SPAWN_POSITIONS, {1: (800, 5200), 2: (5200, 800)})
+        # The core is a distinct inland point (not the fountain), mirrored cleanly.
+        self.assertNotEqual(c.T1_CORE, c.T1_FOUNTAIN)
+        self.assertEqual(c.T2_CORE, mirror_point(c.T1_CORE, 6000, 6000))
         self.assertEqual(c.LANES, ("top", "mid", "bot"))
-        self.assertEqual(c.LANE_PATHS["top"], [(800, 5200), (520, 520), (5200, 800)])
+        self.assertEqual(c.LANE_PATHS["top"], [(800, 5200), (800, 800), (5200, 800)])
         # Lane waypoints must be tuples (minion pathing compares them by ==).
         self.assertTrue(all(isinstance(p, tuple) for p in c.LANE_PATHS["mid"]))
 
@@ -42,16 +45,22 @@ class TestConfigLoad(unittest.TestCase):
                          [(0, 0.58, "outer"), (1, 0.70, "inner"), (2, 0.82, "base")])
 
     def test_jungle_camps_mirrored(self):
-        self.assertEqual(
-            set(c.JUNGLE_CAMPS),
-            {(2100, 1800, 3), (1700, 3100, 3), (3900, 4200, 3), (4300, 2900, 3)})
+        # Camps are authored for one side then center-mirrored: every camp has
+        # its mirror present (counts preserved), and the total is twice authored.
+        camps = set(c.JUNGLE_CAMPS)
+        self.assertTrue(camps)
+        self.assertEqual(len(c.JUNGLE_CAMPS), 2 * len(c._t1_camps))
+        for (x, y, n) in c.JUNGLE_CAMPS:
+            self.assertIn((6000 - x, 6000 - y, n), camps)
 
     def test_new_features_present(self):
-        self.assertTrue(c.WALLS and all(len(r) == 4 for r in c.WALLS))
-        self.assertTrue(c.TREES and all(len(r) == 4 for r in c.TREES))
-        self.assertTrue(c.RUNES)
+        cap_keys = {"p1", "p2", "thickness"}
+        self.assertTrue(c.WALLS and all(cap_keys <= set(w) for w in c.WALLS))
+        self.assertTrue(c.TREES and all(cap_keys <= set(t) for t in c.TREES))
+        self.assertTrue(c.RUNES and all("zone" in r for r in c.RUNES))
         self.assertIn("mid", c.MEET_POINTS)
         self.assertGreater(c.SPAWN_ZONE_RADIUS, 0)
+        self.assertIsNotNone(c.RIVER)
 
 
 class TestMirrorHelpers(unittest.TestCase):

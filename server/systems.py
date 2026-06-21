@@ -40,7 +40,9 @@ from shared.config import (
     RUNES,
     MEET_POINTS,
     SPAWN_ZONE_RADIUS,
+    BASE_TOWER_T,
 )
+from shared.geometry import point_along, closest_point_on_segment
 from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
@@ -194,7 +196,10 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
                + [RangedMinion] * CREEP_RANGED_PER_WAVE
                + ([CartMinion] if cart else []))
 
-    spawn = path[0]
+    # Minions spawn next to their lane's base tower (not the fountain/core).
+    # The path is already oriented per team, so BASE_TOWER_T is "base tower" for
+    # both sides.
+    spawn = point_along(path, BASE_TOWER_T)
     # March direction toward the first waypoint, for spacing the column.
     nxt = path[1] if len(path) > 1 else path[0]
     dx, dy = nxt[0] - spawn[0], nxt[1] - spawn[1]
@@ -318,7 +323,10 @@ def system_runes(state: GameState, dt: float) -> None:
 
 
 def _spawn_rune(state: GameState, idx: int, cfg: dict) -> None:
-    px, py = cfg["pos"]
+    # Spawn at a uniform-random point inside the rune's rectangular zone.
+    zx, zy, zw, zh = cfg["zone"]
+    px = random.uniform(zx, zx + zw)
+    py = random.uniform(zy, zy + zh)
     rune = RuneCreature(
         x=px, y=py, dest_x=px, dest_y=py,
         home_x=px, home_y=py,
@@ -360,6 +368,7 @@ def system_movement(state: GameState, dt: float) -> None:
                 continue  # stunned heroes hold position
             _update_focus_chase(state, entity)
             entity.move_toward_target(dt)
+            _block_hero_against_units(state, entity)
             entity.x = max(entity.radius, min(MAP_WIDTH - entity.radius, entity.x))
             entity.y = max(entity.radius, min(MAP_HEIGHT - entity.radius, entity.y))
         elif isinstance(entity, Minion):
@@ -389,7 +398,7 @@ def _advance_minion(state: GameState, minion: Minion, dt: float) -> None:
             return
     dirx, diry = dx / dist, dy / dist
 
-    obstacle = _blocking_structure(state, minion, dirx, diry)
+    obstacle = _blocking_obstacle(state, minion, dirx, diry)
     if obstacle is not None:
         # Slide around the obstacle: move along the tangent that best preserves
         # forward progress, blended with a little forward bias to round it off.
@@ -414,17 +423,25 @@ def _advance_minion(state: GameState, minion: Minion, dt: float) -> None:
     minion.y += diry * step
 
 
-def _blocking_structure(state: GameState, minion: Minion, dirx: float, diry: float):
-    """Nearest alive structure ahead of the minion and close enough to require
-    steering around it, or None."""
+def _blocking_obstacle(state: GameState, minion: Minion, dirx: float, diry: float):
+    """Nearest alive blocker ahead of the minion and close enough to require
+    steering around it, or None. Blockers are structures (avoided with a wide
+    berth) and other units (avoided only when nearly touching, i.e. genuinely
+    stuck behind a stalled minion/hero — so a marching column doesn't zigzag)."""
     best = None
     best_d = None
     for e in state.entities.values():
-        if not isinstance(e, Structure) or not e.alive:
+        if e is minion or not e.alive:
+            continue
+        if isinstance(e, Structure):
+            margin = _MINION_AVOID_BUFFER
+        elif isinstance(e, (Hero, Minion)):
+            margin = 8.0
+        else:
             continue
         ox, oy = e.x - minion.x, e.y - minion.y
         od = math.hypot(ox, oy)
-        if od < 1e-6 or od > e.radius + minion.radius + _MINION_AVOID_BUFFER:
+        if od < 1e-6 or od > e.radius + minion.radius + margin:
             continue
         if ox * dirx + oy * diry <= 0:
             continue  # behind the minion's travel direction; not in the way
@@ -450,53 +467,48 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
         hero.target_x, hero.target_y = target.x, target.y  # close the gap
 
 
+def _block_hero_against_units(state: GameState, hero: Hero) -> None:
+    """One-sided block: after the hero has moved, eject IT out of any other unit
+    it now overlaps (the other unit is never moved). The radial eject only undoes
+    the component of motion into the blocker, so the hero stops at it but can
+    still slide sideways/backwards and never gets permanently stuck — and because
+    only the mover adjusts itself, it never pushes the blocker."""
+    for other in state.entities.values():
+        if other is hero or not other.alive:
+            continue
+        if isinstance(other, (Hero, Minion)):
+            _eject_circle(hero, other.x, other.y, other.radius)
+
+
 # ---------------------------------------------------------------------------
 # Collision (units cannot share space)
 # ---------------------------------------------------------------------------
 
 def system_collision(state: GameState, dt: float) -> None:
-    """Push overlapping units apart so heroes/minions don't stack. Structures
-    are immovable: units get shoved out of them."""
+    """Eject units out of immovable map geometry (structures and wall/tree
+    capsules) so they can't tunnel through it. Unit-vs-unit blocking is handled
+    during movement (heroes stop+slide in system_movement; minions steer around
+    in _advance_minion) — units are never elastic-shoved apart here."""
     units = [e for e in state.entities.values()
              if isinstance(e, (Hero, Minion)) and e.alive]
-    for i in range(len(units)):
-        a = units[i]
-        for j in range(i + 1, len(units)):
-            _separate(a, units[j])
     structs = [e for e in state.entities.values()
                if isinstance(e, Structure) and e.alive]
-    obstacles = state.obstacle_rects()
+    obstacles = state.obstacle_capsules()
     for u in units:
         for s in structs:
-            _push_out_of(u, s)
-        for rect in obstacles:
-            _push_out_of_rect(u, rect)
+            _eject_circle(u, s.x, s.y, s.radius)
+        for cap in obstacles:
+            _push_out_of_capsule(u, cap)
         u.x = max(u.radius, min(MAP_WIDTH - u.radius, u.x))
         u.y = max(u.radius, min(MAP_HEIGHT - u.radius, u.y))
 
 
-def _separate(a, b) -> None:
-    """Split the overlap between two movable units evenly."""
-    dx, dy = b.x - a.x, b.y - a.y
+def _eject_circle(u, cx: float, cy: float, cr: float) -> None:
+    """Move unit `u` fully out of a circular blocker at (cx, cy, cr). One-sided:
+    only `u` moves, so this blocks without pushing the blocker."""
+    dx, dy = u.x - cx, u.y - cy
     dist = math.hypot(dx, dy)
-    mind = a.radius + b.radius
-    if dist >= mind:
-        return
-    if dist < 1e-6:
-        nx, ny, push = 1.0, 0.0, mind / 2.0  # coincident: split along +x
-    else:
-        nx, ny, push = dx / dist, dy / dist, (mind - dist) / 2.0
-    a.x -= nx * push
-    a.y -= ny * push
-    b.x += nx * push
-    b.y += ny * push
-
-
-def _push_out_of(u, s) -> None:
-    """Move a unit fully out of an immovable structure it overlaps."""
-    dx, dy = u.x - s.x, u.y - s.y
-    dist = math.hypot(dx, dy)
-    mind = u.radius + s.radius
+    mind = u.radius + cr
     if dist >= mind:
         return
     if dist < 1e-6:
@@ -507,33 +519,25 @@ def _push_out_of(u, s) -> None:
     u.y += ny * overlap
 
 
-def _push_out_of_rect(u, rect) -> None:
-    """Push a unit's circle out of an axis-aligned rect along the shallowest axis."""
-    x, y, w, h = rect
-    nearest_x = min(max(u.x, x), x + w)
-    nearest_y = min(max(u.y, y), y + h)
-    dx, dy = u.x - nearest_x, u.y - nearest_y
-    dist2 = dx * dx + dy * dy
-    if dist2 >= u.radius * u.radius:
+def _push_out_of_capsule(u, cap) -> None:
+    """Push a unit's circle out of a wall/tree capsule (centerline + thickness),
+    one-sided and along the centerline normal."""
+    x0, y0, x1, y1, th = cap
+    cx, cy = closest_point_on_segment(u.x, u.y, x0, y0, x1, y1)
+    dx, dy = u.x - cx, u.y - cy
+    dist = math.hypot(dx, dy)
+    reach = u.radius + th / 2.0
+    if dist >= reach:
         return  # not overlapping
-    if dist2 > 1e-9:
-        dist = math.sqrt(dist2)
+    if dist > 1e-9:
         nx, ny = dx / dist, dy / dist
-        u.x = nearest_x + nx * (u.radius + 0.5)
-        u.y = nearest_y + ny * (u.radius + 0.5)
-        return
-    # Center is inside the rect: eject along the nearest edge.
-    left, right = u.x - x, (x + w) - u.x
-    top, bottom = u.y - y, (y + h) - u.y
-    m = min(left, right, top, bottom)
-    if m == left:
-        u.x = x - u.radius - 0.5
-    elif m == right:
-        u.x = x + w + u.radius + 0.5
-    elif m == top:
-        u.y = y - u.radius - 0.5
     else:
-        u.y = y + h + u.radius + 0.5
+        # Center lies on the centerline: eject perpendicular to the segment.
+        sx, sy = x1 - x0, y1 - y0
+        sl = math.hypot(sx, sy) or 1.0
+        nx, ny = -sy / sl, sx / sl
+    u.x = cx + nx * (reach + 0.5)
+    u.y = cy + ny * (reach + 0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +886,13 @@ def _kill(state: GameState, victim, src_id) -> None:
             _reward(state, killer, "xp", HERO_KILL_XP)
     elif isinstance(victim, Minion):
         _award_minion_bounty(state, victim, killer)
+        # Credit the hero's creep score: jungle/rune kills count as neutral,
+        # lane creeps as minion last-hits.
+        if isinstance(killer, Hero):
+            if victim.is_neutral:
+                killer.neutral_kills += 1
+            else:
+                killer.minion_kills += 1
         # A slain rune also grants its killer a timed buff.
         if isinstance(victim, RuneCreature) and isinstance(killer, Hero):
             apply_rune_buff(killer, victim.rune_buff)

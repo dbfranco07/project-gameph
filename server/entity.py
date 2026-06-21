@@ -295,28 +295,28 @@ class Hero(Entity):
         # so the client can swap to the flying-torso sprite. Cheap one-bit flag.
         if self.ability_state.get("split"):
             d["split"] = True
-        # Extra stats for the HUD panel.
-        d["ad"] = self.effective_damage()
-        d["spa"] = self.effective_sp_atk()
-        d["pdef"] = round(self.effective_phys_def(), 1)
-        d["sdef"] = round(self.effective_sp_def(), 1)
-        d["rng"] = round(self.effective_attack_range())
-        d["aspd"] = round(1.0 / self.effective_attack_interval(), 2)
-        d["ms"] = int(self.effective_move_speed())
-        d["hpr"] = round(self.hp_regen
-                         + sum(b.get("hp_regen_bonus", 0) for b in self.buffs), 1)
-        d["mpr"] = round(self.mana_regen
-                         + sum(b.get("mana_regen_bonus", 0) for b in self.buffs), 1)
+        # Extra stats for the HUD panel. Main fields carry the BASE (permanent)
+        # value; the temporary buff/debuff portion is sent separately in `dlt`
+        # so the HUD shows e.g. "55 +20" rather than double-counting the bonus.
+        d["ad"] = self.attack_damage
+        d["spa"] = self.sp_atk
+        d["pdef"] = round(self.phys_def, 1)
+        d["sdef"] = round(self.sp_def, 1)
+        d["rng"] = round(self.attack_range)
+        d["aspd"] = round(1.0 / self.attack_interval, 2)
+        d["ms"] = int(self.move_speed)
+        d["hpr"] = round(self.hp_regen, 1)
+        d["mpr"] = round(self.mana_regen, 1)
         d["xp"] = self.xp
         d["xpn"] = 0 if self.level >= MAX_LEVEL else XP_BASE + (self.level - 1) * XP_PER_LEVEL
-        # Temporary stat deltas (from buffs/debuffs only) so the HUD can render
-        # green (+) / red (-) numbers. Only nonzero entries are sent.
+        # Temporary stat deltas (effective - base) so the HUD can render green
+        # (+) / red (-) numbers. value + delta == effective. Only nonzero sent.
         deltas = {
-            "ad": self.bonus_damage(),
-            "spa": int(self.bonus_sp_atk()),
-            "pdef": round(self.bonus_phys_def(), 1),
-            "sdef": round(self.bonus_sp_def(), 1),
-            "rng": round(self.bonus_range(), 1),
+            "ad": self.effective_damage() - self.attack_damage,
+            "spa": int(self.effective_sp_atk() - self.sp_atk),
+            "pdef": round(self.effective_phys_def() - self.phys_def, 1),
+            "sdef": round(self.effective_sp_def() - self.sp_def, 1),
+            "rng": round(self.effective_attack_range() - self.attack_range, 1),
             "ms": round(self.effective_move_speed() - self.move_speed, 1),
             "aspd": round(1.0 / self.effective_attack_interval()
                           - 1.0 / self.attack_interval, 2),
@@ -489,23 +489,37 @@ class Projectile(Entity):
 
 @dataclass
 class Obstacle(Entity):
-    """A static, axis-aligned rectangle (top-left at x, y) that blocks walking
-    and (optionally) vision. ``radius`` is set to the half-diagonal so the
-    client's circular cull keeps it on screen."""
+    """A static, oriented capsule that blocks walking and (optionally) vision:
+    a centerline (x1,y1)->(x2,y2) plus a ``thickness`` (so it can run diagonally).
+    A point is inside when its distance to the centerline is <= thickness / 2.
+    ``x, y`` are set to the capsule midpoint and ``radius`` to half the length
+    plus half the thickness, so the client's circular cull keeps it on screen."""
 
     entity_type: EntityType = EntityType.WALL
     team: Team = Team.NONE
-    w: float = 100.0
-    h: float = 100.0
+    x1: float = 0.0
+    y1: float = 0.0
+    x2: float = 0.0
+    y2: float = 0.0
+    thickness: float = 60.0
     blocks_vision: bool = True
 
-    def rect(self) -> tuple[float, float, float, float]:
-        return (self.x, self.y, self.w, self.h)
+    def __post_init__(self) -> None:
+        self.x = (self.x1 + self.x2) / 2.0
+        self.y = (self.y1 + self.y2) / 2.0
+        half_len = math.hypot(self.x2 - self.x1, self.y2 - self.y1) / 2.0
+        self.radius = half_len + self.thickness / 2.0
+
+    def capsule(self) -> tuple[float, float, float, float, float]:
+        return (self.x1, self.y1, self.x2, self.y2, self.thickness)
 
     def to_snapshot(self) -> dict:
         d = super().to_snapshot()
-        d["w"] = self.w
-        d["h"] = self.h
+        d["x1"] = round(self.x1, 1)
+        d["y1"] = round(self.y1, 1)
+        d["x2"] = round(self.x2, 1)
+        d["y2"] = round(self.y2, 1)
+        d["th"] = self.thickness
         return d
 
 
