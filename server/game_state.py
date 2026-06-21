@@ -14,7 +14,6 @@ from shared.config import (
     CORE_HP,
     CORE_DAMAGE,
     CORE_RADIUS,
-    CREEP_WAVE_INTERVAL,
     BASIC_PROJECTILE_SPEED,
     TOWER_PROJECTILE_SPEED,
     HERO_VISION_RADIUS,
@@ -283,12 +282,10 @@ class GameState:
     def _spawn_map(self) -> None:
         """Spawn static obstacles (walls + destructible trees) from the config."""
         for (x, y, w, h) in WALLS:
-            wall = Wall(x=x, y=y, w=w, h=h,
-                        radius=math.hypot(w, h) / 2)
+            wall = Wall(x=x, y=y, w=w, h=h,radius=math.hypot(w, h) / 2)
             self.entities[wall.entity_id] = wall
         for (x, y, w, h) in TREES:
-            tree = Tree(x=x, y=y, w=w, h=h,
-                        radius=math.hypot(w, h) / 2)
+            tree = Tree(x=x, y=y, w=w, h=h, radius=math.hypot(w, h) / 2)
             self.entities[tree.entity_id] = tree
 
     def obstacle_rects(self) -> list[tuple[float, float, float, float]]:

@@ -16,16 +16,16 @@ core: [800, 5200]
 lane_width: 170
 lanes:
   top:
-    - [800, 5200]
-    - [520, 520]
-    - [5200, 800]
+    - [800, 5200] # bottom-left corner
+    - [800, 800] # top-left corner
+    - [5200, 800] # top-right corner
   mid:
-    - [800, 5200]
-    - [5200, 800]
+    - [800, 5200] # bottom-left corner
+    - [5200, 800] # top-right corner
   bot:
-    - [800, 5200]
-    - [5480, 5480]
-    - [5200, 800]
+    - [800, 5200] # bottom-left corner
+    - [5200, 5200] # bottom-right corner
+    - [5200, 800] # top-right corner
 
 # Towers along each lane, as arc-length fractions from the Team 1 base (t=0).
 # Authored for Team 1; Team 2's towers are built as (lane_order, 1 - t, kind).
@@ -45,9 +45,9 @@ jungle_camps:
 # Wave-1 minion meeting points per lane (single, shared between sides). Wave-1
 # minion speed is tuned so both sides arrive here together, then reverts.
 meet_points:
-  top: [520, 520]
+  top: [800, 800]
   mid: [3000, 3000]
-  bot: [5480, 5480]
+  bot: [5200, 5200]
 
 # Spawn-point regen zone radius around each core (fast regen for the owner;
 # enemies inside take damage at the same rate).
@@ -58,9 +58,6 @@ spawn_zone_radius: 700
 # regen_10x. `patrol` is the wander radius around the spawn point.
 runes:
   - { pos: [2300, 2300], buff: haste, patrol: 350 }   # off-lane jungle (mirrored)
-center:
-  runes:
-    - { pos: [3000, 3000], buff: double_damage, patrol: 300 }  # contested river rune
 
 # Walls: permanently unwalkable rects that also block vision. (Team 1 frame.)
 walls:
@@ -69,5 +66,5 @@ walls:
 
 # Trees: like walls but destructible (have hp) and clear when killed.
 trees:
-  - { rect: [1900, 4600, 240, 80] }
-  - { rect: [3300, 4000, 80, 240] }
+  - [1900, 4600, 240, 80]
+  - [3300, 4000, 80, 240]

@@ -41,7 +41,6 @@ from shared.config import (
     MEET_POINTS,
     SPAWN_ZONE_RADIUS,
 )
-from shared.geometry import point_along
 from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,

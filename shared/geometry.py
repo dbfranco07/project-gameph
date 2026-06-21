@@ -36,7 +36,8 @@ def point_along(points: list[tuple[float, float]],
 
 # ----- Symmetry (map authored for one side, mirrored through the center) -----
 
-def mirror_point(p: tuple[float, float], width: float,
+def mirror_point(p: tuple[float, float], 
+                 width: float,
                  height: float) -> tuple[float, float]:
     """Point-reflect ``p`` through the map center: (x, y) -> (W - x, H - y)."""
     return (width - p[0], height - p[1])
