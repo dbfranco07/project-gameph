@@ -170,41 +170,88 @@ class GameServer:
             self._handle_buy_item(client_id, msg)
         elif msg_type == MsgType.SELL_ITEM:
             self._handle_sell_item(client_id, msg)
+        elif msg_type == MsgType.SELECT_TEAM:
+            self._handle_select_team(client_id, msg)
+        elif msg_type == MsgType.SELECT_HERO:
+            self._handle_select_hero(client_id, msg)
         elif msg_type == MsgType.START_GAME:
-            self._handle_start_game(msg)
+            self._handle_start_game(client_id, msg)
 
     def _handle_join(self, client_id: int, msg: dict) -> None:
-        """Spawns a hero for a joining client and acknowledges it.
+        """Registers a joining client.
 
-        Assigns a team, creates the hero, and replies with a ``JOIN_ACK``
-        carrying the entity id and assigned team/hero so the client can bind
-        its local view to the server entity.
+        While waiting in the lobby the client is added to the roster (no hero
+        spawned yet) and sent a ``LOBBY_WELCOME``; everyone then gets the updated
+        roster. If a match is already in progress the client is spawned right
+        away as a late joiner and bound with a ``JOIN_ACK``.
 
         Args:
             client_id: Server-assigned id of the joining client.
             msg: ``JOIN`` message; reads optional ``"name"`` and ``"hero"``.
         """
-        name = msg.get("name", f"Player{client_id}")
-        team = self.state.assign_team()
+        name = msg.get("name") or f"Player{client_id}"
         hero_choice = msg.get("hero")
-        hero = self.state.add_hero(client_id, name, team, hero_id=hero_choice)
-        print(f"[SERVER] {name} joined Team {int(team)} as {hero.hero_id} "
-              f"(hero id={hero.entity_id})")
+        if hero_choice:
+            self.state.set_hero_choice(client_id, hero_choice)
 
+        if self.state.phase != GamePhase.WAITING:
+            # Late join: spawn immediately on the lighter team and bind.
+            team = self.state.assign_team()
+            hero = self.state.add_hero(client_id, name, team,
+                                       hero_id=hero_choice)
+            print(f"[SERVER] {name} late-joined Team {int(team)} as "
+                  f"{hero.hero_id}")
+            self._send_join_ack(client_id, hero)
+            return
+
+        info = self.state.add_to_lobby(client_id, name)
+        print(f"[SERVER] {name} joined the lobby (Team {info['team']}"
+              f"{', host' if info['is_host'] else ''})")
         handler = self.clients.get(client_id)
         if handler:
             handler.send({
-                "t": int(MsgType.JOIN_ACK),
-                "eid": hero.entity_id,
-                "team": int(team),
-                "name": name,
-                "hero": hero.hero_id,
-                # Ability metadata (key/name/cd/mana/cast-type) so the client can
-                # draw the ability bar and drive targeting without server code.
-                "hero_def": hero.hero_def.describe() if hero.hero_def else None,
-                # Shop catalog (item metadata) so the client can show the shop.
+                "t": int(MsgType.LOBBY_WELCOME),
+                "cid": client_id,
+                "host": info["is_host"],
+                "heroes": self.state.available_heroes(),
                 "items": item_catalog(),
             })
+        self._broadcast_lobby()
+
+    def _send_join_ack(self, client_id: int, hero) -> None:
+        """Bind a client's local view to its spawned server hero entity."""
+        handler = self.clients.get(client_id)
+        if not handler:
+            return
+        handler.send({
+            "t": int(MsgType.JOIN_ACK),
+            "eid": hero.entity_id,
+            "team": int(hero.team),
+            "name": hero.name,
+            "hero": hero.hero_id,
+            # Ability metadata (key/name/cd/mana/cast-type) so the client can
+            # draw the ability bar and drive targeting without server code.
+            "hero_def": hero.hero_def.describe() if hero.hero_def else None,
+            # Shop catalog (item metadata) so the client can show the shop.
+            "items": item_catalog(),
+        })
+
+    def _broadcast_lobby(self) -> None:
+        """Send the current lobby roster to every connected client."""
+        msg = {
+            "t": int(MsgType.PLAYER_LIST),
+            "players": self.state.lobby_roster(),
+        }
+        for handler in self.clients.values():
+            handler.send(msg)
+
+    def _handle_select_team(self, client_id: int, msg: dict) -> None:
+        if self.state.set_lobby_team(client_id, msg.get("team")):
+            self._broadcast_lobby()
+
+    def _handle_select_hero(self, client_id: int, msg: dict) -> None:
+        if self.state.set_lobby_hero(client_id, msg.get("hero")):
+            self._broadcast_lobby()
 
     def _handle_move(self, client_id: int, msg: dict) -> None:
         """Sets a hero's move destination from a right-click move command.
@@ -339,19 +386,30 @@ class GameServer:
         hero.inventory.pop(slot)
         hero.item_cooldowns.pop(item.item_id, None)
 
-    def _handle_start_game(self, msg: dict) -> None:
-        """Transitions from the lobby to an active match.
+    def _handle_start_game(self, client_id: int, msg: dict) -> None:
+        """Spawns lobby players and transitions to an active match.
 
-        Only takes effect while waiting in the lobby with at least one player.
+        Only the host may start, only from the lobby, and only with at least one
+        player. Each lobby player is spawned on their chosen team/hero, then bound
+        to its server entity with a ``JOIN_ACK``.
 
         Args:
+            client_id: Server-assigned id of the requesting client.
             msg: ``START_GAME`` message with optional kill target ``"ktarget"``.
         """
-        if self.state.phase == GamePhase.WAITING and len(self.state.player_heroes) >= 1:
-            kill_target = msg.get("ktarget")
-            self.state.start_match(kill_target=kill_target)
-            print(f"[SERVER] Game started with {len(self.state.player_heroes)} players! "
-                  f"(first to {self.state.kill_target} kills)")
+        if self.state.phase != GamePhase.WAITING:
+            return
+        if not self.state.is_host(client_id) or not self.state.lobby:
+            return
+        self.state.spawn_from_lobby()
+        kill_target = msg.get("ktarget")
+        self.state.start_match(kill_target=kill_target)
+        for cid in list(self.state.player_heroes.keys()):
+            hero = self.state.get_hero(cid)
+            if hero is not None:
+                self._send_join_ack(cid, hero)
+        print(f"[SERVER] Game started with {len(self.state.player_heroes)} "
+              f"players! (first to {self.state.kill_target} kills)")
 
     def _announce_game_over(self) -> None:
         """Broadcasts a ``GAME_OVER`` message naming the winning team."""
@@ -366,8 +424,12 @@ class GameServer:
         for cid in to_remove:
             print(f"[SERVER] Client {cid} disconnected")
             self.state.remove_hero(cid)
+            self.state.remove_from_lobby(cid)
             handler = self.clients.pop(cid)
             handler.close()
+        # Keep the lobby roster fresh while players are still picking.
+        if to_remove and self.state.phase == GamePhase.WAITING:
+            self._broadcast_lobby()
 
     async def _broadcast_snapshot(self) -> None:
         """Sends the current authoritative state to every connected client.

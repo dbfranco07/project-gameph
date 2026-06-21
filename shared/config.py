@@ -31,13 +31,19 @@ T1_CORE = (800, 5200)
 T2_CORE = (5200, 800)
 
 # Each lane is a polyline from Team 1's base to Team 2's base. Mid is the
-# diagonal; top hugs the left+top edges, bot hugs the bottom+right edges.
+# diagonal; top hugs the left+top edges, bot hugs the bottom+right edges. The
+# corner waypoints are pushed toward the map corners so the (wide) lanes stay
+# well separated from the mid diagonal.
 LANES = ("top", "mid", "bot")
 LANE_PATHS = {
     "mid": [T1_CORE, T2_CORE],
-    "top": [T1_CORE, (700, 700), T2_CORE],
-    "bot": [T1_CORE, (5300, 5300), T2_CORE],
+    "top": [T1_CORE, (520, 520), T2_CORE],
+    "bot": [T1_CORE, (5480, 5480), T2_CORE],
 }
+
+# Visual width (px) of the lane strip drawn under the entities. Purely cosmetic
+# — units are not confined to the lane.
+LANE_WIDTH = 170
 
 # Each side spawns minions at, and respawns heroes at, its core.
 SPAWN_POSITIONS = {

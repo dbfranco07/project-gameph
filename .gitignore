@@ -11,3 +11,6 @@ wheels/
 
 .claude
 
+
+# Sprites
+client/assets/**/*.png

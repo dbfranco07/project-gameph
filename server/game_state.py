@@ -21,9 +21,10 @@ from shared.config import (
     MINION_VISION_RADIUS,
     TOWER_VISION_RADIUS,
 )
+from shared.config import MAX_PLAYERS
 from shared.geometry import point_along
 from shared.game_types import GamePhase, Team, EntityType
-from server.heroes import get_hero_def
+from server.heroes import get_hero_def, DEFAULT_HERO, list_hero_ids, hero_catalog
 from server.entity import Entity, Hero, Minion, Structure
 
 
@@ -38,6 +39,9 @@ class GameState:
         self.entities: dict[int, Entity] = {}  # entity_id -> Entity
         self.player_heroes: dict[int, int] = {}  # client_id -> entity_id
         self.player_hero_choice: dict[int, str] = {}  # client_id -> hero_id
+        # Pre-game lobby: client_id -> {"name", "team", "is_host"}. Heroes are
+        # not spawned until the host starts the match.
+        self.lobby: dict[int, dict] = {}
 
         # Match / scoring
         self.kill_target: int = DEFAULT_KILL_TARGET
@@ -58,6 +62,75 @@ class GameState:
 
         # Jungle camps: camp_id -> {"timer": seconds until respawn or 0.0 if up}.
         self.neutral_camps: dict[int, dict] = {}
+
+    # ----- Lobby ------------------------------------------------------------
+    def add_to_lobby(self, client_id: int, name: str) -> dict:
+        """Register a player in the pre-game lobby (no hero spawned yet).
+
+        The first player to join becomes the host. New players land on whichever
+        team currently has fewer lobby members.
+        """
+        is_host = not self.lobby
+        team = self._balanced_lobby_team()
+        self.lobby[client_id] = {"name": name, "team": int(team),
+                                 "is_host": is_host}
+        self.player_hero_choice.setdefault(client_id, DEFAULT_HERO)
+        return self.lobby[client_id]
+
+    def remove_from_lobby(self, client_id: int) -> None:
+        was_host = self.lobby.get(client_id, {}).get("is_host", False)
+        self.lobby.pop(client_id, None)
+        # Promote the earliest remaining player if the host left.
+        if was_host and self.lobby:
+            first = next(iter(self.lobby))
+            self.lobby[first]["is_host"] = True
+
+    def _balanced_lobby_team(self) -> Team:
+        t1 = sum(1 for p in self.lobby.values() if p["team"] == int(Team.TEAM1))
+        t2 = sum(1 for p in self.lobby.values() if p["team"] == int(Team.TEAM2))
+        return Team.TEAM1 if t1 <= t2 else Team.TEAM2
+
+    def set_lobby_team(self, client_id: int, team: int) -> bool:
+        """Move a lobby player to team 1/2 unless that side is full."""
+        if client_id not in self.lobby or team not in (1, 2):
+            return False
+        cap = max(1, MAX_PLAYERS // 2)
+        count = sum(1 for cid, p in self.lobby.items()
+                    if cid != client_id and p["team"] == team)
+        if count >= cap:
+            return False
+        self.lobby[client_id]["team"] = team
+        return True
+
+    def set_lobby_hero(self, client_id: int, hero_id: str) -> bool:
+        if client_id not in self.lobby or hero_id not in list_hero_ids():
+            return False
+        self.player_hero_choice[client_id] = hero_id
+        return True
+
+    def is_host(self, client_id: int) -> bool:
+        return self.lobby.get(client_id, {}).get("is_host", False)
+
+    def lobby_roster(self) -> list[dict]:
+        """Wire-friendly roster for the LOBBY_STATE broadcast."""
+        return [
+            {"cid": cid, "name": p["name"], "team": p["team"],
+             "hero": self.player_hero_choice.get(cid, DEFAULT_HERO),
+             "host": p["is_host"]}
+            for cid, p in self.lobby.items()
+        ]
+
+    def available_heroes(self) -> list[dict]:
+        """[{id, name}] for the lobby hero picker."""
+        cat = hero_catalog()
+        return [{"id": hid, "name": meta.get("name", hid)}
+                for hid, meta in cat.items()]
+
+    def spawn_from_lobby(self) -> None:
+        """Create a hero for every lobby player on their chosen team/hero."""
+        for cid, p in self.lobby.items():
+            self.add_hero(cid, p["name"], Team(p["team"]),
+                          hero_id=self.player_hero_choice.get(cid))
 
     # ----- Heroes -----------------------------------------------------------
     def set_hero_choice(self, client_id: int, hero_id: str) -> None:

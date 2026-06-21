@@ -21,16 +21,35 @@ from client.camera import Camera
 from client.interpolation import Interpolator
 from client.input_handler import InputHandler
 from client.renderer import Renderer
+from client.menu import MainMenu, LobbyScreen
+
+# Client screen states.
+SCREEN_MENU = "menu"
+SCREEN_LOBBY = "lobby"
+SCREEN_GAME = "game"
 
 
 class GameClient:
     def __init__(self, host: str, port: int, player_name: str,
-                 hero: str = "", kill_target: int = 0) -> None:
+                 hero: str = "", kill_target: int = 0,
+                 skip_menu: bool = False) -> None:
         self.host = host
         self.port = port
         self.player_name = player_name
         self.hero = hero
         self.kill_target = kill_target
+        self.skip_menu = skip_menu
+
+        # Screen / lobby state
+        self.screen_state = SCREEN_MENU
+        self.screen: pygame.Surface | None = None
+        self.menu: MainMenu | None = None
+        self.lobby: LobbyScreen | None = None
+        self.my_client_id: int | None = None
+        self.is_host = False
+        self.available_heroes: list[dict] = []
+        self.lobby_players: list[dict] = []
+        self._centered = False  # camera centered on hero at match start
 
         # Network
         self.sock: socket.socket | None = None
@@ -55,8 +74,9 @@ class GameClient:
         """Connect to the game server via TCP."""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(3.0)  # don't freeze the menu on a bad address
             self.sock.connect((self.host, self.port))
-            self.sock.setblocking(False)
+            self.sock.setblocking(False)  # clears the timeout for in-game use
             print(f"[CLIENT] Connected to {self.host}:{self.port}")
 
             # Send join message
@@ -72,75 +92,133 @@ class GameClient:
             return False
 
     def run(self) -> None:
-        """Main client loop."""
+        """Main client loop: menu -> lobby -> in-game."""
         pygame.init()
         # Fullscreen, but keep a fixed logical resolution: SCALED letterboxes /
         # scales to the display so all HUD layout + mouse coords stay in
         # SCREEN_WIDTH x SCREEN_HEIGHT space.
         screen = pygame.display.set_mode(
             (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.FULLSCREEN | pygame.SCALED)
-        pygame.display.set_caption(f"MOBA Lite — {self.player_name}")
+        pygame.display.set_caption("MOBA Lite")
         clock = pygame.time.Clock()
+        self.screen = screen
         self.renderer = Renderer(screen, self.camera)
+        self.menu = MainMenu(self.player_name, self.host, self.port)
+        self.lobby = LobbyScreen()
 
-        if not self.connect():
-            pygame.quit()
-            return
+        if self.skip_menu:
+            self._do_connect(self.player_name, self.host, self.port)
 
         running = True
         while running:
             dt = clock.get_time() / 1000.0  # seconds since last frame
-
-            # 1. Handle Pygame events
             events = pygame.event.get()
             for event in events:
                 if event.type == pygame.QUIT:
                     running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        running = False
-                    elif event.key == pygame.K_SPACE:
-                        msg = {"t": int(MsgType.START_GAME)}
-                        if self.kill_target:
-                            msg["ktarget"] = self.kill_target
-                        self._send(msg)
+            if not running:
+                break
 
-            # 2. Minimap clicks recenter the camera (consumed before gameplay input).
-            events = self._consume_minimap_clicks(events)
-
-            # 3. Send input messages to server (needs current entities for targeting)
-            entities = self.interpolator.get_entities()
-            messages = self.input_handler.process_events(
-                events, entities, self.my_team)
-            for msg in messages:
-                self._send(msg)
-
-            # 4. Receive and process server messages
-            self._receive()
-
-            # 5. Free camera: hold 1 to recenter on the hero, otherwise edge-pan.
-            entities = self.interpolator.get_entities()
-            self._update_camera(entities, dt)
-
-            # 6. Render
-            self.renderer.pending_cast = self.input_handler.pending_cast
-            self.renderer.attack_armed = self.input_handler.attack_armed
-            self.renderer.shop_open = self.input_handler.shop_open
-            self.renderer.draw_frame(
-                entities,
-                self.my_entity_id,
-                self.my_team,
-                self.phase,
-                self.tick,
-                self.score,
-                self.ktarget,
-                self.winner,
-            )
+            if self.screen_state == SCREEN_MENU:
+                running = self._tick_menu(events)
+            elif self.screen_state == SCREEN_LOBBY:
+                running = self._tick_lobby(events)
+            else:
+                running = self._tick_game(events, dt)
 
             clock.tick(CLIENT_FPS)
 
         self._disconnect()
         pygame.quit()
+
+    # ----- screen states ----------------------------------------------------
+    def _tick_menu(self, events) -> bool:
+        for event in events:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return False
+        action = self.menu.handle(events)
+        if action and action[0] == "connect":
+            _, name, host, port = action
+            self._do_connect(name, host, port)
+        self.menu.draw(self.screen)
+        pygame.display.flip()
+        return True
+
+    def _do_connect(self, name: str, host: str, port: int) -> None:
+        self.player_name = name
+        self.host = host
+        self.port = port
+        if self.connect():
+            self.screen_state = SCREEN_LOBBY
+            self.lobby.status = f"Connected to {host}:{port}"
+        else:
+            self.menu.error = f"Could not connect to {host}:{port}"
+
+    def _tick_lobby(self, events) -> bool:
+        for event in events:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return False
+        for action in self.lobby.handle(events):
+            if action[0] == "team":
+                self._send({"t": int(MsgType.SELECT_TEAM), "team": action[1]})
+            elif action[0] == "hero":
+                self._send({"t": int(MsgType.SELECT_HERO), "hero": action[1]})
+            elif action[0] == "start":
+                msg = {"t": int(MsgType.START_GAME)}
+                if self.kill_target:
+                    msg["ktarget"] = self.kill_target
+                self._send(msg)
+        self._receive()  # JOIN_ACK here flips us into SCREEN_GAME
+        # Mirror network state into the lobby view.
+        self.lobby.players = self.lobby_players
+        self.lobby.heroes = self.available_heroes
+        self.lobby.my_cid = self.my_client_id
+        self.lobby.is_host = self.is_host
+        if self.screen_state == SCREEN_LOBBY:
+            self.lobby.draw(self.screen)
+            pygame.display.flip()
+        return True
+
+    def _tick_game(self, events, dt: float) -> bool:
+        running = True
+        for event in events:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                running = False
+
+        # Minimap clicks recenter the camera (consumed before gameplay input).
+        events = self._consume_minimap_clicks(events)
+
+        # Send input messages (needs current entities for targeting).
+        entities = self.interpolator.get_entities()
+        messages = self.input_handler.process_events(
+            events, entities, self.my_team)
+        for msg in messages:
+            self._send(msg)
+
+        self._receive()
+
+        entities = self.interpolator.get_entities()
+        if not self._centered:
+            self._center_on_hero(entities)
+        self._update_camera(entities, dt)
+
+        self.renderer.pending_cast = self.input_handler.pending_cast
+        self.renderer.attack_armed = self.input_handler.attack_armed
+        self.renderer.shop_open = self.input_handler.shop_open
+        self.renderer.draw_frame(
+            entities, self.my_entity_id, self.my_team, self.phase, self.tick,
+            self.score, self.ktarget, self.winner)
+        return running
+
+    def _center_on_hero(self, entities) -> None:
+        """Snap the camera onto our hero once it appears at match start."""
+        if self.my_entity_id is None:
+            return
+        for ent in entities:
+            if ent["id"] == self.my_entity_id:
+                self.camera.follow(ent["x"], ent["y"])
+                self._centered = True
+                return
 
     def _consume_minimap_clicks(self, events):
         """Recenter the camera on left-clicks inside the minimap; drop those
@@ -219,7 +297,17 @@ class GameClient:
     def _handle_server_message(self, msg: dict) -> None:
         msg_type = msg.get("t")
 
-        if msg_type == MsgType.JOIN_ACK:
+        if msg_type == MsgType.LOBBY_WELCOME:
+            self.my_client_id = msg.get("cid")
+            self.is_host = msg.get("host", False)
+            self.available_heroes = msg.get("heroes", [])
+            print(f"[CLIENT] In lobby as client {self.my_client_id}"
+                  f"{' (host)' if self.is_host else ''}")
+
+        elif msg_type == MsgType.PLAYER_LIST:
+            self.lobby_players = msg.get("players", [])
+
+        elif msg_type == MsgType.JOIN_ACK:
             self.my_entity_id = msg["eid"]
             self.my_team = msg["team"]
             hero_def = msg.get("hero_def") or {}
@@ -231,6 +319,9 @@ class GameClient:
             self.input_handler.set_hero_abilities(abilities)
             self.renderer.set_item_catalog(catalog)
             self.input_handler.set_item_catalog(catalog)
+            # Match has begun for us — leave the lobby and bind the in-game view.
+            self._centered = False
+            self.screen_state = SCREEN_GAME
             print(f"[CLIENT] Joined as entity {self.my_entity_id}, Team {self.my_team}")
 
         elif msg_type == MsgType.SNAPSHOT:
@@ -262,6 +353,7 @@ def run_client() -> None:
     name = "Player"
     hero = ""
     kill_target = 0
+    skip_menu = False
 
     args = sys.argv[1:]
     for i, arg in enumerate(args):
@@ -275,7 +367,9 @@ def run_client() -> None:
             hero = args[i + 1]
         elif arg == "--ktarget" and i + 1 < len(args):
             kill_target = int(args[i + 1])
+        elif arg == "--skip-menu":
+            skip_menu = True  # auto-connect straight into the lobby (quick test)
 
     client = GameClient(host=host, port=port, player_name=name,
-                        hero=hero, kill_target=kill_target)
+                        hero=hero, kill_target=kill_target, skip_menu=skip_menu)
     client.run()

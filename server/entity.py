@@ -213,6 +213,10 @@ class Hero(Entity):
         d["mana"] = self.mana
         d["mmana"] = self.max_mana
         d["resp"] = round(self.respawn_timer, 1)
+        # Lightweight render hint: True while the upper half is detached (R Split)
+        # so the client can swap to the flying-torso sprite. Cheap one-bit flag.
+        if self.ability_state.get("split"):
+            d["split"] = True
         # Extra stats for the HUD panel.
         d["ad"] = self.effective_damage()
         d["ms"] = int(self.move_speed + self.bonus_speed())

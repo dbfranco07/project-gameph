@@ -16,6 +16,7 @@ from shared.config import (
     MAP_HEIGHT,
     LANE_PATHS,
     JUNGLE_CAMPS,
+    LANE_WIDTH,
     COLOR_BG,
     COLOR_TEAM1,
     COLOR_TEAM2,
@@ -30,6 +31,7 @@ from shared.config import (
 )
 from shared.game_types import Team, GamePhase, EntityType
 from client.camera import Camera
+from client.sprites import SpriteManager, facing_from_delta
 
 
 def _team_color(team: int) -> tuple[int, int, int]:
@@ -44,6 +46,11 @@ class Renderer:
     def __init__(self, screen: pygame.Surface, camera: Camera) -> None:
         self.screen = screen
         self.camera = camera
+        # Optional sprite art (falls back to primitive shapes when absent).
+        self.sprites = SpriteManager()
+        # Per-entity render memory for deriving facing + move/idle from motion:
+        # id -> {"x", "y", "facing"}.
+        self._unit_pose: dict[int, dict] = {}
         self.font = pygame.font.SysFont("monospace", 14)
         self.font_large = pygame.font.SysFont("monospace", 24)
         self.font_huge = pygame.font.SysFont("monospace", 48, bold=True)
@@ -167,7 +174,7 @@ class Renderer:
         # corners). Jungle camps marked as faint circles in the dead zones.
         for path in LANE_PATHS.values():
             pts = [self.camera.world_to_screen(wx, wy) for wx, wy in path]
-            pygame.draw.lines(self.screen, COLOR_LANE, False, pts, 90)
+            pygame.draw.lines(self.screen, COLOR_LANE, False, pts, LANE_WIDTH)
         for cx, cy, _count in JUNGLE_CAMPS:
             c = self.camera.world_to_screen(cx, cy)
             pygame.draw.circle(self.screen, COLOR_LANE, c, 55, 3)
@@ -204,9 +211,11 @@ class Renderer:
             return
         if et == EntityType.MINION:
             if ent.get("body"):  # a Manananggal's detached lower body
-                color = _team_color(ent.get("tm", 0))
-                pygame.draw.circle(self.screen, color, (sx, sy), radius)
-                pygame.draw.circle(self.screen, (200, 40, 40), (sx, sy), radius + 3, 3)
+                if not self._blit_sprite("manananggal", "split_body", "s",
+                                         sx, sy, radius):
+                    color = _team_color(ent.get("tm", 0))
+                    pygame.draw.circle(self.screen, color, (sx, sy), radius)
+                    pygame.draw.circle(self.screen, (200, 40, 40), (sx, sy), radius + 3, 3)
                 self._draw_hp_bar(ent, sx, sy, radius)
                 return
             self._draw_unit(ent, sx, sy, radius, hp_bar=True, name=False, ring=False)
@@ -218,7 +227,11 @@ class Renderer:
 
     def _draw_unit(self, ent, sx, sy, radius, hp_bar, name, ring) -> None:
         color = _team_color(ent.get("tm", 0))
-        pygame.draw.circle(self.screen, color, (sx, sy), radius)
+        action, facing = self._resolve_pose(ent)
+        drew_sprite = self._blit_sprite(
+            ent.get("hid", ""), action, facing, sx, sy, radius)
+        if not drew_sprite:
+            pygame.draw.circle(self.screen, color, (sx, sy), radius)
         if ring:
             pygame.draw.circle(self.screen, (255, 255, 255), (sx, sy), radius + 3, 2)
         if hp_bar:
@@ -232,6 +245,40 @@ class Renderer:
             label = self.font.render(label_text, True, COLOR_TEXT)
             self.screen.blit(label, (sx - label.get_width() // 2,
                                      sy - radius - 26))
+
+    def _resolve_pose(self, ent) -> tuple[str, str]:
+        """Derive (action, facing) for a unit from its motion since last frame.
+
+        Facing follows the movement direction (kept when standing still); action
+        is move/idle by whether it moved, overridden to the split flyer pose
+        while a Manananggal's upper half is detached.
+        """
+        eid = ent.get("id")
+        x, y = ent.get("x", 0.0), ent.get("y", 0.0)
+        prev = self._unit_pose.get(eid)
+        facing = prev["facing"] if prev else "s"
+        moving = False
+        if prev is not None:
+            dx, dy = x - prev["x"], y - prev["y"]
+            if (dx * dx + dy * dy) > 0.25:  # moved noticeably this frame
+                facing = facing_from_delta(dx, dy)
+                moving = True
+        self._unit_pose[eid] = {"x": x, "y": y, "facing": facing}
+
+        if ent.get("split"):
+            return "split_flyer", facing
+        return ("move" if moving else "idle"), facing
+
+    def _blit_sprite(self, hero_id, action, facing, sx, sy, radius) -> bool:
+        """Blit a centered sprite frame if one exists; return False to fall back."""
+        surf = self.sprites.hero_frame(hero_id, action, facing, time.time())
+        if surf is None:
+            return False
+        target = max(8, int(radius * 3.0))
+        if surf.get_height() != target:
+            surf = pygame.transform.smoothscale(surf, (target, target))
+        self.screen.blit(surf, (sx - target // 2, sy - target // 2))
+        return True
 
     def _draw_structure(self, ent, sx, sy, radius) -> None:
         rect = pygame.Rect(sx - radius, sy - radius, radius * 2, radius * 2)

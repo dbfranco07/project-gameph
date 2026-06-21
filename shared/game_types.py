@@ -46,10 +46,13 @@ class MsgType(IntEnum):
     START_GAME = 7
     CHAT = 8
     STOP = 9
+    SELECT_TEAM = 15    # lobby: switch to team 1/2
+    SELECT_HERO = 16    # lobby: pick a hero_id
 
     # Server -> Client
     SNAPSHOT = 10
     JOIN_ACK = 11
     EVENT = 12
     GAME_OVER = 13
-    PLAYER_LIST = 14
+    PLAYER_LIST = 14    # lobby roster broadcast (teams/heroes/host)
+    LOBBY_WELCOME = 17  # sent once on join: your client id, host flag, catalogs
