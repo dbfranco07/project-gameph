@@ -122,7 +122,7 @@ class Hero(Entity):
     name: str = ""
     hero_id: str = ""  # which hero definition this is
     move_speed: float = 250.0
-    attack_damage: int = 55
+    attack_damage: int = 55 # this is physical attack also
     sp_atk: int = 0
     phys_def: int = 20
     sp_def: int = 20

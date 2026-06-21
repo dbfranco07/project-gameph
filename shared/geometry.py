@@ -55,14 +55,17 @@ def mirror_rect(rect: tuple[float, float, float, float], width: float,
 
 # ----- Intersection tests (vision blocking + obstacle collision) -------------
 
-def point_in_rect(px: float, py: float,
+def point_in_rect(px: float, 
+                  py: float,
                   rect: tuple[float, float, float, float]) -> bool:
     """True if (px, py) lies inside an (x, y, w, h) top-left-anchored rect."""
     x, y, w, h = rect
     return x <= px <= x + w and y <= py <= y + h
 
 
-def circle_rect_overlap(cx: float, cy: float, r: float,
+def circle_rect_overlap(cx: float, 
+                        cy: float, 
+                        r: float,
                         rect: tuple[float, float, float, float]) -> bool:
     """True if a circle overlaps an axis-aligned rect (x, y, w, h)."""
     x, y, w, h = rect
@@ -72,7 +75,10 @@ def circle_rect_overlap(cx: float, cy: float, r: float,
     return dx * dx + dy * dy <= r * r
 
 
-def segment_intersects_rect(x0: float, y0: float, x1: float, y1: float,
+def segment_intersects_rect(x0: float, 
+                            y0: float, 
+                            x1: float, 
+                            y1: float,
                             rect: tuple[float, float, float, float]) -> bool:
     """True if segment (x0,y0)->(x1,y1) crosses or starts inside an (x,y,w,h) rect.
 

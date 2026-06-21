@@ -99,7 +99,9 @@ def area_dmg(ctx, dmg, radius, dtype="physical") -> list:
     hit = enemies_in_radius(ctx.state, ctx.caster.team, ctx.tx, ctx.ty, radius)
     for e in hit:
         ctx.state.damage_events.append(
-            {"src": ctx.caster.entity_id, "tgt": e.entity_id, "amt": dmg,
+            {"src": ctx.caster.entity_id, 
+             "tgt": e.entity_id, 
+             "amt": dmg,
              "dtype": dtype})
     return hit
 
@@ -129,12 +131,13 @@ def target_dmg(ctx, dmg, range, dtype="physical") -> object | None:
 
 def buff(ctx, duration, speed_bonus=0, dmg_bonus=0, radius=0) -> list:
     """Apply a temporary speed/damage buff to the caster (or allies in radius)."""
-    base = {"speed_bonus": speed_bonus, "dmg_bonus": dmg_bonus,
+    base = {"speed_bonus": speed_bonus, 
+            "dmg_bonus": dmg_bonus,
             "remaining": duration}
     if radius and radius > 0:
         targets = [e for e in allies_in_radius(
-            ctx.state, ctx.caster.team, ctx.caster.x, ctx.caster.y, radius)
-            if isinstance(e, Hero)]
+            ctx.state, ctx.caster.team, ctx.caster.x, ctx.caster.y, radius
+        ) if isinstance(e, Hero)]
     else:
         targets = [ctx.caster]
     for e in targets:

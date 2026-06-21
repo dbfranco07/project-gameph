@@ -70,7 +70,9 @@ class GameState:
         # first wave + neutrals + runes appear), then counts UP as elapsed time.
         self.match_clock: float = 0.0
 
-    # ----- Lobby ------------------------------------------------------------
+    # --------------------------------------------------------------------------
+    # Lobby
+    # --------------------------------------------------------------------------
     def add_to_lobby(self, client_id: int, name: str) -> dict:
         """Register a player in the pre-game lobby (no hero spawned yet).
 
@@ -79,7 +81,8 @@ class GameState:
         """
         is_host = not self.lobby
         team = self._balanced_lobby_team()
-        self.lobby[client_id] = {"name": name, "team": int(team),
+        self.lobby[client_id] = {"name": name, 
+                                 "team": int(team),
                                  "is_host": is_host}
         self.player_hero_choice.setdefault(client_id, DEFAULT_HERO)
         return self.lobby[client_id]
@@ -139,7 +142,9 @@ class GameState:
             self.add_hero(cid, p["name"], Team(p["team"]),
                           hero_id=self.player_hero_choice.get(cid))
 
-    # ----- Heroes -----------------------------------------------------------
+    # --------------------------------------------------------------------------
+    # Heroes
+    # --------------------------------------------------------------------------
     def set_hero_choice(self, client_id: int, hero_id: str) -> None:
         self.player_hero_choice[client_id] = hero_id
 
@@ -225,7 +230,9 @@ class GameState:
     def heroes(self) -> list[Hero]:
         return [e for e in self.entities.values() if isinstance(e, Hero)]
 
-    # ----- Match lifecycle --------------------------------------------------
+    # --------------------------------------------------------------------------
+    # Match lifecycle
+    # --------------------------------------------------------------------------
     def start_match(self, kill_target: int | None = None) -> None:
         """Transition WAITING -> PLAYING and spawn the lane structures."""
         if kill_target is not None:
@@ -282,7 +289,7 @@ class GameState:
     def _spawn_map(self) -> None:
         """Spawn static obstacles (walls + destructible trees) from the config."""
         for (x, y, w, h) in WALLS:
-            wall = Wall(x=x, y=y, w=w, h=h,radius=math.hypot(w, h) / 2)
+            wall = Wall(x=x, y=y, w=w, h=h, radius=math.hypot(w, h) / 2)
             self.entities[wall.entity_id] = wall
         for (x, y, w, h) in TREES:
             tree = Tree(x=x, y=y, w=w, h=h, radius=math.hypot(w, h) / 2)
@@ -332,7 +339,9 @@ class GameState:
                 return e
         return None
 
-    # ----- Snapshot / vision ------------------------------------------------
+    # --------------------------------------------------------------------------
+    # Snapshot / vision
+    # --------------------------------------------------------------------------
     def build_snapshot(self) -> list[dict]:
         """Build a list of entity snapshots for broadcast (no fog)."""
         return [e.to_snapshot() for e in self.entities.values()]

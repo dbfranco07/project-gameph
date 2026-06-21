@@ -37,10 +37,13 @@ towers:
 
 # Neutral jungle camps (Team 1 frame; mirror builds the rest). (x, y, count).
 jungle_camps:
-  - [2100, 1800, 3]
-  - [1700, 3100, 3]
+  - [1600, 2600, 3]
+  - [2000, 3100, 2]
+  - [2200, 4600, 3]
+  - [3000, 4000, 2]
+  - [3000, 4600, 3]
+  - [3600, 4600, 2]
 
-# --- New map features (used from Phase 3 on) -------------------------------
 
 # Wave-1 minion meeting points per lane (single, shared between sides). Wave-1
 # minion speed is tuned so both sides arrive here together, then reverts.

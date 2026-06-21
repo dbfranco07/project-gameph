@@ -59,9 +59,16 @@ from shared.game_types import CastType
 # Per-attacker target preference: lower number = higher priority. A category
 # absent from the map means "never auto-attack that type".
 _PRIORITY = {
-    "minion": {EntityType.MINION: 0, EntityType.HERO: 1, EntityType.TOWER: 2, EntityType.BASE: 2},
-    "structure": {EntityType.MINION: 0, EntityType.HERO: 1},
-    "hero": {EntityType.HERO: 0, EntityType.MINION: 1, EntityType.TOWER: 2, EntityType.BASE: 2},
+    "minion": {EntityType.MINION: 0, 
+               EntityType.HERO: 1, 
+               EntityType.TOWER: 2, 
+               EntityType.BASE: 2},
+    "structure": {EntityType.MINION: 0, 
+                  EntityType.HERO: 1},
+    "hero": {EntityType.HERO: 0, 
+             EntityType.MINION: 1, 
+             EntityType.TOWER: 2, 
+             EntityType.BASE: 2},
 }
 
 
@@ -267,17 +274,21 @@ RUNE_HASTE_SPEED = 220         # near-max move speed bonus
 def apply_rune_buff(hero: Hero, kind: str) -> None:
     """Grant a hero the timed buff a slain rune drops."""
     if kind == "haste":
-        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, source="rune:haste",
+        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, 
+                                      source="rune:haste",
                                       speed_bonus=RUNE_HASTE_SPEED))
     elif kind == "double_damage":
         hero.buffs.append(make_effect(RUNE_BUFF_DURATION,
-                                      source="rune:double_damage", dmg_mult=2.0))
+                                      source="rune:double_damage", 
+                                      dmg_mult=2.0))
     elif kind == "cdr_50":
-        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, source="rune:cdr_50",
+        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, 
+                                      source="rune:cdr_50",
                                       cd_mult=0.5))
     elif kind == "regen_10x":
         # 10x current regen, but the buff fizzles the moment the hero is hit.
-        eff = make_effect(RUNE_REGEN_DURATION, source="rune:regen_10x",
+        eff = make_effect(RUNE_REGEN_DURATION, 
+                          source="rune:regen_10x",
                           hp_regen_bonus=hero.hp_regen * 9.0,
                           mana_regen_bonus=hero.mana_regen * 9.0)
         eff["cancel_on_hit"] = True
@@ -789,9 +800,11 @@ def system_damage_death(state: GameState, dt: float) -> None:
 def _reward(state: GameState, hero: Hero, kind: str, amt: int) -> None:
     """Record a gold/xp reward popup for the client (rendered as floating text)."""
     if amt:
-        state.combat_events.append(
-            {"k": kind, "amt": int(amt), "x": round(hero.x, 1),
-             "y": round(hero.y, 1), "eid": hero.entity_id})
+        state.combat_events.append({"k": kind, 
+                                    "amt": int(amt), 
+                                    "x": round(hero.x, 1),
+                                    "y": round(hero.y, 1), 
+                                    "eid": hero.entity_id})
 
 
 def _provoke_camp(state: GameState, camp_id: int) -> None:
