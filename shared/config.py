@@ -56,7 +56,7 @@ HERO_RESPAWN_BASE = 5.0          # base respawn seconds
 HERO_RESPAWN_PER_LEVEL = 1.0     # extra seconds per hero level
 
 # Win conditions
-DEFAULT_KILL_TARGET = 20         # first team to this many hero kills wins
+DEFAULT_KILL_TARGET = 100         # first team to this many hero kills wins
 
 # Structures: towers + core. lane_order: outer=0, inner=1, core=2.
 # A structure only takes damage once every same-team structure with a

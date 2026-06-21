@@ -70,9 +70,9 @@ class GameServer:
         """
         validate_all()    # fail fast on malformed hero definitions
         validate_items()  # fail fast on malformed item definitions
-        server = await asyncio.start_server(
-            self._on_connect, self.host, self.port
-        )
+        server = await asyncio.start_server(self._on_connect, 
+                                            self.host, 
+                                            self.port)
         addr = server.sockets[0].getsockname()
         print(f"[SERVER] Listening on {addr[0]}:{addr[1]}")
         print(f"[SERVER] Tick rate: {SERVER_TICK_RATE}/s | Map: {MAP_WIDTH}x{MAP_HEIGHT}")
@@ -241,13 +241,13 @@ class GameServer:
                 optional target entity id ``"tid"``.
         """
         hero = self.state.get_hero(client_id)
-        if hero is None or not hero.alive:
+        if (hero is None) or (not hero.alive):
             return
         tx = msg.get("tx")
         ty = msg.get("ty")
         tid = msg.get("tid")
         target = self.state.entities.get(tid) if tid is not None else None
-        if target is not None and target.team != hero.team and target.alive:
+        if (target is not None) and (target.team != hero.team) and target.alive:
             hero.forced_target_id = tid
             hero.target_x = target.x
             hero.target_y = target.y

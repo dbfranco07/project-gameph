@@ -52,8 +52,10 @@ def _begin_split(ctx) -> None:
     body.hp = body.max_hp = max(1, int(hero.max_hp * BODY_HP_FRAC))
     state.entities[body.entity_id] = body
     hero.buffs.append({
-        "split": True, "invuln": True,
-        "dmg_bonus": SPLIT_DMG_BONUS, "range_bonus": SPLIT_RANGE_BONUS,
+        "split": True, 
+        "invuln": True,
+        "dmg_bonus": SPLIT_DMG_BONUS, 
+        "range_bonus": SPLIT_RANGE_BONUS,
         "remaining": SPLIT_DURATION,
     })
     hero.ability_state["split"] = {"body_id": body.entity_id}
@@ -117,7 +119,8 @@ class Manananggal(HeroDef):
     def on_ability_cast(ctx, key):
         # Bloodlust: every skill cast adds a short, stacking haste.
         ctx.caster.buffs.append({
-            "speed_bonus": BLOODLUST_SPEED, "atkspd_pct": BLOODLUST_ATKSPD,
+            "speed_bonus": BLOODLUST_SPEED, 
+            "atkspd_pct": BLOODLUST_ATKSPD,
             "remaining": BLOODLUST_DUR,
         })
 

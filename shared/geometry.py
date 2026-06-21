@@ -16,7 +16,8 @@ def polyline_length(points: list[tuple[float, float]]) -> float:
     return total
 
 
-def point_along(points: list[tuple[float, float]], t: float) -> tuple[float, float]:
+def point_along(points: list[tuple[float, float]], 
+                t: float) -> tuple[float, float]:
     """Point at arc-length fraction ``t`` in [0, 1] along the polyline."""
     if t <= 0.0:
         return points[0]

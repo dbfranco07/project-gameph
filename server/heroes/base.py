@@ -14,7 +14,10 @@ the client via `describe()`; the cast **code** stays server-side.
 from __future__ import annotations
 
 from shared.config import (
-    HERO_MOVE_SPEED, MANA_REGEN_PER_SEC, HERO_HP_REGEN_PER_SEC)
+    HERO_MOVE_SPEED, 
+    MANA_REGEN_PER_SEC, 
+    HERO_HP_REGEN_PER_SEC
+)
 from shared.game_types import CastType
 
 
