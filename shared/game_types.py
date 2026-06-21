@@ -13,6 +13,8 @@ class EntityType(IntEnum):
     TOWER = 3
     BASE = 4
     PROJECTILE = 5
+    WALL = 6     # permanent unwalkable + vision-blocking rect
+    TREE = 7     # like a wall but destructible
 
 
 class GamePhase(IntEnum):
@@ -48,6 +50,7 @@ class MsgType(IntEnum):
     STOP = 9
     SELECT_TEAM = 15    # lobby: switch to team 1/2
     SELECT_HERO = 16    # lobby: pick a hero_id
+    LEVEL_ABILITY = 18  # spend a skill point on an ability (Q/W/E/R)
 
     # Server -> Client
     SNAPSHOT = 10

@@ -1,182 +1,127 @@
-# Server
-SERVER_TICK_RATE = 20  # ticks per second
-TICK_DURATION = 1.0 / SERVER_TICK_RATE  # seconds per tick
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 7777
-MAX_PLAYERS = 10
+"""Game configuration.
 
-# Client
-CLIENT_FPS = 60
-SCREEN_WIDTH = 1280
-SCREEN_HEIGHT = 720
+All tuning lives in the YAML files under ``config/`` at the repo root; this module
+loads them at import and re-exports the same module-level constant names the rest
+of the codebase already imports (``MINION_HP``, ``LANE_PATHS``, ``COLOR_BG``, …)
+plus the newer ones. Editing a YAML value changes the game on next launch — no
+code edits needed.
 
-# Camera (free-roam, Dota-style). Mouse near a screen edge pans the view; press
-# the recenter key (1) to snap back to your hero.
-EDGE_PAN_MARGIN = 40             # px from a screen edge that triggers panning
-CAMERA_PAN_SPEED = 1400          # world units/sec while edge-panning
+Heroes are deliberately NOT data-driven here: each hero is its own Python class
+(see ``server/heroes/``). Only non-hero tuning is YAML.
 
-# Map (square so the three lanes are symmetric corner-to-corner).
-MAP_WIDTH = 6000
-MAP_HEIGHT = 6000
-MAP_CENTER = (MAP_WIDTH / 2, MAP_HEIGHT / 2)  # 3000, 3000
+Map features are authored for one side (Team 1) in ``map.yaml`` and mirrored
+through the map center to build Team 2's set.
+"""
+from __future__ import annotations
 
-# Gameplay
-HERO_RADIUS = 20
-HERO_MOVE_SPEED = 250  # units per second
-HERO_BASE_HP = 600
-HERO_BASE_MANA = 200
+from pathlib import Path
 
-# Bases sit in opposite corners. Team 1 bottom-left, Team 2 top-right.
-T1_CORE = (800, 5200)
-T2_CORE = (5200, 800)
+import yaml
 
-# Each lane is a polyline from Team 1's base to Team 2's base. Mid is the
-# diagonal; top hugs the left+top edges, bot hugs the bottom+right edges. The
-# corner waypoints are pushed toward the map corners so the (wide) lanes stay
-# well separated from the mid diagonal.
-LANES = ("top", "mid", "bot")
-LANE_PATHS = {
-    "mid": [T1_CORE, T2_CORE],
-    "top": [T1_CORE, (520, 520), T2_CORE],
-    "bot": [T1_CORE, (5480, 5480), T2_CORE],
-}
+from shared.geometry import mirror_point
 
-# Visual width (px) of the lane strip drawn under the entities. Purely cosmetic
-# — units are not confined to the lane.
-LANE_WIDTH = 170
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
-# Each side spawns minions at, and respawns heroes at, its core.
-SPAWN_POSITIONS = {
-    1: T1_CORE,
-    2: T2_CORE,
-}
 
-# Combat (base hero melee/ranged stats; data-driven heroes override these)
-HERO_ATTACK_DAMAGE = 55
-HERO_ATTACK_RANGE = 160
-HERO_ATTACK_INTERVAL = 1.0       # seconds between auto-attacks
-BASIC_PROJECTILE_SPEED = 1100    # speed of ranged basic-attack projectiles
-BASIC_PROJECTILE_RADIUS = 10
-ATTACK_CLICK_PIXELS = 14         # cursor pickup tolerance for "A + click enemy"
-HERO_RESPAWN_BASE = 5.0          # base respawn seconds
-HERO_RESPAWN_PER_LEVEL = 1.0     # extra seconds per hero level
+def _load(name: str) -> dict:
+    with open(_CONFIG_DIR / f"{name}.yaml", "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
 
-# Win conditions
-DEFAULT_KILL_TARGET = 100         # first team to this many hero kills wins
 
-# Structures: towers + core. lane_order: outer=0, inner=1, core=2.
-# A structure only takes damage once every same-team structure with a
-# smaller lane_order has been destroyed (outer -> inner -> core).
-TOWER_HP = 1600
-TOWER_DAMAGE = 130
-TOWER_RANGE = 620
-TOWER_INTERVAL = 1.0
-TOWER_RADIUS = 40
-TOWER_PROJECTILE_SPEED = 900     # towers fire visible shots
-CORE_HP = 3200
-CORE_DAMAGE = 150
-CORE_RADIUS = 60
-STRUCTURE_GOLD = 150             # gold to the killer when a structure falls
+def _inject_flat(data: dict) -> None:
+    """Expose every scalar key as an UPPER_CASE module constant."""
+    for key, value in data.items():
+        globals()[key.upper()] = value
 
-# Tower placement along each lane polyline, as arc-length fractions from the
-# Team 1 base (t=0) to the Team 2 base (t=1). lane_order: outer=0 (closest to
-# mid, falls first) -> inner=1 -> base tower=2 (closest to own core).
-# Index by team -> list of (lane_order, t, kind).
+
+# --- Flat scalar config files ----------------------------------------------
+_game = _load("game")
+_colors = _game.pop("colors", {})
+_inject_flat(_game)
+for _name, _rgb in _colors.items():
+    globals()[f"COLOR_{_name.upper()}"] = tuple(_rgb)
+
+_inject_flat(_load("combat"))
+_inject_flat(_load("economy"))
+_inject_flat(_load("structures"))
+_inject_flat(_load("minions"))
+_inject_flat(_load("neutrals"))
+
+# --- Derived scalars --------------------------------------------------------
+TICK_DURATION = 1.0 / SERVER_TICK_RATE  # seconds per tick  # noqa: F821
+MAP_CENTER = (MAP_WIDTH / 2, MAP_HEIGHT / 2)  # noqa: F821
+HERO_VISION_RADIUS = VISION_RADIUS  # noqa: F821
+
+
+# --- Map: authored for Team 1, mirrored through the center ------------------
+def _mirror(p) -> tuple[float, float]:
+    return mirror_point((p[0], p[1]), MAP_WIDTH, MAP_HEIGHT)  # noqa: F821
+
+
+_map = _load("map")
+
+T1_CORE = tuple(_map["core"])
+T2_CORE = _mirror(T1_CORE)
+
+SPAWN_POSITIONS = {1: T1_CORE, 2: T2_CORE}
+
+LANE_WIDTH = _map["lane_width"]
+LANES = tuple(_map["lanes"].keys())
+# Lane polylines are symmetric, authored in full; store waypoints as tuples.
+LANE_PATHS = {lane: [tuple(pt) for pt in pts]
+              for lane, pts in _map["lanes"].items()}
+
+# Towers authored for Team 1 (lane_order, t, kind); Team 2 mirrors t -> 1 - t.
+_t1_towers = [(t["lane_order"], t["t"], t["kind"]) for t in _map["towers"]]
 LANE_TOWERS = {
-    1: [(2, 0.18, "base"), (1, 0.30, "inner"), (0, 0.42, "outer")],
-    2: [(0, 0.58, "outer"), (1, 0.70, "inner"), (2, 0.82, "base")],
+    1: _t1_towers,
+    # Mirror t -> 1 - t; reverse so Team 2 reads outer -> inner -> base.
+    2: [(lo, round(1.0 - t, 6), kind)
+        for (lo, t, kind) in reversed(_t1_towers)],
 }
 
-# Creeps / minions. Base values double as the melee minion's stats.
-MINION_HP = 130
-MINION_DAMAGE = 18
-MINION_RANGE = 160
-MINION_INTERVAL = 1.0
-MINION_SPEED = 130
-MINION_RADIUS = 12
-MINION_GOLD = 25
-MINION_XP = 30
-
-# Ranged minion: fragile, hits from afar (fires a projectile), worth a bit more.
-RANGED_MINION_HP = 90
-RANGED_MINION_DAMAGE = 22
-RANGED_MINION_RANGE = 500
-RANGED_MINION_GOLD = 30
-RANGED_MINION_XP = 35
-RANGED_MINION_PROJECTILE_SPEED = 900
-
-# Cart (siege) minion: tanky, slow, big bounty. Added every 4th wave per lane.
-CART_MINION_HP = 600
-CART_MINION_DAMAGE = 30
-CART_MINION_RANGE = 200
-CART_MINION_SPEED = 100
-CART_MINION_RADIUS = 18
-CART_MINION_GOLD = 60
-CART_MINION_XP = 80
-
-# Wave composition (per lane, per team, per wave).
-CREEP_WAVE_INTERVAL = 25.0       # seconds between waves
-CREEP_MELEE_PER_WAVE = 3
-CREEP_RANGED_PER_WAVE = 1
-CREEP_CART_EVERY = 4             # a cart joins each lane every Nth wave
-
-# Neutral jungle camps (passive: idle until attacked, then fight back; respawn).
-NEUTRAL_HP = 200
-NEUTRAL_DAMAGE = 20
-NEUTRAL_RANGE = 160
-NEUTRAL_INTERVAL = 1.0
-NEUTRAL_RADIUS = 14
-NEUTRAL_GOLD = 40
-NEUTRAL_XP = 45
-NEUTRAL_RESPAWN = 60.0           # seconds to respawn a cleared camp
-# Camps sit in the two triangular dead zones between mid and the side lanes.
-# (center_x, center_y, monster_count)
-JUNGLE_CAMPS = [
-    (2100, 1800, 3),   # upper-left zone (between top and mid)
-    (1700, 3100, 3),
-    (3900, 4200, 3),   # lower-right zone (between mid and bot)
-    (4300, 2900, 3),
+# Jungle camps authored for one dead zone; the mirror fills the other.
+_t1_camps = [tuple(c) for c in _map["jungle_camps"]]
+JUNGLE_CAMPS = _t1_camps + [
+    (*_mirror((cx, cy)), n) for (cx, cy, n) in _t1_camps
 ]
 
-# Economy / leveling
-HERO_KILL_GOLD = 200
-HERO_KILL_XP = 150
-PASSIVE_GOLD_PER_SEC = 2.0
-MANA_REGEN_PER_SEC = 5.0
-HERO_HP_REGEN_PER_SEC = 3.0      # default slow hp regen (heroes may override)
+# Wave-1 meeting points per lane (single, shared between sides).
+MEET_POINTS = {lane: tuple(pt) for lane, pt in _map.get("meet_points", {}).items()}
 
-# Last-hit economy: the killer gets full gold; nearby allies get a share of gold
-# but full XP regardless of who landed the killing blow.
-MINION_ASSIST_GOLD_FRACTION = 1.0 / 3.0
-GOLD_SHARE_RADIUS = 900          # allies within this of a dying minion get share gold
-XP_SHARE_RADIUS = 900            # allies within this of a dying minion get full XP
+# Spawn-point regen zone radius around each core.
+SPAWN_ZONE_RADIUS = _map.get("spawn_zone_radius", 0)
 
-# Items
-ITEM_SLOTS = 6                   # inventory capacity per hero
-STARTING_GOLD = 600             # gold each hero starts a match with
-MAX_LEVEL = 18
-XP_BASE = 100                    # xp needed for level 2
-XP_PER_LEVEL = 120               # extra xp per subsequent level
-HP_PER_LEVEL = 80                # max-hp gained per level
-DAMAGE_PER_LEVEL = 6             # attack-damage gained per level
+# Runes: authored Team-1 + mirror, plus any center-symmetric singles.
+_center = _map.get("center", {})
+RUNES = (
+    [{"pos": tuple(r["pos"]), "buff": r["buff"], "patrol": r.get("patrol", 400)}
+     for r in _map.get("runes", [])]
+    + [{"pos": _mirror(r["pos"]), "buff": r["buff"], "patrol": r.get("patrol", 400)}
+       for r in _map.get("runes", [])]
+    + [{"pos": tuple(r["pos"]), "buff": r["buff"], "patrol": r.get("patrol", 400)}
+       for r in _center.get("runes", [])]
+)
 
-# Vision (fog-of-war). Each alive unit reveals a radius for its team; enemies are
-# only sent to a client when inside their team's vision. Structures are always
-# visible to both teams (static map features).
-VISION_RADIUS = 1500             # hero sight radius
-HERO_VISION_RADIUS = VISION_RADIUS
-MINION_VISION_RADIUS = 800
-TOWER_VISION_RADIUS = 1200
+# Walls (unwalkable + vision-blocking) and trees (destructible). Each is an
+# (x, y, w, h) rect; trees additionally carry hp.
+from shared.geometry import mirror_rect as _mirror_rect  # noqa: E402
 
-# Colors
-COLOR_BG = (40, 60, 30)
-COLOR_TEAM1 = (70, 130, 255)   # Blue
-COLOR_TEAM2 = (255, 70, 70)    # Red
-COLOR_HEALTH_BG = (60, 60, 60)
-COLOR_HEALTH = (50, 200, 50)
-COLOR_MANA = (70, 120, 240)
-COLOR_GRID = (50, 70, 40)
-COLOR_TEXT = (240, 240, 240)
-COLOR_PROJECTILE = (255, 230, 120)
-COLOR_STRUCTURE_DEAD = (70, 70, 70)
-COLOR_LANE = (60, 80, 50)
+
+def _rect(r) -> tuple[float, float, float, float]:
+    return tuple(r)
+
+
+WALLS = (
+    [_rect(w) for w in _map.get("walls", [])]
+    + [_mirror_rect(_rect(w), MAP_WIDTH, MAP_HEIGHT)  # noqa: F821
+       for w in _map.get("walls", [])]
+    + [_rect(w) for w in _center.get("walls", [])]
+)
+
+TREES = (
+    [_rect(t["rect"]) for t in _map.get("trees", [])]
+    + [_mirror_rect(_rect(t["rect"]), MAP_WIDTH, MAP_HEIGHT)  # noqa: F821
+       for t in _map.get("trees", [])]
+    + [_rect(t["rect"]) for t in _center.get("trees", [])]
+)

@@ -1,0 +1,73 @@
+# Map layout, authored for ONE side (Team 1, bottom-left). shared/config.py
+# mirrors every team-1 feature through the map center -> (W - x, H - y) to build
+# Team 2's mirror set. Center-symmetric features (e.g. the mid rune) are listed
+# once under `center`.
+#
+# Map is 6000 x 6000 (see game.yaml). Team 1 base sits bottom-left, Team 2
+# top-right. Coordinates are world units. Rects are [x, y, w, h] (top-left
+# anchored). All distances are pre-mirror (Team 1 frame).
+
+# Team 1 core (Team 2's is the mirror). Heroes also spawn here.
+core: [800, 5200]
+
+# Lane polylines (full path, base-to-base). Symmetric, so listed in full.
+# `mid` is the diagonal; `top` bends at the top-left corner, `bot` at the
+# bottom-right corner.
+lane_width: 170
+lanes:
+  top:
+    - [800, 5200]
+    - [520, 520]
+    - [5200, 800]
+  mid:
+    - [800, 5200]
+    - [5200, 800]
+  bot:
+    - [800, 5200]
+    - [5480, 5480]
+    - [5200, 800]
+
+# Towers along each lane, as arc-length fractions from the Team 1 base (t=0).
+# Authored for Team 1; Team 2's towers are built as (lane_order, 1 - t, kind).
+# lane_order: outer=0 (closest to mid, falls first) -> inner=1 -> base=2.
+towers:
+  - { lane_order: 2, t: 0.18, kind: base }
+  - { lane_order: 1, t: 0.30, kind: inner }
+  - { lane_order: 0, t: 0.42, kind: outer }
+
+# Neutral jungle camps (Team 1 frame; mirror builds the rest). (x, y, count).
+jungle_camps:
+  - [2100, 1800, 3]
+  - [1700, 3100, 3]
+
+# --- New map features (used from Phase 3 on) -------------------------------
+
+# Wave-1 minion meeting points per lane (single, shared between sides). Wave-1
+# minion speed is tuned so both sides arrive here together, then reverts.
+meet_points:
+  top: [520, 520]
+  mid: [3000, 3000]
+  bot: [5480, 5480]
+
+# Spawn-point regen zone radius around each core (fast regen for the owner;
+# enemies inside take damage at the same rate).
+spawn_zone_radius: 700
+
+# Runes: roaming neutrals that patrol near their spawn, fight back, and on death
+# grant the killer a timed buff. `buff` in: haste | double_damage | cdr_50 |
+# regen_10x. `patrol` is the wander radius around the spawn point.
+runes:
+  - { pos: [2300, 2300], buff: haste, patrol: 350 }   # off-lane jungle (mirrored)
+center:
+  runes:
+    - { pos: [3000, 3000], buff: double_damage, patrol: 300 }  # contested river rune
+
+# Walls: permanently unwalkable rects that also block vision. (Team 1 frame.)
+walls:
+  - [1500, 4400, 60, 600]
+  - [2400, 3600, 600, 60]
+
+# Trees: like walls but destructible (have hp) and clear when killed.
+trees:
+  - { rect: [1900, 4600, 240, 80] }
+  - { rect: [3300, 4000, 80, 240] }

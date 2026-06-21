@@ -15,12 +15,14 @@ from shared.config import (
     MINION_RADIUS,
     MINION_GOLD,
     MINION_XP,
+
     RANGED_MINION_HP,
     RANGED_MINION_DAMAGE,
     RANGED_MINION_RANGE,
     RANGED_MINION_GOLD,
     RANGED_MINION_XP,
     RANGED_MINION_PROJECTILE_SPEED,
+
     CART_MINION_HP,
     CART_MINION_DAMAGE,
     CART_MINION_RANGE,
@@ -28,6 +30,7 @@ from shared.config import (
     CART_MINION_RADIUS,
     CART_MINION_GOLD,
     CART_MINION_XP,
+
     NEUTRAL_HP,
     NEUTRAL_DAMAGE,
     NEUTRAL_RANGE,
@@ -35,11 +38,13 @@ from shared.config import (
     NEUTRAL_RADIUS,
     NEUTRAL_GOLD,
     NEUTRAL_XP,
+
     TOWER_HP,
     TOWER_DAMAGE,
     TOWER_RANGE,
     TOWER_INTERVAL,
     TOWER_RADIUS,
+    
     XP_BASE,
     XP_PER_LEVEL,
     MAX_LEVEL,
@@ -67,8 +72,14 @@ class Entity:
     max_hp: int = 600
     alive: bool = True
 
-    # Combat (attack_damage == 0 means this entity does not auto-attack)
+    # Combat (attack_damage == 0 means this entity does not auto-attack).
+    # attack_damage is the PHYSICAL attack; sp_atk is the SPECIAL (magic) attack
+    # used by abilities. Incoming physical damage is reduced by phys_def and
+    # special damage by sp_def (see system_damage_death's armor curve).
     attack_damage: int = 0
+    sp_atk: int = 0
+    phys_def: int = 0
+    sp_def: int = 0
     attack_range: float = 0.0
     attack_interval: float = 1.0
     attack_timer: float = 0.0  # seconds remaining until next attack is ready
@@ -82,6 +93,13 @@ class Entity:
     def effective_attack_range(self) -> float:
         """Attack range including any bonuses (base entities have none)."""
         return self.attack_range
+
+    # Defenses including any temporary modifiers (base entities have none).
+    def effective_phys_def(self) -> float:
+        return self.phys_def
+
+    def effective_sp_def(self) -> float:
+        return self.sp_def
 
     def to_snapshot(self) -> dict:
         """Minimal data sent to clients each tick."""
@@ -105,9 +123,17 @@ class Hero(Entity):
     hero_id: str = ""  # which hero definition this is
     move_speed: float = 250.0
     attack_damage: int = 55
+    sp_atk: int = 0
+    phys_def: int = 20
+    sp_def: int = 20
     attack_range: float = 160.0
     attack_interval: float = 1.0
     attack_type: str = "melee"
+
+    # Per-level stat growth (copied from the HeroDef on spawn).
+    sp_atk_per_level: float = 0.0
+    phys_def_per_level: float = 3.0
+    sp_def_per_level: float = 2.0
     # Movement target (None = standing still)
     target_x: float | None = None
     target_y: float | None = None
@@ -133,6 +159,10 @@ class Hero(Entity):
     abilities: list[dict] = field(default_factory=list)
     cooldowns: dict[str, float] = field(default_factory=dict)
     hero_def: object | None = None
+    # Skill leveling: per-key rank (0 = not learned yet) + unspent skill points.
+    # Q/W/E cap at 4, R at 3 (R only at hero levels 4/8/12).
+    ability_levels: dict[str, int] = field(default_factory=dict)
+    skill_points: int = 0
 
     # Temporary buffs: list of {speed_bonus, dmg_bonus, remaining}
     buffs: list[dict] = field(default_factory=list)
@@ -147,6 +177,17 @@ class Hero(Entity):
     # Respawn
     respawn_timer: float = 0.0
 
+    # Scoreboard: kills / deaths / assists + last-hit counters (enemy minions /
+    # neutral monsters this hero killed).
+    kills: int = 0
+    deaths: int = 0
+    assists: int = 0
+    minion_kills: int = 0
+    neutral_kills: int = 0
+
+    def ability_rank(self, key: str) -> int:
+        return self.ability_levels.get(key, 0)
+
     def ability_by_key(self, key: str) -> dict | None:
         for ab in self.abilities:
             if ab.get("key") == key:
@@ -155,6 +196,10 @@ class Hero(Entity):
 
     def is_stunned(self) -> bool:
         return any(b.get("stun") for b in self.buffs)
+
+    def is_silenced(self) -> bool:
+        # A stun also silences (can't act at all).
+        return any(b.get("silence") or b.get("stun") for b in self.buffs)
 
     def is_invulnerable(self) -> bool:
         return any(b.get("invuln") for b in self.buffs)
@@ -172,14 +217,47 @@ class Hero(Entity):
     def bonus_damage(self) -> int:
         return int(sum(b.get("dmg_bonus", 0) for b in self.buffs))
 
+    def damage_mult(self) -> float:
+        """Product of multiplicative damage buffs (e.g. the double-damage rune)."""
+        mult = 1.0
+        for b in self.buffs:
+            mult *= b.get("dmg_mult", 1.0)
+        return mult
+
     def effective_damage(self) -> int:
-        return self.attack_damage + self.bonus_damage()
+        return int((self.attack_damage + self.bonus_damage()) * self.damage_mult())
+
+    def cooldown_mult(self) -> float:
+        """Smallest cooldown multiplier among active CDR buffs (best one wins)."""
+        mult = 1.0
+        for b in self.buffs:
+            mult = min(mult, b.get("cd_mult", 1.0))
+        return mult
 
     def bonus_range(self) -> float:
         return sum(b.get("range_bonus", 0) for b in self.buffs)
 
     def effective_attack_range(self) -> float:
         return self.attack_range + self.bonus_range()
+
+    # Special attack + both defenses, including temporary buff/debuff deltas.
+    def bonus_sp_atk(self) -> float:
+        return sum(b.get("sp_atk", 0) for b in self.buffs)
+
+    def effective_sp_atk(self) -> int:
+        return int(self.sp_atk + self.bonus_sp_atk())
+
+    def bonus_phys_def(self) -> float:
+        return sum(b.get("phys_def", 0) for b in self.buffs)
+
+    def effective_phys_def(self) -> float:
+        return self.phys_def + self.bonus_phys_def()
+
+    def bonus_sp_def(self) -> float:
+        return sum(b.get("sp_def", 0) for b in self.buffs)
+
+    def effective_sp_def(self) -> float:
+        return self.sp_def + self.bonus_sp_def()
 
     def attack_speed_bonus(self) -> float:
         return sum(b.get("atkspd_pct", 0) for b in self.buffs)
@@ -219,13 +297,55 @@ class Hero(Entity):
             d["split"] = True
         # Extra stats for the HUD panel.
         d["ad"] = self.effective_damage()
-        d["ms"] = int(self.move_speed + self.bonus_speed())
+        d["spa"] = self.effective_sp_atk()
+        d["pdef"] = round(self.effective_phys_def(), 1)
+        d["sdef"] = round(self.effective_sp_def(), 1)
+        d["rng"] = round(self.effective_attack_range())
+        d["aspd"] = round(1.0 / self.effective_attack_interval(), 2)
+        d["ms"] = int(self.effective_move_speed())
+        d["hpr"] = round(self.hp_regen
+                         + sum(b.get("hp_regen_bonus", 0) for b in self.buffs), 1)
+        d["mpr"] = round(self.mana_regen
+                         + sum(b.get("mana_regen_bonus", 0) for b in self.buffs), 1)
         d["xp"] = self.xp
         d["xpn"] = 0 if self.level >= MAX_LEVEL else XP_BASE + (self.level - 1) * XP_PER_LEVEL
+        # Temporary stat deltas (from buffs/debuffs only) so the HUD can render
+        # green (+) / red (-) numbers. Only nonzero entries are sent.
+        deltas = {
+            "ad": self.bonus_damage(),
+            "spa": int(self.bonus_sp_atk()),
+            "pdef": round(self.bonus_phys_def(), 1),
+            "sdef": round(self.bonus_sp_def(), 1),
+            "rng": round(self.bonus_range(), 1),
+            "ms": round(self.effective_move_speed() - self.move_speed, 1),
+            "aspd": round(1.0 / self.effective_attack_interval()
+                          - 1.0 / self.attack_interval, 2),
+            "hpr": round(sum(b.get("hp_regen_bonus", 0) for b in self.buffs), 1),
+            "mpr": round(sum(b.get("mana_regen_bonus", 0) for b in self.buffs), 1),
+        }
+        d["dlt"] = {k: v for k, v in deltas.items() if v}
+        # Active crowd-control flags for HUD/feedback.
+        cc = []
+        if self.is_stunned():
+            cc.append("stun")
+        if self.is_silenced() and not self.is_stunned():
+            cc.append("silence")
+        if self.slow_pct() > 0:
+            cc.append("slow")
+        if cc:
+            d["cc"] = cc
         # Ability cooldown state for the owning client's HUD.
         d["cds"] = {k: round(v, 1) for k, v in self.cooldowns.items()}
+        d["alvl"] = dict(self.ability_levels)
+        d["sp"] = self.skill_points
         d["inv"] = list(self.inventory)
         d["icds"] = {k: round(v, 1) for k, v in self.item_cooldowns.items()}
+        # Scoreboard.
+        d["kills"] = self.kills
+        d["deaths"] = self.deaths
+        d["assists"] = self.assists
+        d["mk"] = self.minion_kills
+        d["nk"] = self.neutral_kills
         return d
 
 
@@ -251,6 +371,11 @@ class Minion(Entity):
     is_neutral: bool = False
     provoked: bool = False
     camp_id: int = -1  # index into JUNGLE_CAMPS for neutral monsters
+    # Wave-1 "meet point": until reached, the minion walks at meet_speed, then
+    # reverts to its default move_speed. meet_speed == 0 means inactive.
+    meet_x: float = 0.0
+    meet_y: float = 0.0
+    meet_speed: float = 0.0
 
     def advance(self, dt: float) -> None:
         """Walk toward the current waypoint, advancing along the path as each is
@@ -347,6 +472,7 @@ class Projectile(Entity):
     vx: float = 0.0
     vy: float = 0.0
     damage: int = 0
+    damage_type: str = "physical"  # physical | special | true (armor curve)
     owner_id: int = 0
     range_left: float = 0.0
     # Homing basic-attack projectiles steer toward a specific target each tick.
@@ -358,6 +484,64 @@ class Projectile(Entity):
     def to_snapshot(self) -> dict:
         d = super().to_snapshot()
         d["b"] = self.is_basic
+        return d
+
+
+@dataclass
+class Obstacle(Entity):
+    """A static, axis-aligned rectangle (top-left at x, y) that blocks walking
+    and (optionally) vision. ``radius`` is set to the half-diagonal so the
+    client's circular cull keeps it on screen."""
+
+    entity_type: EntityType = EntityType.WALL
+    team: Team = Team.NONE
+    w: float = 100.0
+    h: float = 100.0
+    blocks_vision: bool = True
+
+    def rect(self) -> tuple[float, float, float, float]:
+        return (self.x, self.y, self.w, self.h)
+
+    def to_snapshot(self) -> dict:
+        d = super().to_snapshot()
+        d["w"] = self.w
+        d["h"] = self.h
+        return d
+
+
+@dataclass
+class Wall(Obstacle):
+    """Permanent, indestructible. Blocks walking + vision."""
+
+    entity_type: EntityType = EntityType.WALL
+
+
+@dataclass
+class Tree(Obstacle):
+    """Like a wall but destructible: takes damage and, when killed, stops
+    blocking walking and vision."""
+
+    entity_type: EntityType = EntityType.TREE
+    hp: int = 200
+    max_hp: int = 200
+
+
+@dataclass
+class RuneCreature(NeutralMinion):
+    """A roaming neutral that patrols near its spawn, attacks nearby enemies, and
+    on death grants the killer a timed buff (haste / double_damage / cdr_50 /
+    regen_10x). Unlike jungle camps it is aggressive by default."""
+
+    provoked: bool = True          # always willing to fight
+    rune_buff: str = "haste"
+    home_x: float = 0.0
+    home_y: float = 0.0
+    patrol_radius: float = 400.0
+    rune_index: int = -1
+
+    def to_snapshot(self) -> dict:
+        d = super().to_snapshot()
+        d["rune"] = True  # let the client tint/label it
         return d
 
 

@@ -53,6 +53,7 @@ class TestWaveComposition(unittest.TestCase):
     def setUp(self):
         self.state = GameState()
         self.state.start_match(kill_target=10)
+        self.state.match_clock = 0.0  # skip the pre-game countdown
         # start_match leaves creep_timer at 0; clear pre-spawned entities count.
 
     def _force_wave(self):
@@ -89,6 +90,7 @@ class TestLanePathing(unittest.TestCase):
     def test_top_lane_minion_routes_via_corner(self):
         state = GameState()
         state.start_match(kill_target=10)
+        state.match_clock = 0.0  # skip the pre-game countdown
         for m in _minions(state):
             state.entities.pop(m.entity_id, None)
         system_spawn_creeps(state, TICK_DURATION)
@@ -112,6 +114,7 @@ class TestJungleCamps(unittest.TestCase):
     def setUp(self):
         self.state = GameState()
         self.state.start_match(kill_target=10)
+        self.state.match_clock = 0.0  # skip the pre-game countdown
         system_neutral_camps(self.state, TICK_DURATION)  # spawn camps
 
     def test_camps_spawn(self):

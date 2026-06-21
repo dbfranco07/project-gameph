@@ -138,6 +138,7 @@ class TestCreepsAndEconomy(unittest.TestCase):
     def test_wave_spawns_minions(self):
         state = GameState()
         state.start_match(kill_target=10)
+        state.match_clock = 0.0  # skip the pre-game countdown
         before = sum(isinstance(e, Minion) for e in state.entities.values())
         step(state, 0.05)  # first tick triggers a wave (creep_timer starts at 0)
         after = sum(isinstance(e, Minion) for e in state.entities.values())

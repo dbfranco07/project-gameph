@@ -15,6 +15,7 @@ import math
 
 from shared.config import MAP_WIDTH, MAP_HEIGHT
 from server.entity import Hero, Projectile, Structure
+from server.effects import make_effect
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +50,8 @@ def allies_in_radius(state, team, cx, cy, radius):
 # Building blocks
 # ---------------------------------------------------------------------------
 
-def projectile(ctx, dmg, speed, range, radius=18, homing=False) -> Projectile:
+def projectile(ctx, dmg, speed, range, radius=18, homing=False,
+               dtype="physical") -> Projectile:
     """Fire a projectile from the caster toward (tx, ty). Returns it for tweaks."""
     caster = ctx.caster
     dx, dy = ctx.tx - caster.x, ctx.ty - caster.y
@@ -64,6 +66,7 @@ def projectile(ctx, dmg, speed, range, radius=18, homing=False) -> Projectile:
         vx=(dx / dist) * speed,
         vy=(dy / dist) * speed,
         damage=dmg,
+        damage_type=dtype,
         owner_id=caster.entity_id,
         range_left=range,
         speed=speed,
@@ -91,12 +94,13 @@ def dash(ctx, dist) -> Hero:
 blink = dash
 
 
-def area_dmg(ctx, dmg, radius) -> list:
+def area_dmg(ctx, dmg, radius, dtype="physical") -> list:
     """Damage all enemies within `radius` of (tx, ty). Returns those hit."""
     hit = enemies_in_radius(ctx.state, ctx.caster.team, ctx.tx, ctx.ty, radius)
     for e in hit:
         ctx.state.damage_events.append(
-            {"src": ctx.caster.entity_id, "tgt": e.entity_id, "amt": dmg})
+            {"src": ctx.caster.entity_id, "tgt": e.entity_id, "amt": dmg,
+             "dtype": dtype})
     return hit
 
 
@@ -110,14 +114,15 @@ def area_heal(ctx, heal, radius) -> list:
     return healed
 
 
-def target_dmg(ctx, dmg, range) -> object | None:
+def target_dmg(ctx, dmg, range, dtype="physical") -> object | None:
     """Damage a single targeted enemy if it is valid and within `range`."""
     target = ctx.state.entities.get(ctx.tid) if ctx.tid else None
     if target is None or not target.alive or target.team == ctx.caster.team:
         return None
     if ctx.caster.distance_to(target) <= range + target.radius:
         ctx.state.damage_events.append(
-            {"src": ctx.caster.entity_id, "tgt": target.entity_id, "amt": dmg})
+            {"src": ctx.caster.entity_id, "tgt": target.entity_id, "amt": dmg,
+             "dtype": dtype})
         return target
     return None
 
@@ -146,10 +151,28 @@ def dash_to_target(ctx, dist) -> Hero:
     return dash(ctx, dist)
 
 
-def slow(ctx, target, pct, duration) -> None:
-    """Apply a movement slow to a single enemy (heroes carry the debuff buff)."""
+def apply_effect(target, duration, source=None, **mods) -> None:
+    """Apply a generic buff/debuff (any recognized effect key) to one hero.
+
+    Sign of each value decides buff vs debuff. Non-heroes are ignored (only
+    heroes carry effects today)."""
     if isinstance(target, Hero):
-        target.buffs.append({"slow_pct": pct, "remaining": duration})
+        target.buffs.append(make_effect(duration, source=source, **mods))
+
+
+def slow(ctx, target, pct, duration) -> None:
+    """Apply a movement slow to a single enemy (heroes carry the debuff)."""
+    apply_effect(target, duration, slow_pct=pct)
+
+
+def silence(ctx, target, duration) -> None:
+    """Silence a single enemy hero (cannot cast abilities) for `duration`."""
+    apply_effect(target, duration, silence=True)
+
+
+def stun_target(ctx, target, duration) -> None:
+    """Stun a single enemy hero (cannot move / attack / cast) for `duration`."""
+    apply_effect(target, duration, stun=True)
 
 
 def stun_nearby(ctx, radius, duration) -> list:
@@ -158,5 +181,5 @@ def stun_nearby(ctx, radius, duration) -> list:
         ctx.state, ctx.caster.team, ctx.caster.x, ctx.caster.y, radius)
         if isinstance(e, Hero)]
     for e in stunned:
-        e.buffs.append({"stun": True, "remaining": duration})
+        apply_effect(e, duration, stun=True)
     return stunned

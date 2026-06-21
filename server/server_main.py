@@ -174,6 +174,8 @@ class GameServer:
             self._handle_select_team(client_id, msg)
         elif msg_type == MsgType.SELECT_HERO:
             self._handle_select_hero(client_id, msg)
+        elif msg_type == MsgType.LEVEL_ABILITY:
+            self._handle_level_ability(client_id, msg)
         elif msg_type == MsgType.START_GAME:
             self._handle_start_game(client_id, msg)
 
@@ -346,6 +348,12 @@ class GameServer:
             "tid": msg.get("tid"),
         })
 
+    def _handle_level_ability(self, client_id: int, msg: dict) -> None:
+        """Spend a skill point to rank up an ability (Q/W/E/R)."""
+        key = msg.get("key")
+        if key:
+            self.state.level_ability(client_id, key)
+
     def _handle_buy_item(self, client_id: int, msg: dict) -> None:
         """Buys an item: checks gold + inventory space, applies stat bonuses.
 
@@ -451,6 +459,7 @@ class GameServer:
             },
             "ktarget": self.state.kill_target,
             "winner": int(self.state.winner) if self.state.winner else 0,
+            "clock": round(self.state.match_clock, 1),
         }
         # Fog-of-war: compute each team's visible set once, reuse per client.
         events = self.state.combat_events

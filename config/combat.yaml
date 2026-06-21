@@ -1,0 +1,32 @@
+# Hero base combat, projectiles, respawn, leveling, items, and the defense curve.
+
+# Hero body / movement / base combat (data-driven heroes override these)
+hero_radius: 20
+hero_move_speed: 250          # units per second
+hero_base_hp: 600
+hero_base_mana: 200
+hero_attack_damage: 55
+hero_attack_range: 160
+hero_attack_interval: 1.0     # seconds between auto-attacks
+basic_projectile_speed: 1100  # ranged basic-attack projectile speed
+basic_projectile_radius: 10
+attack_click_pixels: 14       # cursor pickup tolerance for "A + click enemy"
+
+# Respawn
+hero_respawn_base: 5.0        # base respawn seconds
+hero_respawn_per_level: 1.0   # extra seconds per hero level
+
+# Leveling / progression. 15 levels = 15 skill points (Q/W/E x4 + R x3).
+max_level: 15
+xp_base: 100                  # xp needed for level 2
+xp_per_level: 120             # extra xp per subsequent level
+hp_per_level: 80             # max-hp gained per level
+damage_per_level: 6           # attack-damage gained per level
+
+# Items
+item_slots: 6                 # inventory capacity per hero
+starting_gold: 600            # gold each hero starts a match with
+
+# Defense / damage model. Physical & special damage are each reduced by the
+# matching defense via an armor curve: reduction = DEF / (DEF + defense_k).
+defense_k: 100

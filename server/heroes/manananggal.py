@@ -82,26 +82,35 @@ class Manananggal(HeroDef):
     mana = 350
     move_speed = 270
     atk_dmg = 58
+    sp_atk = 20
+    phys_def = 22
+    sp_def = 22
     atk_range = 160
     atk_interval = 0.95
     atk_type = "melee"
     hp_regen = 3.0
+    phys_def_per_level = 3.0
+    sp_def_per_level = 2.5
 
-    @ability("Q", "Scratch", cd=7, mana=60, cast=CastType.UNIT)
+    @ability("Q", "Scratch", cd=7, mana=60, cast=CastType.UNIT,
+             desc="Claw an enemy for damage and a movement slow.")
     def scratch(ctx):
         target = skills.target_dmg(ctx, dmg=Q_DMG, range=Q_RANGE)
         if target is not None:
             skills.slow(ctx, target, pct=Q_SLOW, duration=Q_SLOW_DUR)
 
-    @ability("W", "Pounce", cd=12, mana=50, cast=CastType.UNIT)
+    @ability("W", "Pounce", cd=12, mana=50, cast=CastType.UNIT,
+             desc="Leap to a targeted unit.")
     def pounce(ctx):
         skills.dash_to_target(ctx, dist=POUNCE_DIST)
 
-    @ability("E", "Bloodlust", cd=0, mana=0, cast=CastType.PASSIVE)
+    @ability("E", "Bloodlust", cd=0, mana=0, cast=CastType.PASSIVE,
+             desc="Passive: each ability cast grants stacking move + attack speed.")
     def bloodlust(ctx):
         pass  # passive — effect lives in on_ability_cast
 
-    @ability("R", "Split", cd=SPLIT_TOGGLE_CD, mana=0, cast=CastType.NONE)
+    @ability("R", "Split", cd=SPLIT_TOGGLE_CD, mana=0, cast=CastType.NONE,
+             desc="Detach your invulnerable upper half; recombine near the body to heal.")
     def split(ctx):
         hero = ctx.caster
         st = hero.ability_state.get("split")

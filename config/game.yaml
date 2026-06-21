@@ -1,0 +1,47 @@
+# Engine / window / camera / global match settings.
+# Keys are the lowercase of the constant name exposed by shared/config.py.
+
+# Server
+server_tick_rate: 20          # ticks per second
+default_host: "127.0.0.1"
+default_port: 7777
+max_players: 10
+
+# Client
+client_fps: 60
+screen_width: 1280
+screen_height: 720
+
+# Camera (free-roam, Dota-style)
+edge_pan_margin: 40           # px from a screen edge that triggers panning
+camera_pan_speed: 1400        # world units/sec while edge-panning
+
+# Map dimensions (square so the three lanes are symmetric corner-to-corner)
+map_width: 6000
+map_height: 6000
+
+# Win conditions
+default_kill_target: 100      # first team to this many hero kills wins
+
+# Match start: clock counts down from this many seconds; at 0 the first minion
+# wave + neutrals + runes spawn, then the clock counts up as elapsed time.
+pregame_countdown: 20.0
+
+# Vision (fog-of-war) radii
+vision_radius: 1500           # hero sight radius
+minion_vision_radius: 800
+tower_vision_radius: 1200
+
+# Colors (RGB) -> exposed as COLOR_<NAME> tuples
+colors:
+  bg: [40, 60, 30]
+  team1: [70, 130, 255]       # Blue
+  team2: [255, 70, 70]        # Red
+  health_bg: [60, 60, 60]
+  health: [50, 200, 50]
+  mana: [70, 120, 240]
+  grid: [50, 70, 40]
+  text: [240, 240, 240]
+  projectile: [255, 230, 120]
+  structure_dead: [70, 70, 70]
+  lane: [60, 80, 50]

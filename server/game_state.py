@@ -20,12 +20,15 @@ from shared.config import (
     HERO_VISION_RADIUS,
     MINION_VISION_RADIUS,
     TOWER_VISION_RADIUS,
+    WALLS,
+    TREES,
+    PREGAME_COUNTDOWN,
 )
 from shared.config import MAX_PLAYERS
-from shared.geometry import point_along
+from shared.geometry import point_along, segment_intersects_rect
 from shared.game_types import GamePhase, Team, EntityType
 from server.heroes import get_hero_def, DEFAULT_HERO, list_hero_ids, hero_catalog
-from server.entity import Entity, Hero, Minion, Structure
+from server.entity import Entity, Hero, Minion, Structure, Wall, Tree, Obstacle
 
 
 def enemy_team(team: Team) -> Team:
@@ -62,6 +65,11 @@ class GameState:
 
         # Jungle camps: camp_id -> {"timer": seconds until respawn or 0.0 if up}.
         self.neutral_camps: dict[int, dict] = {}
+        # Runes: rune_index -> {"timer": seconds until respawn or 0.0 if up}.
+        self.rune_state: dict[int, dict] = {}
+        # Match clock: starts at +PREGAME_COUNTDOWN counting DOWN to 0 (when the
+        # first wave + neutrals + runes appear), then counts UP as elapsed time.
+        self.match_clock: float = 0.0
 
     # ----- Lobby ------------------------------------------------------------
     def add_to_lobby(self, client_id: int, name: str) -> dict:
@@ -155,6 +163,9 @@ class GameState:
             max_mana=hdef.mana,
             move_speed=hdef.move_speed,
             attack_damage=hdef.atk_dmg,
+            sp_atk=hdef.sp_atk,
+            phys_def=hdef.phys_def,
+            sp_def=hdef.sp_def,
             attack_range=hdef.atk_range,
             attack_interval=hdef.atk_interval,
             attack_type=hdef.atk_type,
@@ -162,8 +173,13 @@ class GameState:
             gold=STARTING_GOLD,
             hp_regen=hdef.hp_regen,
             mana_regen=hdef.mana_regen,
+            sp_atk_per_level=hdef.sp_atk_per_level,
+            phys_def_per_level=hdef.phys_def_per_level,
+            sp_def_per_level=hdef.sp_def_per_level,
             abilities=abilities,
             cooldowns={ab.key: 0.0 for ab in hdef.abilities},
+            ability_levels={ab.key: 0 for ab in hdef.abilities},
+            skill_points=1,  # one point granted at level 1
             hero_def=hdef,
         )
         self.entities[hero.entity_id] = hero
@@ -175,6 +191,30 @@ class GameState:
         if eid is not None:
             self.entities.pop(eid, None)
         self.player_hero_choice.pop(client_id, None)
+
+    # Per-key rank caps and the hero-level gate for raising the ultimate.
+    ULT_KEY = "R"
+    ULT_RANK_CAP = 3
+    BASIC_RANK_CAP = 4
+    ULT_LEVEL_GATES = (4, 8, 12)  # hero level needed for R ranks 1/2/3
+
+    def level_ability(self, client_id: int, key: str) -> bool:
+        """Spend a skill point to raise an ability's rank, honoring caps and the
+        ultimate's level gates. Returns True on success."""
+        hero = self.get_hero(client_id)
+        if hero is None or key not in hero.ability_levels:
+            return False
+        if hero.skill_points <= 0:
+            return False
+        cur = hero.ability_levels[key]
+        cap = self.ULT_RANK_CAP if key == self.ULT_KEY else self.BASIC_RANK_CAP
+        if cur >= cap:
+            return False
+        if key == self.ULT_KEY and hero.level < self.ULT_LEVEL_GATES[cur]:
+            return False  # not high enough level for the next ultimate rank
+        hero.ability_levels[key] = cur + 1
+        hero.skill_points -= 1
+        return True
 
     def get_hero(self, client_id: int) -> Hero | None:
         eid = self.player_heroes.get(client_id)
@@ -197,7 +237,11 @@ class GameState:
         self.econ_accum = 0.0
         self.wave_count = 0
         self.neutral_camps = {}
+        self.rune_state = {}
+        # Negative clock = pre-game countdown; it ticks up to 0 (spawns) then on.
+        self.match_clock = -PREGAME_COUNTDOWN
         self._spawn_structures()
+        self._spawn_map()
         self.phase = GamePhase.PLAYING
 
     def _spawn_structures(self) -> None:
@@ -235,6 +279,27 @@ class GameState:
                 attack_proj_speed=TOWER_PROJECTILE_SPEED,
             )
             self.entities[core.entity_id] = core
+
+    def _spawn_map(self) -> None:
+        """Spawn static obstacles (walls + destructible trees) from the config."""
+        for (x, y, w, h) in WALLS:
+            wall = Wall(x=x, y=y, w=w, h=h,
+                        radius=math.hypot(w, h) / 2)
+            self.entities[wall.entity_id] = wall
+        for (x, y, w, h) in TREES:
+            tree = Tree(x=x, y=y, w=w, h=h,
+                        radius=math.hypot(w, h) / 2)
+            self.entities[tree.entity_id] = tree
+
+    def obstacle_rects(self) -> list[tuple[float, float, float, float]]:
+        """Rects that block walking (walls + alive trees)."""
+        return [e.rect() for e in self.entities.values()
+                if isinstance(e, Obstacle) and e.alive]
+
+    def vision_blocker_rects(self) -> list[tuple[float, float, float, float]]:
+        """Rects that block line-of-sight (walls + alive trees)."""
+        return [e.rect() for e in self.entities.values()
+                if isinstance(e, Obstacle) and e.alive and e.blocks_vision]
 
     def lane_cleared(self, team: Team, lane: str) -> bool:
         """True if every one of `team`'s towers in `lane` has been destroyed."""
@@ -288,18 +353,26 @@ class GameState:
                 yield e.x, e.y, TOWER_VISION_RADIUS
 
     def visible_entity_ids_for(self, team: Team) -> set[int]:
-        """Ids visible to `team`: own units + all structures, plus enemy/neutral
-        units within line-of-sight of one of the team's vision sources."""
+        """Ids visible to `team`: own units + all static map features, plus
+        enemy/neutral units within unobstructed line-of-sight of one of the
+        team's vision sources (walls and alive trees block the sight line)."""
         sources = list(self._vision_sources(team))
+        blockers = self.vision_blocker_rects()
         visible: set[int] = set()
         for e in self.entities.values():
-            if e.team == team or isinstance(e, Structure):
-                visible.add(e.entity_id)  # own units + static map structures
+            # Own units + static map features (structures, walls, trees) are
+            # always sent so the client can draw the world.
+            if e.team == team or isinstance(e, (Structure, Obstacle)):
+                visible.add(e.entity_id)
                 continue
             for sx, sy, r in sources:
-                if math.hypot(e.x - sx, e.y - sy) <= r + e.radius:
-                    visible.add(e.entity_id)
-                    break
+                if math.hypot(e.x - sx, e.y - sy) > r + e.radius:
+                    continue
+                if any(segment_intersects_rect(sx, sy, e.x, e.y, rect)
+                       for rect in blockers):
+                    continue  # sight line is blocked by a wall/tree
+                visible.add(e.entity_id)
+                break
         return visible
 
     def build_snapshot_for(self, team: Team) -> list[dict]:

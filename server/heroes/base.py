@@ -30,27 +30,31 @@ class CastContext:
     of these and mutate `state`.
     """
 
-    __slots__ = ("state", "caster", "tx", "ty", "tid")
+    __slots__ = ("state", "caster", "tx", "ty", "tid", "rank")
 
-    def __init__(self, state, caster, tx: float, ty: float, tid: int | None) -> None:
+    def __init__(self, state, caster, tx: float, ty: float, tid: int | None,
+                 rank: int = 1) -> None:
         self.state = state
         self.caster = caster
         self.tx = tx
         self.ty = ty
         self.tid = tid
+        self.rank = rank  # current rank of the ability being cast (1+)
 
 
 class Ability:
     """A single ability: its gameplay metadata + the function that casts it."""
 
     def __init__(self, key: str, name: str, cd: float, mana: int,
-                 cast: CastType, fn) -> None:
+                 cast: CastType, fn, desc: str = "", max_rank: int = 4) -> None:
         self.key = key
         self.name = name
         self.cd = cd
         self.mana = mana
         self.cast_type = cast
         self.fn = fn  # plain function taking a single CastContext argument
+        self.desc = desc          # tooltip text shown on the HUD
+        self.max_rank = max_rank  # Q/W/E -> 4, ultimate (R) -> 3
 
     def describe(self) -> dict:
         """UI-agnostic metadata sent to the client (no cast code)."""
@@ -60,20 +64,26 @@ class Ability:
             "cd": self.cd,
             "mana": self.mana,
             "cast": int(self.cast_type),
+            "desc": self.desc,
+            "max_rank": self.max_rank,
         }
 
 
 def ability(key: str, name: str, cd: float, mana: int,
-            cast: CastType = CastType.POINT):
+            cast: CastType = CastType.POINT, desc: str = "",
+            max_rank: int | None = None):
     """Decorator tagging a `HeroDef` method as an ability.
 
     The decorated method takes a single `CastContext` (`ctx`). It is collected
     into `cls.abilities` by `HeroDef.__init_subclass__` in definition order, so
-    declare abilities Q, W, E, R top-to-bottom.
+    declare abilities Q, W, E, R top-to-bottom. ``desc`` is HUD tooltip text;
+    ``max_rank`` defaults to 3 for the ultimate (key "R") and 4 otherwise.
     """
+    if max_rank is None:
+        max_rank = 3 if key == "R" else 4
 
     def deco(fn):
-        fn._ability_meta = (key, name, cd, mana, cast)
+        fn._ability_meta = (key, name, cd, mana, cast, desc, max_rank)
         return fn
 
     return deco
@@ -89,12 +99,20 @@ class HeroDef:
     hp: int = 600
     mana: int = 200
     move_speed: float = HERO_MOVE_SPEED
-    atk_dmg: int = 55
+    atk_dmg: int = 55              # physical attack
+    sp_atk: int = 0               # special (magic) attack used by abilities
+    phys_def: int = 20            # physical defense
+    sp_def: int = 20              # special defense
     atk_range: float = 160.0
     atk_interval: float = 1.0
     atk_type: str = "melee"        # "melee" (instant) or "ranged" (projectile)
     hp_regen: float = HERO_HP_REGEN_PER_SEC  # hp per second (slow passive)
     mana_regen: float = MANA_REGEN_PER_SEC
+
+    # Per-level stat growth (the new stats; hp/atk growth stays global config).
+    sp_atk_per_level: float = 0.0
+    phys_def_per_level: float = 3.0
+    sp_def_per_level: float = 2.0
 
     # Populated by __init_subclass__ from decorated methods.
     abilities: list[Ability] = []
@@ -115,8 +133,9 @@ class HeroDef:
             meta = getattr(value, "_ability_meta", None)
             if meta is None:
                 continue
-            key, name, cd, mana, cast = meta
-            collected.append(Ability(key, name, cd, mana, cast, value))
+            key, name, cd, mana, cast, desc, max_rank = meta
+            collected.append(
+                Ability(key, name, cd, mana, cast, value, desc, max_rank))
         cls.abilities = collected
         cls._validate()
 
@@ -138,6 +157,9 @@ class HeroDef:
             "mana": cls.mana,
             "move_speed": cls.move_speed,
             "atk_dmg": cls.atk_dmg,
+            "sp_atk": cls.sp_atk,
+            "phys_def": cls.phys_def,
+            "sp_def": cls.sp_def,
             "atk_range": cls.atk_range,
             "atk_interval": cls.atk_interval,
             "atk_type": cls.atk_type,

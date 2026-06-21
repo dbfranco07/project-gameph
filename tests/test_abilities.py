@@ -70,6 +70,9 @@ class TestAbilityCast(unittest.TestCase):
         self.target = self.state.add_hero(2, "B", Team.TEAM2, hero_id="mender")
         self.caster.x, self.caster.y = 1000, 1000
         self.target.x, self.target.y = 1300, 1000
+        # Skill leveling now gates casting: learn every ability for the test.
+        for k in ("Q", "W", "E", "R"):
+            self.caster.ability_levels[k] = 1
 
     def _cast(self, key, tx=None, ty=None, tid=None):
         self.state.ability_casts.append({
@@ -117,6 +120,7 @@ class TestAbilityCast(unittest.TestCase):
 
     def test_buff_boosts_damage_and_expires(self):
         brawler = self.state.add_hero(3, "C", Team.TEAM1, hero_id="brawler")
+        brawler.ability_levels["E"] = 1
         base = brawler.effective_damage()
         self.state.ability_casts.append({
             "caster": brawler.entity_id, "key": "E",

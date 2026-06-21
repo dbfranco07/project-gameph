@@ -21,6 +21,9 @@ class TestManananggal(unittest.TestCase):
         self.enemy = self.state.add_hero(2, "E", Team.TEAM2, hero_id="brawler")
         self.hero.x, self.hero.y = 1000, 1000
         self.enemy.x, self.enemy.y = 1200, 1000
+        # Skill leveling now gates casting: learn every ability for the test.
+        for k in ("Q", "W", "E", "R"):
+            self.hero.ability_levels[k] = 1
 
     def _cast(self, key, tid=None):
         self.state.ability_casts.append({

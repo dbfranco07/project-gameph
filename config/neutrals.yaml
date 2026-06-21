@@ -1,0 +1,11 @@
+# Neutral jungle monsters (passive: idle until attacked, then fight back; respawn).
+# Camp positions live in map.yaml.
+
+neutral_hp: 200
+neutral_damage: 20
+neutral_range: 160
+neutral_interval: 1.0
+neutral_radius: 14
+neutral_gold: 40
+neutral_xp: 45
+neutral_respawn: 60.0         # seconds to respawn a cleared camp

@@ -63,6 +63,7 @@ class GameClient:
         self.score: dict = {}
         self.ktarget: int = 0
         self.winner: int = 0
+        self.match_clock: float = 0.0
 
         # Client systems
         self.camera = Camera()
@@ -207,7 +208,7 @@ class GameClient:
         self.renderer.shop_open = self.input_handler.shop_open
         self.renderer.draw_frame(
             entities, self.my_entity_id, self.my_team, self.phase, self.tick,
-            self.score, self.ktarget, self.winner)
+            self.score, self.ktarget, self.winner, self.match_clock)
         return running
 
     def _center_on_hero(self, entities) -> None:
@@ -330,6 +331,7 @@ class GameClient:
             self.score = msg.get("score", self.score)
             self.ktarget = msg.get("ktarget", self.ktarget)
             self.winner = msg.get("winner", self.winner)
+            self.match_clock = msg.get("clock", self.match_clock)
             self.interpolator.push_snapshot(msg.get("entities", []))
             if self.renderer is not None:
                 self.renderer.add_combat_events(msg.get("events", []))

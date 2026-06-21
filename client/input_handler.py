@@ -71,7 +71,12 @@ class InputHandler:
                     self.pending_cast = None
                     messages.append({"t": int(MsgType.STOP)})
                 elif event.key in _ABILITY_KEYS:
-                    self._on_ability_key(_ABILITY_KEYS[event.key], messages)
+                    if event.mod & pygame.KMOD_ALT:
+                        # Alt + Q/W/E/R: spend a skill point to rank it up.
+                        messages.append({"t": int(MsgType.LEVEL_ABILITY),
+                                         "key": _ABILITY_KEYS[event.key]})
+                    else:
+                        self._on_ability_key(_ABILITY_KEYS[event.key], messages)
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 wx, wy = self.camera.screen_to_world(*event.pos)

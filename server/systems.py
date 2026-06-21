@@ -8,6 +8,7 @@ it into `step()`. This is the extension point the whole design leans on.
 from __future__ import annotations
 
 import math
+import random
 
 from shared.config import (
     MAP_WIDTH,
@@ -35,13 +36,18 @@ from shared.config import (
     JUNGLE_CAMPS,
     NEUTRAL_RESPAWN,
     BASIC_PROJECTILE_RADIUS,
+    DEFENSE_K,
+    RUNES,
+    MEET_POINTS,
+    SPAWN_ZONE_RADIUS,
 )
 from shared.geometry import point_along
 from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
-    Structure, Projectile, SplitBody,
+    Structure, Projectile, SplitBody, RuneCreature,
 )
+from server.effects import make_effect
 from server.game_state import GameState, enemy_team
 from server.heroes.base import CastContext
 from shared.game_types import CastType
@@ -146,7 +152,14 @@ def _regen(hero: Hero, dt: float) -> None:
 # Creeps
 # ---------------------------------------------------------------------------
 
+def system_clock(state: GameState, dt: float) -> None:
+    """Advance the match clock. Negative = pre-game countdown, 0+ = elapsed."""
+    state.match_clock += dt
+
+
 def system_spawn_creeps(state: GameState, dt: float) -> None:
+    if state.match_clock < 0:
+        return  # creeps wait for the countdown to finish
     state.creep_timer -= dt
     if state.creep_timer > 0:
         return
@@ -182,6 +195,10 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
     d = math.hypot(dx, dy) or 1.0
     ux, uy = dx / d, dy / d
 
+    # Wave 1 marches faster until it reaches the lane's meeting point, then
+    # reverts to default speed (so both sides clash at the meet point).
+    meet = MEET_POINTS.get(lane) if state.wave_count == 1 else None
+
     for i, cls in enumerate(classes):
         waypoints = path[1:]  # remaining waypoints after the spawn point
         minion = cls(
@@ -192,6 +209,9 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
             dest_y=waypoints[0][1],
             path=waypoints[1:],
         )
+        if meet is not None:
+            minion.meet_x, minion.meet_y = meet
+            minion.meet_speed = minion.move_speed * 1.4
         state.entities[minion.entity_id] = minion
 
 
@@ -202,6 +222,8 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
 def system_neutral_camps(state: GameState, dt: float) -> None:
     """Spawn jungle camps at match start and respawn each camp after it is
     cleared. Camps are passive: their monsters idle until provoked."""
+    if state.match_clock < 0:
+        return  # neutrals appear when the countdown ends
     for camp_id, (cx, cy, count) in enumerate(JUNGLE_CAMPS):
         camp = state.neutral_camps.get(camp_id)
         if camp is None:
@@ -232,6 +254,86 @@ def _spawn_camp(state: GameState, camp_id: int, cx: float, cy: float,
             camp_id=camp_id,
         )
         state.entities[mob.entity_id] = mob
+
+
+# ---------------------------------------------------------------------------
+# Runes (roaming neutrals that drop timed buffs)
+# ---------------------------------------------------------------------------
+
+RUNE_BUFF_DURATION = 25.0      # haste / double_damage / cdr_50 last this long
+RUNE_REGEN_DURATION = 30.0     # regen_10x window (also cancels on taking damage)
+RUNE_HASTE_SPEED = 220         # near-max move speed bonus
+
+
+def apply_rune_buff(hero: Hero, kind: str) -> None:
+    """Grant a hero the timed buff a slain rune drops."""
+    if kind == "haste":
+        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, source="rune:haste",
+                                      speed_bonus=RUNE_HASTE_SPEED))
+    elif kind == "double_damage":
+        hero.buffs.append(make_effect(RUNE_BUFF_DURATION,
+                                      source="rune:double_damage", dmg_mult=2.0))
+    elif kind == "cdr_50":
+        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, source="rune:cdr_50",
+                                      cd_mult=0.5))
+    elif kind == "regen_10x":
+        # 10x current regen, but the buff fizzles the moment the hero is hit.
+        eff = make_effect(RUNE_REGEN_DURATION, source="rune:regen_10x",
+                          hp_regen_bonus=hero.hp_regen * 9.0,
+                          mana_regen_bonus=hero.mana_regen * 9.0)
+        eff["cancel_on_hit"] = True
+        hero.buffs.append(eff)
+
+
+def system_runes(state: GameState, dt: float) -> None:
+    """Spawn runes at match start, respawn cleared ones, and patrol live ones."""
+    if state.match_clock < 0:
+        return  # runes appear when the countdown ends
+    for idx, cfg in enumerate(RUNES):
+        rs = state.rune_state.get(idx)
+        if rs is None:
+            _spawn_rune(state, idx, cfg)
+            continue
+        ent = state.entities.get(rs.get("eid"))
+        if ent is not None and ent.alive:
+            _patrol_rune(state, ent, dt)
+            continue
+        # Cleared: count down, then respawn.
+        if rs["timer"] <= 0.0:
+            rs["timer"] = NEUTRAL_RESPAWN
+        else:
+            rs["timer"] -= dt
+            if rs["timer"] <= 0.0:
+                _spawn_rune(state, idx, cfg)
+
+
+def _spawn_rune(state: GameState, idx: int, cfg: dict) -> None:
+    px, py = cfg["pos"]
+    rune = RuneCreature(
+        x=px, y=py, dest_x=px, dest_y=py,
+        home_x=px, home_y=py,
+        patrol_radius=cfg.get("patrol", 400),
+        rune_buff=cfg.get("buff", "haste"),
+        rune_index=idx,
+    )
+    state.entities[rune.entity_id] = rune
+    state.rune_state[idx] = {"eid": rune.entity_id, "timer": 0.0}
+
+
+def _patrol_rune(state: GameState, rune: RuneCreature, dt: float) -> None:
+    if find_attack_target(state, rune) is not None:
+        return  # an enemy is in range: stand and fight (combat handles attacks)
+    dx, dy = rune.dest_x - rune.x, rune.dest_y - rune.y
+    if math.hypot(dx, dy) < rune.radius + 5.0:
+        ang = random.uniform(0, 2 * math.pi)
+        rad = random.uniform(0, rune.patrol_radius)
+        rune.dest_x = rune.home_x + math.cos(ang) * rad
+        rune.dest_y = rune.home_y + math.sin(ang) * rad
+        return
+    d = math.hypot(dx, dy)
+    step = min(rune.move_speed * dt, d)
+    rune.x += dx / d * step
+    rune.y += dy / d * step
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +393,13 @@ def _advance_minion(state: GameState, minion: Minion, dt: float) -> None:
         sl = math.hypot(dirx, diry) or 1.0
         dirx, diry = dirx / sl, diry / sl
 
-    step = min(minion.move_speed * dt, dist)
+    speed = minion.move_speed
+    if minion.meet_speed:
+        if math.hypot(minion.meet_x - minion.x, minion.meet_y - minion.y) <= 200:
+            minion.meet_speed = 0.0  # reached the meet point: back to default
+        else:
+            speed = minion.meet_speed
+    step = min(speed * dt, dist)
     minion.x += dirx * step
     minion.y += diry * step
 
@@ -347,9 +455,12 @@ def system_collision(state: GameState, dt: float) -> None:
             _separate(a, units[j])
     structs = [e for e in state.entities.values()
                if isinstance(e, Structure) and e.alive]
+    obstacles = state.obstacle_rects()
     for u in units:
         for s in structs:
             _push_out_of(u, s)
+        for rect in obstacles:
+            _push_out_of_rect(u, rect)
         u.x = max(u.radius, min(MAP_WIDTH - u.radius, u.x))
         u.y = max(u.radius, min(MAP_HEIGHT - u.radius, u.y))
 
@@ -386,6 +497,35 @@ def _push_out_of(u, s) -> None:
     u.y += ny * overlap
 
 
+def _push_out_of_rect(u, rect) -> None:
+    """Push a unit's circle out of an axis-aligned rect along the shallowest axis."""
+    x, y, w, h = rect
+    nearest_x = min(max(u.x, x), x + w)
+    nearest_y = min(max(u.y, y), y + h)
+    dx, dy = u.x - nearest_x, u.y - nearest_y
+    dist2 = dx * dx + dy * dy
+    if dist2 >= u.radius * u.radius:
+        return  # not overlapping
+    if dist2 > 1e-9:
+        dist = math.sqrt(dist2)
+        nx, ny = dx / dist, dy / dist
+        u.x = nearest_x + nx * (u.radius + 0.5)
+        u.y = nearest_y + ny * (u.radius + 0.5)
+        return
+    # Center is inside the rect: eject along the nearest edge.
+    left, right = u.x - x, (x + w) - u.x
+    top, bottom = u.y - y, (y + h) - u.y
+    m = min(left, right, top, bottom)
+    if m == left:
+        u.x = x - u.radius - 0.5
+    elif m == right:
+        u.x = x + w + u.radius + 0.5
+    elif m == top:
+        u.y = y - u.radius - 0.5
+    else:
+        u.y = y + h + u.radius + 0.5
+
+
 # ---------------------------------------------------------------------------
 # Abilities
 # ---------------------------------------------------------------------------
@@ -395,8 +535,8 @@ def system_ability_cast(state: GameState, dt: float) -> None:
         caster = state.entities.get(cast["caster"])
         if not isinstance(caster, Hero) or not caster.alive:
             continue
-        if caster.is_stunned():
-            continue
+        if caster.is_silenced():
+            continue  # stun or silence: no abilities (covers is_stunned too)
         key = cast["key"]
         # Item actives use slot keys "I1".."I6"; hero abilities use "Q".."R".
         if isinstance(key, str) and key.startswith("I") and key[1:].isdigit():
@@ -408,14 +548,18 @@ def system_ability_cast(state: GameState, dt: float) -> None:
         adef = caster.hero_def.ability(ab["key"])
         if adef is None or adef.cast_type == CastType.PASSIVE:
             continue  # passives are not castable
+        rank = caster.ability_rank(ab["key"])
+        if rank < 1:
+            continue  # not learned yet
         if caster.cooldowns.get(ab["key"], 0.0) > 0:
             continue
         if caster.mana < ab["mana"]:
             continue
         caster.mana -= ab["mana"]
-        caster.cooldowns[ab["key"]] = ab["cd"]
+        caster.cooldowns[ab["key"]] = ab["cd"] * caster.cooldown_mult()
         ctx = CastContext(state, caster,
-                          cast.get("tx", 0.0), cast.get("ty", 0.0), cast.get("tid"))
+                          cast.get("tx", 0.0), cast.get("ty", 0.0),
+                          cast.get("tid"), rank=rank)
         adef.fn(ctx)
         # "On skill use" passive hook (e.g. Manananggal Bloodlust).
         hook = getattr(caster.hero_def, "on_ability_cast", None)
@@ -438,7 +582,7 @@ def _cast_item_active(state: GameState, caster: Hero, cast: dict, slot: int) -> 
     if caster.mana < active.mana:
         return
     caster.mana -= active.mana
-    caster.item_cooldowns[item.item_id] = active.cd
+    caster.item_cooldowns[item.item_id] = active.cd * caster.cooldown_mult()
     ctx = CastContext(state, caster,
                       cast.get("tx", 0.0), cast.get("ty", 0.0), cast.get("tid"))
     active.fn(ctx)
@@ -464,7 +608,8 @@ def system_projectiles(state: GameState, dt: float) -> None:
             hit = _projectile_hit(state, proj)
             if hit is not None:
                 state.damage_events.append(
-                    {"src": proj.owner_id, "tgt": hit.entity_id, "amt": proj.damage}
+                    {"src": proj.owner_id, "tgt": hit.entity_id, "amt": proj.damage,
+                     "dtype": proj.damage_type}
                 )
                 dead.append(proj.entity_id)
             elif proj.range_left <= 0 or not (0 <= proj.x <= MAP_WIDTH and 0 <= proj.y <= MAP_HEIGHT):
@@ -589,6 +734,24 @@ def _grant_xp(hero: Hero, xp: int) -> None:
         hero.max_hp += HP_PER_LEVEL
         hero.hp += HP_PER_LEVEL
         hero.attack_damage += DAMAGE_PER_LEVEL
+        hero.sp_atk += hero.sp_atk_per_level
+        hero.phys_def += hero.phys_def_per_level
+        hero.sp_def += hero.sp_def_per_level
+        hero.skill_points += 1  # one skill point per level
+
+
+def _apply_defense(target, raw: float, dtype: str) -> int:
+    """Reduce raw damage by the target's matching defense via an armor curve:
+    reduction = DEF / (DEF + DEFENSE_K). 'true' damage ignores defense."""
+    if dtype == "true":
+        return int(raw)
+    if dtype == "special":
+        defense = target.effective_sp_def()
+    else:  # physical (default)
+        defense = target.effective_phys_def()
+    if defense <= 0:
+        return int(raw)
+    return int(raw * DEFENSE_K / (defense + DEFENSE_K))
 
 
 def system_damage_death(state: GameState, dt: float) -> None:
@@ -603,10 +766,14 @@ def system_damage_death(state: GameState, dt: float) -> None:
             continue
         if isinstance(tgt, Hero) and tgt.is_invulnerable():
             continue  # invulnerable (e.g. split upper half) takes no damage
-        amt = ev["amt"]
+        amt = _apply_defense(tgt, ev["amt"], ev.get("dtype", "physical"))
         if isinstance(tgt, SplitBody):
             amt = int(amt * tgt.dmg_mult)  # the lower body takes amplified damage
         tgt.hp -= amt
+        # Effects that fizzle the moment their bearer takes damage (e.g. the
+        # rune regen buff) are dropped here.
+        if isinstance(tgt, Hero) and amt > 0:
+            tgt.buffs[:] = [b for b in tgt.buffs if not b.get("cancel_on_hit")]
         if isinstance(tgt, Minion) and tgt.is_neutral:
             _provoke_camp(state, tgt.camp_id)  # whole camp aggros when one is hit
         if tgt.hp <= 0:
@@ -703,6 +870,9 @@ def _kill(state: GameState, victim, src_id) -> None:
             _reward(state, killer, "xp", HERO_KILL_XP)
     elif isinstance(victim, Minion):
         _award_minion_bounty(state, victim, killer)
+        # A slain rune also grants its killer a timed buff.
+        if isinstance(victim, RuneCreature) and isinstance(killer, Hero):
+            apply_rune_buff(killer, victim.rune_buff)
     elif isinstance(victim, Structure):
         if isinstance(killer, Hero):
             killer.gold += STRUCTURE_GOLD
@@ -720,6 +890,38 @@ def system_hero_hooks(state: GameState, dt: float) -> None:
         hd = hero.hero_def
         if hd is not None and getattr(hd, "on_tick", None) is not None:
             hd.on_tick(state, hero, dt)
+
+
+# ---------------------------------------------------------------------------
+# Spawn-point regen zones
+# ---------------------------------------------------------------------------
+
+SPAWN_ZONE_HP_PER_SEC = 80.0    # fast hp regen at your own spawn
+SPAWN_ZONE_MP_PER_SEC = 50.0
+SPAWN_ZONE_DPS = 80.0           # enemies inside take this much true damage/sec
+
+
+def system_spawn_zone(state: GameState, dt: float) -> None:
+    """Heroes standing in their own spawn zone regenerate quickly; enemy units
+    inside it are burned at the same rate (so you can't camp the enemy base)."""
+    if SPAWN_ZONE_RADIUS <= 0:
+        return
+    heal = int(SPAWN_ZONE_HP_PER_SEC * dt) or 1
+    mana = int(SPAWN_ZONE_MP_PER_SEC * dt) or 1
+    burn = int(SPAWN_ZONE_DPS * dt) or 1
+    for team_int, (cx, cy) in SPAWN_POSITIONS.items():
+        team = Team(team_int)
+        for e in state.entities.values():
+            if not e.alive or isinstance(e, (Structure, Projectile)):
+                continue
+            if math.hypot(e.x - cx, e.y - cy) > SPAWN_ZONE_RADIUS:
+                continue
+            if isinstance(e, Hero) and e.team == team:
+                e.hp = min(e.max_hp, e.hp + heal)
+                e.mana = min(e.max_mana, e.mana + mana)
+            elif e.team != team and e.team != Team.NONE:
+                state.damage_events.append(
+                    {"src": None, "tgt": e.entity_id, "amt": burn, "dtype": "true"})
 
 
 # ---------------------------------------------------------------------------
@@ -785,15 +987,18 @@ def _finish(state: GameState, winner: Team) -> None:
 def step(state: GameState, dt: float) -> None:
     """Run one full simulation tick in dependency order."""
     state.combat_events.clear()  # one-shot reward popups for this tick
+    system_clock(state, dt)
     system_status(state, dt)
     system_spawn_creeps(state, dt)
     system_neutral_camps(state, dt)
+    system_runes(state, dt)
     system_movement(state, dt)
     system_ability_cast(state, dt)
     system_collision(state, dt)
     system_hero_hooks(state, dt)
     system_projectiles(state, dt)
     system_combat(state, dt)
+    system_spawn_zone(state, dt)
     system_damage_death(state, dt)
     system_economy(state, dt)
     system_respawn(state, dt)

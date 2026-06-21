@@ -1,0 +1,33 @@
+# Lane creeps. Base values double as the melee minion's stats.
+
+minion_hp: 130
+minion_damage: 18
+minion_range: 160
+minion_interval: 1.0
+minion_speed: 130
+minion_radius: 12
+minion_gold: 25
+minion_xp: 30
+
+# Ranged minion: fragile, hits from afar (fires a projectile), worth a bit more.
+ranged_minion_hp: 90
+ranged_minion_damage: 22
+ranged_minion_range: 500
+ranged_minion_gold: 30
+ranged_minion_xp: 35
+ranged_minion_projectile_speed: 900
+
+# Cart (siege) minion: tanky, slow, big bounty. Added every Nth wave per lane.
+cart_minion_hp: 600
+cart_minion_damage: 30
+cart_minion_range: 200
+cart_minion_speed: 100
+cart_minion_radius: 18
+cart_minion_gold: 60
+cart_minion_xp: 80
+
+# Wave composition (per lane, per team, per wave).
+creep_wave_interval: 30.0     # seconds between waves
+creep_melee_per_wave: 3
+creep_ranged_per_wave: 1
+creep_cart_every: 4           # a cart joins each lane every Nth wave
