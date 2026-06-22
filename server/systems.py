@@ -15,6 +15,7 @@ from shared.config import (
     MAP_HEIGHT,
     SPAWN_POSITIONS,
     LANE_PATHS,
+    CORE_POSITIONS,
     HERO_RESPAWN_BASE,
     HERO_RESPAWN_PER_LEVEL,
     HERO_KILL_GOLD,
@@ -41,13 +42,14 @@ from shared.config import (
     MEET_POINTS,
     SPAWN_ZONE_RADIUS,
     BASE_TOWER_T,
+    TREE_RESPAWN,
 )
 from shared.geometry import point_along, closest_point_on_segment
 from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
     Structure, Projectile, HookProjectile, SplitBody, RuneCreature,
-    SummonedMinion,
+    SummonedMinion, Wall, Tree,
 )
 from server.effects import make_effect
 from server.bind import release_bind
@@ -68,16 +70,18 @@ CAST_SIGNAL_SECS = 0.45
 # Per-attacker target preference: lower number = higher priority. A category
 # absent from the map means "never auto-attack that type".
 _PRIORITY = {
-    "minion": {EntityType.MINION: 0, 
-               EntityType.HERO: 1, 
-               EntityType.TOWER: 2, 
-               EntityType.BASE: 2},
-    "structure": {EntityType.MINION: 0, 
+    "minion": {EntityType.MINION: 0,
+               EntityType.HERO: 1,
+               EntityType.TOWER: 2,
+               EntityType.BASE: 2,
+               EntityType.TREE: 3},
+    "structure": {EntityType.MINION: 0,
                   EntityType.HERO: 1},
-    "hero": {EntityType.HERO: 0, 
-             EntityType.MINION: 1, 
-             EntityType.TOWER: 2, 
-             EntityType.BASE: 2},
+    "hero": {EntityType.HERO: 0,
+             EntityType.MINION: 1,
+             EntityType.TOWER: 2,
+             EntityType.BASE: 2,
+             EntityType.TREE: 3},
 }
 
 
@@ -223,8 +227,13 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
     # reverts to default speed (so both sides clash at the meet point).
     meet = MEET_POINTS.get(lane) if state.wave_count == 1 else None
 
+    # The lane polyline's last point is the enemy's base-tower spot, not their
+    # core (which sits inland, off the lane). Append it so minions keep
+    # advancing into the core once the lane is cleared instead of idling
+    # where the tower used to stand.
+    enemy_core = CORE_POSITIONS[2 if team == Team.TEAM1 else 1]
     for i, cls in enumerate(classes):
-        waypoints = path[1:]  # remaining waypoints after the spawn point
+        waypoints = path[1:] + [enemy_core]  # remaining waypoints, then the core
         minion = cls(
             team=team,
             x=spawn[0] + ux * (i * 35 - 60),
@@ -897,6 +906,8 @@ def system_damage_death(state: GameState, dt: float) -> None:
         if "heal" in ev:
             tgt.hp = min(tgt.max_hp, tgt.hp + ev["heal"])
             continue
+        if isinstance(tgt, Wall):
+            continue  # permanent terrain; no damage source can affect it
         if isinstance(tgt, Structure) and not state.is_structure_vulnerable(tgt):
             continue
         if isinstance(tgt, Hero) and tgt.is_invulnerable():
@@ -1081,6 +1092,8 @@ def _kill(state: GameState, victim, src_id) -> None:
         if isinstance(killer, Hero):
             killer.gold += STRUCTURE_GOLD
             _reward(state, killer, "gold", STRUCTURE_GOLD)
+    elif isinstance(victim, Tree):
+        victim.respawn_timer = TREE_RESPAWN
 
 
 # ---------------------------------------------------------------------------
@@ -1183,6 +1196,18 @@ def system_respawn(state: GameState, dt: float) -> None:
             hero.attack_move_x = hero.attack_move_y = None
 
 
+def system_tree_respawn(state: GameState, dt: float) -> None:
+    """Regrow a destroyed tree segment a fixed time after it dies."""
+    for e in state.entities.values():
+        if not isinstance(e, Tree) or e.alive or e.respawn_timer <= 0:
+            continue
+        e.respawn_timer -= dt
+        if e.respawn_timer <= 0:
+            e.alive = True
+            e.hp = e.max_hp
+            e.respawn_timer = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Win check
 # ---------------------------------------------------------------------------
@@ -1231,4 +1256,5 @@ def step(state: GameState, dt: float) -> None:
     system_damage_death(state, dt)
     system_economy(state, dt)
     system_respawn(state, dt)
+    system_tree_respawn(state, dt)
     system_win_check(state, dt)

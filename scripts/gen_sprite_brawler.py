@@ -10,8 +10,10 @@ import spritelib as sl
 import pygame
 
 PAL = {
-    "skin": (210, 168, 140), "hair": (30, 24, 22),
-    "cloth": (150, 70, 40), "cloth_dk": (104, 46, 26),
+    "skin": (210, 168, 140),
+    "hair": (30, 24, 22),
+    "cloth": (150, 70, 40),
+    "cloth_dk": (104, 46, 26),
     "eye": (60, 30, 20),
 }
 

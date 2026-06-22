@@ -11,8 +11,10 @@ import spritelib as sl
 import pygame
 
 PAL = {
-    "skin": (96, 78, 54), "hair": (40, 30, 18),
-    "cloth": (74, 92, 52), "cloth_dk": (50, 64, 34),
+    "skin": (96, 78, 54), 
+    "hair": (40, 30, 18),
+    "cloth": (74, 92, 52), 
+    "cloth_dk": (50, 64, 34),
     "eye": (240, 210, 90),
 }
 FUR = (58, 44, 26)

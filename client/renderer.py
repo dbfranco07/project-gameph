@@ -42,6 +42,10 @@ from shared.game_types import Team, GamePhase, EntityType
 # (0 = off, 255 = pitch black). Vision footprints are punched back to full
 # brightness, so seen areas read lighter than the fogged ones.
 FOG_ALPHA = 95
+# The fog/vision mask is built at 1/FOG_SCALE resolution then smoothscaled up
+# once per frame -- it's a soft darkening overlay, not crisp art, so the
+# downsample is invisible while cutting circle/polygon fill cost by FOG_SCALE**2.
+FOG_SCALE = 2
 from client.camera import Camera
 from client.sprites import SpriteManager, facing_from_delta
 
@@ -141,6 +145,27 @@ class Renderer:
         # Terrain texture caches (built lazily from assets/terrain/*.png).
         self._ground_cache: pygame.Surface | None = None
         self._strip_cache: dict[tuple, pygame.Surface] = {}
+        # Fog-of-war: reusable overlay surfaces (allocated lazily, sized once)
+        # plus a per-source world-space visibility-polygon cache so a vision
+        # source's raycast is only redone when its own position/radius/occluder
+        # set changes, not every frame just because the camera panned.
+        # The mask itself is built at reduced resolution (FOG_SCALE) and
+        # smoothscaled up once at the end -- fog edges are a soft darkening
+        # overlay to begin with, so the lower-res mask is indistinguishable
+        # on screen while cutting circle/polygon fill cost by FOG_SCALE**2.
+        self._fog: pygame.Surface | None = None
+        self._vis: pygame.Surface | None = None
+        self._fog_upscaled: pygame.Surface | None = None
+        self._vis_poly_cache: dict[int, tuple] = {}
+        # smoothscale results, keyed by (source surface identity, target size).
+        # Sprite frames are loaded once and reused by SpriteManager, so the same
+        # frame gets asked to scale to the same size over and over every frame.
+        self._scale_cache: dict[tuple[int, tuple[int, int]], pygame.Surface] = {}
+        # Minimap static background (panel fill + river/lane/wall/tree lines),
+        # rebuilt only when the alive wall/tree set changes (e.g. a tree died
+        # or respawned) instead of redrawn from scratch every frame.
+        self._minimap_bg: pygame.Surface | None = None
+        self._minimap_bg_sig: tuple | None = None
         # The current frame's entity list, stashed for owner/target lookups.
         self._frame_entities: list[dict] = []
 
@@ -262,7 +287,7 @@ class Renderer:
             if surf is not None:
                 size = r * 2
                 if surf.get_width() != size:
-                    surf = pygame.transform.smoothscale(surf, (size, size))
+                    surf = self._scaled(surf, (size, size))
                 self.screen.blit(surf, (sx - size // 2, sy - size // 2))
             else:
                 frac = age / f["dur"]
@@ -400,17 +425,28 @@ class Renderer:
                                length, width)
 
     def _blit_tiled_strip(self, tile, cache_key, p1, p2, length, width) -> None:
-        """Tile `tile` into a length x width strip (cached), rotate it to the
-        p1->p2 heading, and blit it centered on the segment midpoint."""
-        strip = self._strip_cache.get(cache_key)
-        if strip is None:
-            scaled = pygame.transform.smoothscale(tile, (tile.get_width(), width))
-            strip = pygame.Surface((max(1, length), width), pygame.SRCALPHA)
-            for tx in range(0, length, scaled.get_width()):
-                strip.blit(scaled, (tx, 0))
-            self._strip_cache[cache_key] = strip
-        rot = pygame.transform.rotate(
-            strip, -math.degrees(math.atan2(p2[1] - p1[1], p2[0] - p1[0])))
+        """Tile `tile` into a length x width strip and rotate it to the p1->p2
+        heading (both cached), then blit it centered on the segment midpoint.
+
+        The camera only translates (never zooms/rotates), so for a given strip
+        the heading between its two fixed world endpoints is the same every
+        frame even as the camera pans -- only the on-screen midpoint moves.
+        That makes the rotated surface just as cacheable as the unrotated
+        tiled strip; rotating a long lane/river strip from scratch every frame
+        was previously the single biggest CPU cost in the renderer."""
+        angle = -math.degrees(math.atan2(p2[1] - p1[1], p2[0] - p1[0]))
+        rot_key = (cache_key, round(angle, 3))
+        rot = self._strip_cache.get(rot_key)
+        if rot is None:
+            strip = self._strip_cache.get(cache_key)
+            if strip is None:
+                scaled = pygame.transform.smoothscale(tile, (tile.get_width(), width))
+                strip = pygame.Surface((max(1, length), width), pygame.SRCALPHA)
+                for tx in range(0, length, scaled.get_width()):
+                    strip.blit(scaled, (tx, 0))
+                self._strip_cache[cache_key] = strip
+            rot = pygame.transform.rotate(strip, angle)
+            self._strip_cache[rot_key] = rot
         mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
         self.screen.blit(rot, (mx - rot.get_width() // 2,
                                my - rot.get_height() // 2))
@@ -436,13 +472,27 @@ class Renderer:
         subtracted from the fog. Radii mirror the server (no camera zoom, so world
         units == pixels); a hero in the split ult carries bonus sight via `visb`.
         Every vision source (heroes, towers, minions) is occluded by walls/trees;
-        sources with no occluder nearby take a cheap plain-circle fast path."""
+        sources with no occluder nearby take a cheap plain-circle fast path.
+
+        The two overlay surfaces are allocated once and reused every frame, and
+        each source's raycast visibility polygon (the expensive part) is cached
+        in world space keyed by its own (position, radius, occluder set) — it's
+        only recomputed when one of those actually changes, not just because the
+        camera panned. The camera only translates (no zoom), so a cache hit is
+        just a cheap per-point offset instead of a full re-cast."""
         if FOG_ALPHA <= 0 or my_team not in (Team.TEAM1, Team.TEAM2):
             return  # spectators see everything; no fog overlay
-        blockers = self._fog_blockers(entities)
-        fog = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        fog.fill((0, 0, 0, FOG_ALPHA))
-        vis = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        small_w = SCREEN_WIDTH // FOG_SCALE
+        small_h = SCREEN_HEIGHT // FOG_SCALE
+        if self._fog is None:
+            self._fog = pygame.Surface((small_w, small_h), pygame.SRCALPHA)
+            self._vis = pygame.Surface((small_w, small_h), pygame.SRCALPHA)
+            self._fog_upscaled = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        blockers, blockers_sig = self._fog_blockers(entities)
+        self._fog.fill((0, 0, 0, FOG_ALPHA))
+        self._vis.fill((0, 0, 0, 0))
+        cam_x, cam_y = self.camera.x, self.camera.y
+        seen_ids = set()
         for ent in entities:
             if ent.get("tm") != my_team or not ent.get("a", True):
                 continue
@@ -455,46 +505,83 @@ class Renderer:
                 radius = int(MINION_VISION_RADIUS)  # split body grants no vision
             else:
                 continue
-            sx, sy = self.camera.world_to_screen(ent["x"], ent["y"])
+            seen_ids.add(ent["id"])
+            # A source whose reveal circle doesn't even overlap the screen
+            # (e.g. a minion pushing a lane you're nowhere near) can't affect
+            # any visible pixel -- skip the raycast/draw entirely. The id stays
+            # in seen_ids so its cache entry isn't pruned as "despawned", just
+            # left stale until it's on-screen again.
+            sx_full, sy_full = ent["x"] - cam_x, ent["y"] - cam_y
+            if (sx_full + radius < 0 or sx_full - radius > SCREEN_WIDTH or
+                    sy_full + radius < 0 or sy_full - radius > SCREEN_HEIGHT):
+                continue
             # A unit with unobstructed sight (e.g. bound in a tree/wall) reveals a
             # plain circle ignoring wall/tree shadows, matching the server.
-            src_blockers = [] if ent.get("unobs") else blockers
-            self._reveal_source(vis, sx, sy, radius, src_blockers)
-        fog.blit(vis, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
-        self.screen.blit(fog, (0, 0))
+            src_blockers, src_sig = (((), ()) if ent.get("unobs")
+                                      else (blockers, blockers_sig))
+            self._reveal_source(ent["id"], ent["x"], ent["y"], radius,
+                                src_blockers, src_sig, cam_x, cam_y)
+        # Drop cache entries for sources that despawned/died this frame so the
+        # dict doesn't grow forever across a match.
+        stale = self._vis_poly_cache.keys() - seen_ids
+        for sid in stale:
+            del self._vis_poly_cache[sid]
+        self._fog.blit(self._vis, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
+        pygame.transform.smoothscale(self._fog, (SCREEN_WIDTH, SCREEN_HEIGHT),
+                                      self._fog_upscaled)
+        self.screen.blit(self._fog_upscaled, (0, 0))
 
-    def _fog_blockers(self, entities) -> list:
-        """Screen-space (x1,y1,x2,y2,thickness) for each alive wall/tree that
-        blocks line of sight."""
+    def _fog_blockers(self, entities) -> tuple:
+        """World-space (x1,y1,x2,y2,thickness) for each alive wall/tree that
+        blocks line of sight, plus a signature (their entity ids) cheap to
+        compare across frames to know when the occluder set actually changed
+        (e.g. a tree was destroyed or respawned)."""
         out = []
+        sig = []
         for ent in entities:
             if ent.get("et") not in (EntityType.WALL, EntityType.TREE):
                 continue
             if not ent.get("a", True) or ent.get("x1") is None:
                 continue
-            ax, ay = self.camera.world_to_screen(ent["x1"], ent["y1"])
-            bx, by = self.camera.world_to_screen(ent["x2"], ent["y2"])
-            out.append((ax, ay, bx, by, ent.get("th", 60)))
-        return out
+            out.append((ent["x1"], ent["y1"], ent["x2"], ent["y2"], ent.get("th", 60)))
+            sig.append(ent["id"])
+        return tuple(out), tuple(sig)
 
-    def _reveal_source(self, vis, sx, sy, radius, blockers) -> None:
-        """Reveal a vision source onto the mask `vis` (white = visible). With a
-        wall/tree in range the lit area is a raycast visibility polygon (rays
-        stop at occluders); otherwise it is a plain circle. Reveals from several
-        sources just overdraw (vision is a union), so no per-source compositing
-        is needed."""
-        pts = self._visibility_polygon(sx, sy, radius, blockers)
-        if pts is None:
-            pygame.draw.circle(vis, (255, 255, 255, 255), (sx, sy), radius)
-        elif len(pts) >= 3:
-            pygame.draw.polygon(vis, (255, 255, 255, 255),
-                                [(int(x), int(y)) for x, y in pts])
+    def _reveal_source(self, src_id, wx, wy, radius, blockers, blockers_sig,
+                       cam_x, cam_y) -> None:
+        """Reveal a vision source onto the mask `self._vis` (white = visible).
+        With a wall/tree in range the lit area is a raycast visibility polygon
+        (rays stop at occluders); otherwise it is a plain circle. Reveals from
+        several sources just overdraw (vision is a union), so no per-source
+        compositing is needed. The polygon is computed in world space and cached
+        per source id; a cache hit just needs the camera offset applied."""
+        key = (wx, wy, radius, blockers_sig)
+        cached = self._vis_poly_cache.get(src_id)
+        if cached is not None and cached[0] == key:
+            poly = cached[1]
+        else:
+            poly = self._visibility_polygon(wx, wy, radius, blockers)
+            self._vis_poly_cache[src_id] = (key, poly)
+        # Geometry above is full-res world space (it must line up with actual
+        # wall/tree positions); only the drawing onto the downsampled `_vis`
+        # mask is scaled down here.
+        sx, sy = int((wx - cam_x) / FOG_SCALE), int((wy - cam_y) / FOG_SCALE)
+        if poly is None:
+            pygame.draw.circle(self._vis, (255, 255, 255, 255), (sx, sy),
+                               int(radius / FOG_SCALE))
+        elif len(poly) >= 3:
+            pts = [(int((x - cam_x) / FOG_SCALE), int((y - cam_y) / FOG_SCALE))
+                   for x, y in poly]
+            pygame.draw.polygon(self._vis, (255, 255, 255, 255), pts)
 
     def _visibility_polygon(self, sx, sy, radius, blockers):
-        """Field-of-view polygon for a source at (sx, sy): cast rays around the
-        circle, each stopping at the nearest wall/tree centerline in range (ends
-        extended by half-thickness for the round caps). Returns the ring of hit
-        points, or None when nothing occludes (caller draws a plain circle).
+        """Field-of-view polygon for a source at (sx, sy) — world-space
+        coordinates, but the math is translation-invariant so it works
+        identically in screen space; only the caller's choice of input matters.
+        Casts rays around the circle, each stopping at the nearest wall/tree
+        centerline in range (ends extended by half-thickness for the round
+        caps). Returns the ring of hit points, or None when nothing occludes
+        (caller draws a plain circle).
 
         Extra rays are aimed just to either side of every occluder endpoint so
         the shadow edges stay crisp instead of being rounded off by the ray step."""
@@ -702,12 +789,23 @@ class Renderer:
             time.time() if anim_t is None else anim_t)
         return self._blit_surf(surf, sx, sy, radius, eid)
 
+    def _scaled(self, surf: pygame.Surface, size: tuple[int, int]) -> pygame.Surface:
+        """smoothscale `surf` to `size`, cached by (source identity, size) so
+        repeated requests for the same sprite frame at the same on-screen size
+        don't re-scale every frame."""
+        key = (id(surf), size)
+        scaled = self._scale_cache.get(key)
+        if scaled is None:
+            scaled = pygame.transform.smoothscale(surf, size)
+            self._scale_cache[key] = scaled
+        return scaled
+
     def _blit_surf(self, surf, sx, sy, radius, eid) -> bool:
         if surf is None:
             return False
         target = max(8, int(radius * 3.0))
         if surf.get_height() != target:
-            surf = pygame.transform.smoothscale(surf, (target, target))
+            surf = self._scaled(surf, (target, target))
         surf = self._apply_hit_flash(surf, eid)
         self.screen.blit(surf, (sx - target // 2, sy - target // 2))
         return True
@@ -1103,26 +1201,53 @@ class Renderer:
                                    (255, 140, 140))
             self.screen.blit(txt, (x0 + 8, y0 + 6 + 11 * line))
 
-    def _draw_minimap(self, entities, my_entity_id, my_team) -> None:
+    def _minimap_background(self, entities) -> pygame.Surface:
+        """Panel fill + river/lane/wall/tree lines, none of which move at
+        runtime except a tree dying or respawning — so this is cached and only
+        redrawn when the alive wall/tree set actually changes."""
+        sig = tuple(sorted(
+            e["id"] for e in entities
+            if e.get("et") in (EntityType.WALL, EntityType.TREE) and e.get("a", True)))
+        if self._minimap_bg is not None and self._minimap_bg_sig == sig:
+            return self._minimap_bg
         mm = self.minimap
         panel = pygame.Surface((mm.width, mm.height))
         panel.set_alpha(220)
         panel.fill((20, 30, 18))
-        self.screen.blit(panel, (mm.left, mm.top))
+
+        def to_local(wx, wy):
+            return (int(wx / MAP_WIDTH * mm.width), int(wy / MAP_HEIGHT * mm.height))
+
+        if RIVER is not None:
+            pygame.draw.line(panel, (70, 110, 170),
+                             to_local(RIVER.x1, RIVER.y1),
+                             to_local(RIVER.x2, RIVER.y2), 1)
+        for path in LANE_PATHS.values():
+            pygame.draw.lines(panel, COLOR_LANE, False,
+                              [to_local(wx, wy) for wx, wy in path], 1)
+        for ent in entities:
+            if ent.get("et") not in (EntityType.WALL, EntityType.TREE) or not ent.get("a", True):
+                continue
+            col = (60, 110, 60) if ent.get("et") == EntityType.TREE else (110, 110, 120)
+            if ent.get("x1") is not None:
+                pygame.draw.line(panel, col,
+                                 to_local(ent["x1"], ent["y1"]),
+                                 to_local(ent["x2"], ent["y2"]), 1)
+            else:
+                mx, my = to_local(ent["x"], ent["y"])
+                pygame.draw.rect(panel, col, (mx, my, 2, 2))
+        self._minimap_bg = panel
+        self._minimap_bg_sig = sig
+        return panel
+
+    def _draw_minimap(self, entities, my_entity_id, my_team) -> None:
+        mm = self.minimap
+        self.screen.blit(self._minimap_background(entities), (mm.left, mm.top))
         pygame.draw.rect(self.screen, (90, 90, 110), mm, 2)
 
         def to_mm(wx, wy):
             return (int(mm.left + wx / MAP_WIDTH * mm.width),
                     int(mm.top + wy / MAP_HEIGHT * mm.height))
-
-        # River + lane lines for orientation.
-        if RIVER is not None:
-            pygame.draw.line(self.screen, (70, 110, 170),
-                             to_mm(RIVER.x1, RIVER.y1),
-                             to_mm(RIVER.x2, RIVER.y2), 1)
-        for path in LANE_PATHS.values():
-            pygame.draw.lines(self.screen, COLOR_LANE, False,
-                              [to_mm(wx, wy) for wx, wy in path], 1)
 
         for ent in entities:
             et = ent.get("et")
@@ -1131,17 +1256,7 @@ class Renderer:
             if et == EntityType.HERO and not ent.get("a", True):
                 continue
             if et in (EntityType.WALL, EntityType.TREE):
-                if not ent.get("a", True):
-                    continue
-                col = (60, 110, 60) if et == EntityType.TREE else (110, 110, 120)
-                if ent.get("x1") is not None:
-                    pygame.draw.line(self.screen, col,
-                                     to_mm(ent["x1"], ent["y1"]),
-                                     to_mm(ent["x2"], ent["y2"]), 1)
-                else:
-                    mx, my = to_mm(ent["x"], ent["y"])
-                    pygame.draw.rect(self.screen, col, (mx, my, 2, 2))
-                continue
+                continue  # baked into the cached background
             mx, my = to_mm(ent["x"], ent["y"])
             color = _team_color(ent.get("tm", 0))
             if et == EntityType.MINION and ent.get("rune"):

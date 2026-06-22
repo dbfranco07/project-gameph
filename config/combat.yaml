@@ -15,6 +15,7 @@ attack_click_pixels: 14       # cursor pickup tolerance for "A + click enemy"
 # Respawn
 hero_respawn_base: 5.0        # base respawn seconds
 hero_respawn_per_level: 3.0   # extra seconds per hero level
+tree_respawn: 20.0            # seconds before a destroyed tree segment regrows
 
 # Leveling / progression. 15 levels = 15 skill points (Q/W/E x4 + R x3).
 max_level: 15

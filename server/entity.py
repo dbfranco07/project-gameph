@@ -707,6 +707,7 @@ class Tree(Obstacle):
     entity_type: EntityType = EntityType.TREE
     hp: int = 200
     max_hp: int = 200
+    respawn_timer: float = 0.0
 
 
 @dataclass
