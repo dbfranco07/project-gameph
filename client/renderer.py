@@ -239,7 +239,10 @@ class Renderer:
             else:
                 continue
             sx, sy = self.camera.world_to_screen(ent["x"], ent["y"])
-            self._reveal_source(vis, sx, sy, radius, blockers)
+            # A unit with unobstructed sight (e.g. bound in a tree/wall) reveals a
+            # plain circle ignoring wall/tree shadows, matching the server.
+            src_blockers = [] if ent.get("unobs") else blockers
+            self._reveal_source(vis, sx, sy, radius, src_blockers)
         fog.blit(vis, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
         self.screen.blit(fog, (0, 0))
 

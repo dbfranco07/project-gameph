@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 
 from shared.config import MAP_WIDTH, MAP_HEIGHT
-from server.entity import Hero, Projectile, Structure
+from server.entity import Hero, Projectile, HookProjectile, Structure
 from server.effects import make_effect
 
 
@@ -113,6 +113,48 @@ def dash(ctx, dist) -> Hero:
 
 # A blink is just a dash; heroes give it personality by what they pair it with.
 blink = dash
+
+
+def hook(ctx, dmg, speed, range, radius=22, dtype="physical", pull=True,
+         stop_dist=120, pull_speed=900, stun_dur=0.0, slow_dur=0.0,
+         slow_pct=0.0) -> HookProjectile:
+    """Fire a grabbing skillshot toward (tx, ty). On hitting the first enemy unit
+    it damages, optionally drags the victim toward the caster (see
+    system_displacements) and optionally stuns-then-slows. With ``pull=False`` it
+    is just a damaging (and optionally stunning) bolt. Returns it for tweaks."""
+    caster = ctx.caster
+    dx, dy = ctx.tx - caster.x, ctx.ty - caster.y
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6:
+        dx, dy, dist = 1.0, 0.0, 1.0
+    proj = HookProjectile(
+        team=caster.team,
+        x=caster.x,
+        y=caster.y,
+        radius=radius,
+        vx=(dx / dist) * speed,
+        vy=(dy / dist) * speed,
+        damage=dmg,
+        damage_type=dtype,
+        owner_id=caster.entity_id,
+        range_left=range,
+        speed=speed,
+        pull=pull,
+        stop_dist=stop_dist,
+        pull_speed=pull_speed,
+        stun_dur=stun_dur,
+        slow_dur=slow_dur,
+        slow_pct=slow_pct,
+    )
+    ctx.state.entities[proj.entity_id] = proj
+    return proj
+
+
+def pull_to(state, target, owner, speed, stop) -> None:
+    """Queue a displacement that drags `target` toward `owner` each tick until it
+    is within `stop` units (resolved by system_displacements)."""
+    state.pulls.append({"tgt": target.entity_id, "to": owner.entity_id,
+                        "speed": speed, "stop": stop})
 
 
 def area_dmg(ctx, dmg, radius, dtype="physical") -> list:

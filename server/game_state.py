@@ -55,6 +55,9 @@ class GameState:
         # Per-tick queues processed by the systems pipeline
         self.damage_events: list[dict] = []   # {"src", "tgt", "amt"} or {"tgt","heal"}
         self.ability_casts: list[dict] = []    # {"caster", "key", "tx", "ty", "tid"}
+        # Active pulls/displacements: {"tgt", "to", "speed", "stop"}. A unit is
+        # dragged toward another (e.g. Tiktik's hook) until within `stop`.
+        self.pulls: list[dict] = []
         # One-shot reward popups for the client (gold/xp gained). Rebuilt each
         # tick; broadcast in the snapshot, filtered by team vision.
         self.combat_events: list[dict] = []   # {"k", "amt", "x", "y", "eid"}
@@ -358,21 +361,24 @@ class GameState:
         return [e.to_snapshot() for e in self.entities.values()]
 
     def _vision_sources(self, team: Team):
-        """Yield (x, y, radius) for each alive vision-granting unit of `team`."""
+        """Yield (x, y, radius, unobstructed) for each alive vision-granting unit
+        of `team`. `unobstructed` sight ignores wall/tree line-of-sight blocks."""
         for e in self.entities.values():
             if not e.alive or e.team != team:
                 continue
             if isinstance(e, Hero):
-                yield e.x, e.y, HERO_VISION_RADIUS + e.bonus_vision()
+                yield (e.x, e.y, HERO_VISION_RADIUS + e.bonus_vision(),
+                       e.has_unobstructed_vision())
             elif isinstance(e, Minion):
-                yield e.x, e.y, MINION_VISION_RADIUS
+                yield e.x, e.y, MINION_VISION_RADIUS, False
             elif isinstance(e, Structure):
-                yield e.x, e.y, TOWER_VISION_RADIUS
+                yield e.x, e.y, TOWER_VISION_RADIUS, False
 
     def visible_entity_ids_for(self, team: Team) -> set[int]:
         """Ids visible to `team`: own units + all static map features, plus
         enemy/neutral units within unobstructed line-of-sight of one of the
-        team's vision sources (walls and alive trees block the sight line)."""
+        team's vision sources (walls and alive trees block the sight line).
+        Invisible enemy heroes are hidden unless briefly revealed (attacking)."""
         sources = list(self._vision_sources(team))
         blockers = self.vision_blocker_capsules()
         visible: set[int] = set()
@@ -382,12 +388,16 @@ class GameState:
             if e.team == team or isinstance(e, (Structure, Obstacle)):
                 visible.add(e.entity_id)
                 continue
-            for sx, sy, r in sources:
+            # A stealthed enemy hero is unseen until it reveals itself (attacks).
+            if isinstance(e, Hero) and e.is_invisible() and e.reveal_timer <= 0:
+                continue
+            for sx, sy, r, unob in sources:
                 if math.hypot(e.x - sx, e.y - sy) > r + e.radius:
                     continue
-                if any(segment_capsule_intersect(sx, sy, e.x, e.y,
+                if not unob and any(
+                        segment_capsule_intersect(sx, sy, e.x, e.y,
                                                   cx0, cy0, cx1, cy1, th)
-                       for (cx0, cy0, cx1, cy1, th) in blockers):
+                        for (cx0, cy0, cx1, cy1, th) in blockers):
                     continue  # sight line is blocked by a wall/tree
                 visible.add(e.entity_id)
                 break

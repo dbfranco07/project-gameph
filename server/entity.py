@@ -182,6 +182,10 @@ class Hero(Entity):
     # Respawn
     respawn_timer: float = 0.0
 
+    # Stealth: while >0 the hero is briefly revealed despite an `invisible` buff
+    # (e.g. Kapre attacking from the trees). Ticked down by system_status.
+    reveal_timer: float = 0.0
+
     # Scoreboard: kills / deaths / assists + last-hit counters (enemy minions /
     # neutral monsters this hero killed).
     kills: int = 0
@@ -208,6 +212,31 @@ class Hero(Entity):
 
     def is_invulnerable(self) -> bool:
         return any(b.get("invuln") for b in self.buffs)
+
+    def is_disarmed(self) -> bool:
+        # A stun also disarms (can't act at all).
+        return any(b.get("disarm") or b.get("stun") for b in self.buffs)
+
+    def is_invisible(self) -> bool:
+        """Carries an invisibility buff (hidden from enemies). Note this is true
+        even while `reveal_timer` is counting down — callers that gate enemy
+        sight/targeting also check `reveal_timer <= 0`."""
+        return any(b.get("invisible") for b in self.buffs)
+
+    def has_unobstructed_vision(self) -> bool:
+        return any(b.get("unobstructed_vision") for b in self.buffs)
+
+    def attack_slow(self) -> tuple[float, float]:
+        """Best (pct, duration) movement slow this hero's auto-attacks apply on
+        hit, or (0, 0). Duration is carried alongside the pct on the effect."""
+        best_pct = 0.0
+        best_dur = 0.0
+        for b in self.buffs:
+            pct = b.get("attack_slow_pct", 0)
+            if pct > best_pct:
+                best_pct = pct
+                best_dur = b.get("attack_slow_dur", 1.0)
+        return best_pct, best_dur
 
     def bonus_speed(self) -> float:
         return sum(b.get("speed_bonus", 0) for b in self.buffs)
@@ -309,6 +338,10 @@ class Hero(Entity):
         vis_bonus = self.bonus_vision()
         if vis_bonus:
             d["visb"] = round(vis_bonus)
+        # Sight ignores walls/trees (e.g. while bound in terrain): the client's
+        # fog reveal draws a plain circle to match the server's vision.
+        if self.has_unobstructed_vision():
+            d["unobs"] = True
         # Extra stats for the HUD panel. Main fields carry the BASE (permanent)
         # value; the temporary buff/debuff portion is sent separately in `dlt`
         # so the HUD shows e.g. "55 +20" rather than double-counting the bonus.
@@ -498,6 +531,26 @@ class Projectile(Entity):
     def to_snapshot(self) -> dict:
         d = super().to_snapshot()
         d["b"] = self.is_basic
+        return d
+
+
+@dataclass
+class HookProjectile(Projectile):
+    """A grabbing skillshot (Tiktik's tongue). Travels straight; on hitting the
+    first enemy unit it deals `damage`, drags the victim toward `owner_id` (see
+    system_displacements), and — when `stun_dur`/`slow_dur` are set — applies a
+    stun followed by a lingering slow. Resolved in system_projectiles."""
+
+    pull: bool = True
+    stop_dist: float = 120.0   # how close to the owner the victim is dragged
+    pull_speed: float = 900.0  # drag speed (units/sec)
+    stun_dur: float = 0.0
+    slow_dur: float = 0.0
+    slow_pct: float = 0.0
+
+    def to_snapshot(self) -> dict:
+        d = super().to_snapshot()
+        d["hook"] = True  # let the client tint/draw it distinctly
         return d
 
 

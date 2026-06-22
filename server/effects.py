@@ -10,13 +10,20 @@ report temporary stat deltas.
 Recognized keys:
   Stat modifiers (added to the matching base stat):
     dmg_bonus, sp_atk, phys_def, sp_def, range_bonus, speed_bonus,
-    atkspd_pct, hp_regen_bonus, mana_regen_bonus
+    atkspd_pct, hp_regen_bonus, mana_regen_bonus, vision_bonus
   Multiplicative:
     slow_pct       (movement slow, 0..1; stacks additively, capped)
   Crowd-control flags (truthy):
     stun           (cannot move / attack / cast)
     silence        (cannot cast abilities)
+    disarm         (cannot auto-attack, but may still move / cast)
     invuln         (takes no damage)
+  Stealth / vision flags (truthy):
+    invisible          (hidden from enemies; allies still see; revealed while
+                        attacking via Hero.reveal_timer)
+    unobstructed_vision(this unit's sight ignores wall/tree line-of-sight blocks)
+  On-hit rider:
+    attack_slow_pct(this unit's auto-attacks apply a movement slow to the victim)
   Bookkeeping:
     remaining      (seconds left; ticked down by system_status)
     source         (optional tag, e.g. "rune:haste", for cancel-on-hit logic)

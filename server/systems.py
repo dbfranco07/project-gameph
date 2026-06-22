@@ -46,9 +46,10 @@ from shared.geometry import point_along, closest_point_on_segment
 from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
-    Structure, Projectile, SplitBody, RuneCreature,
+    Structure, Projectile, HookProjectile, SplitBody, RuneCreature,
 )
 from server.effects import make_effect
+from server.bind import release_bind
 from server.game_state import GameState, enemy_team
 from server.heroes.base import CastContext
 from shared.game_types import CastType
@@ -108,6 +109,8 @@ def find_attack_target(state: GameState, attacker):
             continue
         if isinstance(e, Hero) and e.is_invulnerable():
             continue  # can't be targeted while invulnerable (e.g. split upper half)
+        if isinstance(e, Hero) and e.is_invisible() and e.reveal_timer <= 0:
+            continue  # stealthed (e.g. in trees/walls) and not currently revealed
         d = attacker.distance_to(e)
         if d > attacker.effective_attack_range() + e.radius:
             continue
@@ -133,6 +136,8 @@ def system_status(state: GameState, dt: float) -> None:
             for b in hero.buffs:
                 b["remaining"] -= dt
             hero.buffs[:] = [b for b in hero.buffs if b["remaining"] > 0]
+        if hero.reveal_timer > 0:
+            hero.reveal_timer = max(0.0, hero.reveal_timer - dt)
         if hero.alive:
             _regen(hero, dt)
 
@@ -498,6 +503,8 @@ def _block_hero_against_units(state: GameState, hero: Hero) -> None:
     the component of motion into the blocker, so the hero stops at it but can
     still slide sideways/backwards and never gets permanently stuck — and because
     only the mover adjusts itself, it never pushes the blocker."""
+    if hero.ability_state.get("bind"):
+        return  # bound inside a tree/wall: not body-blocked by other units
     for other in state.entities.values():
         if other is hero or not other.alive:
             continue
@@ -522,9 +529,11 @@ def system_collision(state: GameState, dt: float) -> None:
     for u in units:
         for s in structs:
             _eject_circle(u, s.x, s.y, s.radius)
-        # A Manananggal's detached upper half flies over walls and trees.
-        flies_over_terrain = isinstance(u, Hero) and u.ability_state.get("split")
-        if not flies_over_terrain:
+        # A Manananggal's detached upper half flies over walls and trees; a hero
+        # bound inside a tree/wall (Kapre R / Tiktik W) likewise ignores it.
+        ignores_terrain = isinstance(u, Hero) and (
+            u.ability_state.get("split") or u.ability_state.get("bind"))
+        if not ignores_terrain:
             for cap in obstacles:
                 _push_out_of_capsule(u, cap)
         u.x = max(u.radius, min(MAP_WIDTH - u.radius, u.x))
@@ -653,6 +662,8 @@ def system_projectiles(state: GameState, dt: float) -> None:
                     {"src": proj.owner_id, "tgt": hit.entity_id, "amt": proj.damage,
                      "dtype": proj.damage_type}
                 )
+                if isinstance(proj, HookProjectile):
+                    _resolve_hook(state, proj, hit)
                 dead.append(proj.entity_id)
             elif proj.range_left <= 0 or not (0 <= proj.x <= MAP_WIDTH and 0 <= proj.y <= MAP_HEIGHT):
                 dead.append(proj.entity_id)
@@ -701,17 +712,64 @@ def _projectile_hit(state: GameState, proj: Projectile):
     return None
 
 
+def _resolve_hook(state: GameState, proj: HookProjectile, hit) -> None:
+    """A landed tongue hook: drag the victim toward the caster and (when the
+    rider is set, i.e. Tiktik's E is learned) stun it, then leave a slow."""
+    owner = state.entities.get(proj.owner_id)
+    if proj.pull and owner is not None and isinstance(hit, (Hero, Minion)):
+        state.pulls.append({"tgt": hit.entity_id, "to": owner.entity_id,
+                            "speed": proj.pull_speed, "stop": proj.stop_dist})
+    if isinstance(hit, Hero):
+        if proj.stun_dur > 0:
+            hit.buffs.append(make_effect(proj.stun_dur, stun=True))
+        if proj.slow_dur > 0 and proj.slow_pct > 0:
+            # Slow spans the stun + the after-window, so it lingers once the
+            # stun ends ("stunned, then slowed").
+            hit.buffs.append(
+                make_effect(proj.stun_dur + proj.slow_dur, slow_pct=proj.slow_pct))
+
+
+# ---------------------------------------------------------------------------
+# Displacements (pulls)
+# ---------------------------------------------------------------------------
+
+def system_displacements(state: GameState, dt: float) -> None:
+    """Drag each pulled unit toward its puller, dropping the pull once the unit
+    is within `stop` units or either party is gone. Heroes and minions alike can
+    be pulled (e.g. by Tiktik's hook)."""
+    keep: list[dict] = []
+    for pull in state.pulls:
+        tgt = state.entities.get(pull["tgt"])
+        to = state.entities.get(pull["to"])
+        if (tgt is None or not tgt.alive or to is None or not to.alive):
+            continue
+        dx, dy = to.x - tgt.x, to.y - tgt.y
+        dist = math.hypot(dx, dy)
+        if dist <= pull["stop"] + to.radius:
+            continue  # arrived
+        step = min(pull["speed"] * dt, dist - (pull["stop"] + to.radius))
+        tgt.x += (dx / dist) * step
+        tgt.y += (dy / dist) * step
+        tgt.x = max(tgt.radius, min(MAP_WIDTH - tgt.radius, tgt.x))
+        tgt.y = max(tgt.radius, min(MAP_HEIGHT - tgt.radius, tgt.y))
+        keep.append(pull)
+    state.pulls = keep
+
+
 # ---------------------------------------------------------------------------
 # Combat (auto-attacks for heroes, minions, structures)
 # ---------------------------------------------------------------------------
+
+REVEAL_TIME = 0.4  # seconds a stealthed hero is revealed after it attacks
+
 
 def system_combat(state: GameState, dt: float) -> None:
     # Snapshot: ranged attacks insert projectiles into state.entities mid-loop.
     for e in list(state.entities.values()):
         if not e.alive or e.attack_damage <= 0 or isinstance(e, Projectile):
             continue
-        if isinstance(e, Hero) and e.is_stunned():
-            continue  # stunned heroes can't auto-attack
+        if isinstance(e, Hero) and e.is_disarmed():
+            continue  # stunned or disarmed (e.g. Tiktik in a wall): no attacks
         if e.attack_timer > 0:
             e.attack_timer = max(0.0, e.attack_timer - dt)
             continue
@@ -730,6 +788,14 @@ def system_combat(state: GameState, dt: float) -> None:
             state.damage_events.append(
                 {"src": e.entity_id, "tgt": target.entity_id, "amt": dmg}
             )
+            # On-hit movement slow (e.g. Kapre attacking from the trees).
+            if isinstance(e, Hero) and isinstance(target, Hero):
+                pct, slow_dur = e.attack_slow()
+                if pct > 0:
+                    target.buffs.append(make_effect(slow_dur, slow_pct=pct))
+        # Attacking breaks stealth for a brief moment.
+        if isinstance(e, Hero) and e.is_invisible():
+            e.reveal_timer = REVEAL_TIME
         e.attack_timer = (e.effective_attack_interval()
                           if isinstance(e, Hero) else e.attack_interval)
 
@@ -742,6 +808,7 @@ def _combat_target(state: GameState, attacker):
         if (t is not None and t.alive and t.team != attacker.team
                 and not isinstance(t, Projectile)
                 and not (isinstance(t, Hero) and t.is_invulnerable())
+                and not (isinstance(t, Hero) and t.is_invisible() and t.reveal_timer <= 0)
                 and not (isinstance(t, Structure) and not state.is_structure_vulnerable(t))
                 and attacker.distance_to(t) <= attacker.effective_attack_range() + t.radius):
             return t
@@ -906,6 +973,8 @@ def _kill(state: GameState, victim, src_id) -> None:
             if body is not None:
                 body.alive = False
                 state.entities.pop(body.entity_id, None)
+        release_bind(victim)  # dying inside a tree/wall drops the bind
+        victim.reveal_timer = 0.0
         victim.respawn_timer = HERO_RESPAWN_BASE + victim.level * HERO_RESPAWN_PER_LEVEL
         victim.target_x = victim.target_y = None
         victim.attack_move = False
@@ -1057,6 +1126,7 @@ def step(state: GameState, dt: float) -> None:
     system_collision(state, dt)
     system_hero_hooks(state, dt)
     system_projectiles(state, dt)
+    system_displacements(state, dt)
     system_combat(state, dt)
     system_spawn_zone(state, dt)
     system_damage_death(state, dt)

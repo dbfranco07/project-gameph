@@ -18,9 +18,12 @@ from server.heroes.ranger import Ranger
 from server.heroes.brawler import Brawler
 from server.heroes.mender import Mender
 from server.heroes.manananggal import Manananggal
+from server.heroes.kapre import Kapre
+from server.heroes.tiktik import Tiktik
 
 HERO_REGISTRY: dict[str, type[HeroDef]] = {
-    cls.hero_id: cls for cls in (Ranger, Brawler, Mender, Manananggal)
+    cls.hero_id: cls
+    for cls in (Ranger, Brawler, Mender, Manananggal, Kapre, Tiktik)
 }
 
 DEFAULT_HERO = "ranger"
