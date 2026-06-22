@@ -403,6 +403,21 @@ class GameState:
                 break
         return visible
 
+    def point_visible_for(self, team: Team, x: float, y: float) -> bool:
+        """True if `team` has line-of-sight to the world point (x, y). Used to
+        reveal AoE/hit effect telegraphs even when their source unit is fogged."""
+        blockers = self.vision_blocker_capsules()
+        for sx, sy, r, unob in self._vision_sources(team):
+            if math.hypot(x - sx, y - sy) > r:
+                continue
+            if not unob and any(
+                    segment_capsule_intersect(sx, sy, x, y,
+                                              cx0, cy0, cx1, cy1, th)
+                    for (cx0, cy0, cx1, cy1, th) in blockers):
+                continue
+            return True
+        return False
+
     def build_snapshot_for(self, team: Team) -> list[dict]:
         """Fog-of-war snapshot: only entities `team` can currently see."""
         visible = self.visible_entity_ids_for(team)

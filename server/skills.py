@@ -67,8 +67,11 @@ def allies_in_radius(state, team, cx, cy, radius):
 # ---------------------------------------------------------------------------
 
 def projectile(ctx, dmg, speed, range, radius=18, homing=False,
-               dtype="physical") -> Projectile:
-    """Fire a projectile from the caster toward (tx, ty). Returns it for tweaks."""
+               dtype="physical", kind="") -> Projectile:
+    """Fire a projectile from the caster toward (tx, ty). Returns it for tweaks.
+
+    `kind` is a render-only art selector (e.g. "ranger_q") the client uses to
+    draw a hero/skill-specific projectile; "" keeps the generic look."""
     caster = ctx.caster
     dx, dy = ctx.tx - caster.x, ctx.ty - caster.y
     dist = math.hypot(dx, dy)
@@ -87,6 +90,8 @@ def projectile(ctx, dmg, speed, range, radius=18, homing=False,
         range_left=range,
         speed=speed,
         homing=homing,
+        kind=kind,
+        own=caster.entity_id,
     )
     ctx.state.entities[proj.entity_id] = proj
     return proj
@@ -117,7 +122,7 @@ blink = dash
 
 def hook(ctx, dmg, speed, range, radius=22, dtype="physical", pull=True,
          stop_dist=120, pull_speed=900, stun_dur=0.0, slow_dur=0.0,
-         slow_pct=0.0) -> HookProjectile:
+         slow_pct=0.0, kind="") -> HookProjectile:
     """Fire a grabbing skillshot toward (tx, ty). On hitting the first enemy unit
     it damages, optionally drags the victim toward the caster (see
     system_displacements) and optionally stuns-then-slows. With ``pull=False`` it
@@ -145,6 +150,8 @@ def hook(ctx, dmg, speed, range, radius=22, dtype="physical", pull=True,
         stun_dur=stun_dur,
         slow_dur=slow_dur,
         slow_pct=slow_pct,
+        kind=kind,
+        own=caster.entity_id,
     )
     ctx.state.entities[proj.entity_id] = proj
     return proj
@@ -157,22 +164,35 @@ def pull_to(state, target, owner, speed, stop) -> None:
                         "speed": speed, "stop": stop})
 
 
-def area_dmg(ctx, dmg, radius, dtype="physical") -> list:
-    """Damage all enemies within `radius` of (tx, ty). Returns those hit."""
+def _emit_fx(ctx, name, cx, cy, radius) -> None:
+    """Record a render-only AoE effect event (ground decal / shockwave). Emitted
+    straight onto combat_events to avoid a circular import with systems."""
+    if name:
+        ctx.state.combat_events.append(
+            {"k": "fx", "name": name, "x": round(cx, 1), "y": round(cy, 1),
+             "r": int(radius), "eid": ctx.caster.entity_id, "dur": 0.5})
+
+
+def area_dmg(ctx, dmg, radius, dtype="physical", fx="") -> list:
+    """Damage all enemies within `radius` of (tx, ty). Returns those hit.
+
+    `fx` names a client AoE animation (e.g. "smash") drawn at the impact point."""
+    _emit_fx(ctx, fx, ctx.tx, ctx.ty, radius)
     hit = enemies_in_radius(ctx.state, ctx.caster.team, ctx.tx, ctx.ty, radius)
     for e in hit:
         ctx.state.damage_events.append(
-            {"src": ctx.caster.entity_id, 
-             "tgt": e.entity_id, 
+            {"src": ctx.caster.entity_id,
+             "tgt": e.entity_id,
              "amt": dmg,
              "dtype": dtype})
     return hit
 
 
-def area_heal(ctx, heal, radius) -> list:
+def area_heal(ctx, heal, radius, fx="") -> list:
     """Heal all allies within `radius` of the target point (or the caster)."""
     cx = ctx.tx if (ctx.tx or ctx.ty) else ctx.caster.x
     cy = ctx.ty if (ctx.tx or ctx.ty) else ctx.caster.y
+    _emit_fx(ctx, fx, cx, cy, radius)
     healed = allies_in_radius(ctx.state, ctx.caster.team, cx, cy, radius)
     for e in healed:
         ctx.state.damage_events.append({"tgt": e.entity_id, "heal": heal})

@@ -74,7 +74,7 @@ class Kapre(HeroDef):
     def smash(ctx):
         # Self-centred AoE: aim the shared blocks at the caster's own position.
         ctx.tx, ctx.ty = ctx.caster.x, ctx.caster.y
-        skills.area_dmg(ctx, dmg=Q_DMG, radius=Q_RADIUS)
+        skills.area_dmg(ctx, dmg=Q_DMG, radius=Q_RADIUS, fx="smash")
         skills.stun_nearby(ctx, radius=Q_RADIUS, duration=Q_STUN)
 
     @ability("W", "Grove's Vigor", cd=10, mana=0, cast=CastType.POINT,
@@ -86,7 +86,7 @@ class Kapre(HeroDef):
             hero.cooldowns["W"] = 0.0  # passive-only outside trees: no penalty
             return
         skills.hook(ctx, dmg=W_BOLT_DMG, speed=W_BOLT_SPEED, range=W_BOLT_RANGE,
-                    pull=False, stun_dur=W_BOLT_STUN)
+                    pull=False, stun_dur=W_BOLT_STUN, kind="kapre_w")
         # Stacks a second regen aura → doubled while it lasts.
         hero.buffs.append(make_effect(W_ACTIVE_REGEN_DUR,
                                       source="kapre:vigor_active",

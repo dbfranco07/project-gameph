@@ -43,4 +43,4 @@ class Brawler(HeroDef):
     @ability("R", "Earthshatter", cd=70, mana=90, cast=CastType.POINT,
              desc="Slam the ground, damaging all enemies in a wide area.")
     def earthshatter(ctx):
-        skills.area_dmg(ctx, dmg=260, radius=320)
+        skills.area_dmg(ctx, dmg=260, radius=320, fx="earthshatter")

@@ -55,6 +55,11 @@ from server.heroes.base import CastContext
 from shared.game_types import CastType
 
 
+# Seconds the render-only cast signal stays set after an ability fires, so the
+# client can play a one-shot skill animation.
+CAST_SIGNAL_SECS = 0.45
+
+
 # ---------------------------------------------------------------------------
 # Targeting
 # ---------------------------------------------------------------------------
@@ -138,6 +143,8 @@ def system_status(state: GameState, dt: float) -> None:
             hero.buffs[:] = [b for b in hero.buffs if b["remaining"] > 0]
         if hero.reveal_timer > 0:
             hero.reveal_timer = max(0.0, hero.reveal_timer - dt)
+        if hero.cast_timer > 0:
+            hero.cast_timer = max(0.0, hero.cast_timer - dt)
         if hero.alive:
             _regen(hero, dt)
 
@@ -612,6 +619,9 @@ def system_ability_cast(state: GameState, dt: float) -> None:
                           cast.get("tx", 0.0), cast.get("ty", 0.0),
                           cast.get("tid"), rank=rank)
         adef.fn(ctx)
+        # Render-only cast signal so the client plays a one-shot skill animation.
+        caster.cast_key = ab["key"]
+        caster.cast_timer = CAST_SIGNAL_SECS
         # "On skill use" passive hook (e.g. Manananggal Bloodlust).
         hook = getattr(caster.hero_def, "on_ability_cast", None)
         if hook is not None:
@@ -884,6 +894,16 @@ def system_damage_death(state: GameState, dt: float) -> None:
         if isinstance(tgt, SplitBody):
             amt = int(amt * tgt.dmg_mult)  # the lower body takes amplified damage
         tgt.hp -= amt
+        # Render-only hit event: damage number + flash + lunge/recoil on the
+        # client. Gated to hero-involved trades so creep fights don't flood the
+        # wire. `eid` = victim (also the vision key); `src` = attacker (lunge).
+        src = state.entities.get(ev.get("src"))
+        if amt > 0 and (isinstance(tgt, (Hero, SplitBody, RuneCreature))
+                        or isinstance(src, Hero)):
+            state.combat_events.append({
+                "k": "hit", "x": round(tgt.x, 1), "y": round(tgt.y, 1),
+                "amt": int(amt), "eid": tgt.entity_id,
+                "src": ev.get("src"), "dt": ev.get("dtype", "physical")})
         # Effects that fizzle the moment their bearer takes damage (e.g. the
         # rune regen buff) are dropped here.
         if isinstance(tgt, Hero) and amt > 0:
@@ -909,6 +929,18 @@ def _reward(state: GameState, hero: Hero, kind: str, amt: int) -> None:
                                     "x": round(hero.x, 1),
                                     "y": round(hero.y, 1), 
                                     "eid": hero.entity_id})
+
+
+def _fx(state: GameState, name: str, x: float, y: float, r: float = 0.0,
+        eid: int = 0, dur: float = 0.5) -> None:
+    """Record a render-only effect event (AoE decal / shockwave) for the client.
+
+    `eid` ties the event to a source entity for vision; the broadcast filter also
+    reveals it by position so telegraphs show even when the caster is fogged.
+    """
+    state.combat_events.append({"k": "fx", "name": name,
+                                "x": round(x, 1), "y": round(y, 1),
+                                "r": int(r), "eid": eid, "dur": dur})
 
 
 def _provoke_camp(state: GameState, camp_id: int) -> None:

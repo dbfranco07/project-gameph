@@ -45,6 +45,40 @@ FOG_ALPHA = 95
 from client.camera import Camera
 from client.sprites import SpriteManager, facing_from_delta
 
+# Combat-feedback timing (seconds).
+CAST_DUR = 0.4      # how long a one-shot skill-cast pose plays
+FLASH_DUR = 0.12    # white/red hit flash on a unit that just took damage
+LUNGE_DUR = 0.14    # attacker lunge + victim recoil duration
+LUNGE_PX = 7.0      # attacker step toward its target on a hit
+RECOIL_PX = 5.0     # victim knock-back on a hit
+
+# Per-fx fallback ring colors (used when no effect art exists on disk).
+_FX_COLORS = {
+    "smash": (235, 150, 60), "earthshatter": (210, 120, 50),
+    "arrowstorm": (240, 220, 120), "renewwave": (120, 220, 150),
+    "sanctuary": (150, 235, 170),
+}
+
+
+def _ease_out(t: float) -> float:
+    """0->1 eased; a quick step that settles (for lunge/recoil)."""
+    t = max(0.0, min(1.0, t))
+    return 1.0 - (1.0 - t) * (1.0 - t)
+
+
+def _add_step(ox, oy, me, other, dist_px, age, toward):
+    """Add a lunge/recoil offset (px) along me<->other, peaking early then
+    settling. `toward` True = step toward `other`, False = away from it."""
+    age_frac = age / LUNGE_DUR
+    mag = dist_px * (1.0 - _ease_out(age_frac))  # quick out, ease back to 0
+    dx = other["x"] - me["x"]
+    dy = other["y"] - me["y"]
+    d = math.hypot(dx, dy)
+    if d < 1e-6:
+        return ox, oy
+    s = (1.0 if toward else -1.0) * mag / d
+    return ox + dx * s, oy + dy * s
+
 
 def _team_color(team: int) -> tuple[int, int, int]:
     if team == Team.TEAM1:
@@ -94,24 +128,61 @@ class Renderer:
         self.minimap = pygame.Rect(8, SCREEN_HEIGHT - 8 - mm_h, mm_w, mm_h)
         # In-game chat box (set by the client); drawn just above the minimap.
         self.chat = None
-        # Floating combat text (gold/xp popups): {wx, wy, text, color, born, dur}.
+        # Floating combat text (gold/xp/damage popups): {wx,wy,text,color,born,dur}.
         self.floaters: list[dict] = []
+        # Combat feedback state, all keyed/aged off server `hit`/`fx` events:
+        self._last_hit: dict[int, float] = {}       # eid -> monotonic time of last hit
+        self._lunge: dict[int, dict] = {}           # attacker eid -> {t0, tgt}
+        self._recoil: dict[int, dict] = {}          # victim eid -> {t0, src}
+        self._ground_fx: list[dict] = []            # AoE decals, under units
+        self._spark_fx: list[dict] = []             # hit sparks, over units
+        # Per-projectile heading memory (id -> (x, y, heading)) for rotation.
+        self._proj_pose: dict[int, tuple] = {}
+        # Terrain texture caches (built lazily from assets/terrain/*.png).
+        self._ground_cache: pygame.Surface | None = None
+        self._strip_cache: dict[tuple, pygame.Surface] = {}
+        # The current frame's entity list, stashed for owner/target lookups.
+        self._frame_entities: list[dict] = []
 
     def add_combat_events(self, events) -> None:
-        """Spawn floating gold/xp text from server reward events."""
+        """Turn server combat events into floating text + feedback state.
+
+        gold/xp -> rising reward popups; hit -> damage number + flash + lunge/
+        recoil + impact spark; heal -> green number; fx -> AoE ground decal.
+        """
         now = time.monotonic()
         for ev in events or []:
             kind = ev.get("k")
             if kind == "gold":
-                text, color = f"+{ev['amt']}g", (240, 215, 90)
+                self._floater(ev, f"+{ev['amt']}g", (240, 215, 90), 1.1)
             elif kind == "xp":
-                text, color = f"+{ev['amt']} xp", (150, 200, 255)
-            else:
-                continue
-            self.floaters.append({
-                "wx": ev["x"], "wy": ev["y"], "text": text, "color": color,
-                "born": now, "dur": 1.1,
-            })
+                self._floater(ev, f"+{ev['amt']} xp", (150, 200, 255), 1.1)
+            elif kind == "hit":
+                eid, src = ev.get("eid"), ev.get("src")
+                self._floater(ev, f"-{ev['amt']}", (235, 90, 90), 0.8)
+                if eid is not None:
+                    self._last_hit[eid] = now
+                    if src is not None:
+                        self._recoil[eid] = {"t0": now, "src": src}
+                if src is not None and eid is not None:
+                    self._lunge[src] = {"t0": now, "tgt": eid}
+                spark = ("hit_special" if ev.get("dt") == "special"
+                         else "hit_phys")
+                self._spark_fx.append({"name": spark, "wx": ev["x"],
+                                       "wy": ev["y"], "r": 22,
+                                       "born": now, "dur": 0.3})
+            elif kind == "heal":
+                self._floater(ev, f"+{ev['amt']}", (120, 220, 150), 0.9)
+            elif kind == "fx":
+                self._ground_fx.append({
+                    "name": ev.get("name", ""), "wx": ev["x"], "wy": ev["y"],
+                    "r": ev.get("r", 0), "born": now,
+                    "dur": ev.get("dur", 0.5)})
+
+    def _floater(self, ev, text, color, dur) -> None:
+        self.floaters.append({"wx": ev["x"], "wy": ev["y"], "text": text,
+                              "color": color, "born": time.monotonic(),
+                              "dur": dur})
 
     def set_hero_abilities(self, abilities: list[dict]) -> None:
         self.hero_abilities = abilities or []
@@ -131,11 +202,13 @@ class Renderer:
     # ----- top-level frame --------------------------------------------------
     def draw_frame(self, entities, my_entity_id, my_team, phase, tick,
                    score=None, ktarget=0, winner=0, clock=0.0) -> None:
+        self._frame_entities = entities
         self.screen.fill(COLOR_BG)
         self._draw_grid()
         self._draw_river()
         self._draw_lane()
         self._draw_map_border()
+        self._draw_ground_fx()  # AoE decals/shockwaves under the units
 
         # Walls/trees under units; structures/minions next; heroes/projectiles on top.
         order = {EntityType.WALL: -1, EntityType.TREE: -1,
@@ -144,6 +217,7 @@ class Renderer:
         for ent in sorted(entities, key=lambda e: order.get(e.get("et"), 2)):
             self._draw_entity(ent, ent["id"] == my_entity_id if my_entity_id else False)
 
+        self._draw_spark_fx()   # impact sparks over the units
         self._draw_fog(entities, my_team)
         self._draw_floaters()
         self._draw_hud(entities, my_entity_id, my_team, phase, tick,
@@ -151,6 +225,7 @@ class Renderer:
         self._draw_targeting_cursor()
         if self.chat is not None:
             self.chat.draw(self.screen, self.font, self.minimap.top - 12)
+        self._prune_feedback()
         pygame.display.flip()
 
     def _draw_floaters(self) -> None:
@@ -171,6 +246,93 @@ class Renderer:
             self.screen.blit(label, (sx - label.get_width() // 2, sy))
         self.floaters = alive
 
+    def _draw_ground_fx(self) -> None:
+        """AoE decals/shockwaves under the units. Sprite if present, else an
+        expanding fading ring keyed to the effect's radius."""
+        now = time.monotonic()
+        alive = []
+        for f in self._ground_fx:
+            age = now - f["born"]
+            if age >= f["dur"]:
+                continue
+            alive.append(f)
+            sx, sy = self.camera.world_to_screen(f["wx"], f["wy"])
+            r = max(8, int(f["r"]))
+            surf = self.sprites.effect_frame(f["name"], age)
+            if surf is not None:
+                size = r * 2
+                if surf.get_width() != size:
+                    surf = pygame.transform.smoothscale(surf, (size, size))
+                self.screen.blit(surf, (sx - size // 2, sy - size // 2))
+            else:
+                frac = age / f["dur"]
+                col = _FX_COLORS.get(f["name"], (220, 220, 220))
+                ring = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+                a = int(180 * (1 - frac))
+                pygame.draw.circle(ring, (*col, a), (r + 2, r + 2),
+                                   max(2, int(r * frac)), 3)
+                pygame.draw.circle(ring, (*col, a // 3), (r + 2, r + 2), r, 1)
+                self.screen.blit(ring, (sx - r - 2, sy - r - 2))
+        self._ground_fx = alive
+
+    def _draw_spark_fx(self) -> None:
+        """Short impact sparks over the units (from hit events)."""
+        now = time.monotonic()
+        alive = []
+        for f in self._spark_fx:
+            age = now - f["born"]
+            if age >= f["dur"]:
+                continue
+            alive.append(f)
+            sx, sy = self.camera.world_to_screen(f["wx"], f["wy"])
+            surf = self.sprites.effect_frame(f["name"], age)
+            if surf is not None:
+                self.screen.blit(surf, (sx - surf.get_width() // 2,
+                                        sy - surf.get_height() // 2))
+            else:
+                frac = age / f["dur"]
+                base = ((150, 200, 255) if f["name"] == "hit_special"
+                        else (255, 220, 150))
+                rr = int(6 + 14 * frac)
+                a = int(220 * (1 - frac))
+                spark = pygame.Surface((rr * 2 + 2, rr * 2 + 2), pygame.SRCALPHA)
+                pygame.draw.circle(spark, (*base, a), (rr + 1, rr + 1), rr, 2)
+                self.screen.blit(spark, (sx - rr - 1, sy - rr - 1))
+        self._spark_fx = alive
+
+    def _prune_feedback(self) -> None:
+        """Drop expired hit/lunge/recoil entries so the dicts stay small."""
+        now = time.monotonic()
+        self._last_hit = {k: t for k, t in self._last_hit.items()
+                          if now - t < FLASH_DUR}
+        self._lunge = {k: v for k, v in self._lunge.items()
+                       if now - v["t0"] < LUNGE_DUR}
+        self._recoil = {k: v for k, v in self._recoil.items()
+                        if now - v["t0"] < LUNGE_DUR}
+
+    def _attack_offset(self, eid) -> tuple[float, float]:
+        """Screen-space (ox, oy) lunge+recoil offset for unit `eid` this frame."""
+        if eid is None:
+            return 0.0, 0.0
+        now = time.monotonic()
+        ox = oy = 0.0
+        me = self._find(self._frame_entities, eid)
+        if me is None:
+            return 0.0, 0.0
+        lg = self._lunge.get(eid)
+        if lg is not None:
+            tgt = self._find(self._frame_entities, lg["tgt"])
+            if tgt is not None:
+                ox, oy = _add_step(ox, oy, me, tgt, LUNGE_PX,
+                                   now - lg["t0"], toward=True)
+        rc = self._recoil.get(eid)
+        if rc is not None:
+            src = self._find(self._frame_entities, rc["src"])
+            if src is not None:
+                ox, oy = _add_step(ox, oy, me, src, RECOIL_PX,
+                                   now - rc["t0"], toward=False)
+        return ox, oy
+
     def _draw_targeting_cursor(self) -> None:
         """Ring the cursor while awaiting a target: yellow for an ability cast,
         red for an 'A' attack command."""
@@ -188,6 +350,10 @@ class Renderer:
 
     # ----- world ------------------------------------------------------------
     def _draw_grid(self) -> None:
+        # Textured ground: tile the ground.png across the screen, offset by the
+        # camera. Falls back to the faint grid lines when no tile art exists.
+        if self._draw_ground_tiles():
+            return
         grid_size = 200
         for gx in range(0, MAP_WIDTH + 1, grid_size):
             sx, sy = self.camera.world_to_screen(gx, 0)
@@ -200,17 +366,64 @@ class Renderer:
             if -1 <= sy <= SCREEN_HEIGHT + 1:
                 pygame.draw.line(self.screen, COLOR_GRID, (sx, sy), (ex, ey), 1)
 
+    def _draw_ground_tiles(self) -> bool:
+        """Blit the cached pre-tiled ground surface, or False if no ground art."""
+        tile = self.sprites.terrain_tile("ground")
+        if tile is None:
+            return False
+        tw, th = tile.get_width(), tile.get_height()
+        if self._ground_cache is None:  # build a screen+1-tile tiled surface once
+            cache = pygame.Surface((SCREEN_WIDTH + tw, SCREEN_HEIGHT + th))
+            for ty in range(0, SCREEN_HEIGHT + th, th):
+                for tx in range(0, SCREEN_WIDTH + tw, tw):
+                    cache.blit(tile, (tx, ty))
+            self._ground_cache = cache
+        ox = -int(self.camera.x % tw)
+        oy = -int(self.camera.y % th)
+        self.screen.blit(self._ground_cache, (ox, oy))
+        return True
+
+    def _world_strip(self, name, p1, p2, width, fallback_rgba) -> None:
+        """Draw a textured strip between two screen points (river/lane), or a
+        translucent fallback band when the named tile is missing."""
+        tile = self.sprites.terrain_tile(name)
+        dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+        length = int(math.hypot(dx, dy))
+        if length < 1:
+            return
+        if tile is None:
+            band = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            pygame.draw.line(band, fallback_rgba, p1, p2, width)
+            self.screen.blit(band, (0, 0))
+            return
+        self._blit_tiled_strip(tile, (name, length, width), p1, p2,
+                               length, width)
+
+    def _blit_tiled_strip(self, tile, cache_key, p1, p2, length, width) -> None:
+        """Tile `tile` into a length x width strip (cached), rotate it to the
+        p1->p2 heading, and blit it centered on the segment midpoint."""
+        strip = self._strip_cache.get(cache_key)
+        if strip is None:
+            scaled = pygame.transform.smoothscale(tile, (tile.get_width(), width))
+            strip = pygame.Surface((max(1, length), width), pygame.SRCALPHA)
+            for tx in range(0, length, scaled.get_width()):
+                strip.blit(scaled, (tx, 0))
+            self._strip_cache[cache_key] = strip
+        rot = pygame.transform.rotate(
+            strip, -math.degrees(math.atan2(p2[1] - p1[1], p2[0] - p1[0])))
+        mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
+        self.screen.blit(rot, (mx - rot.get_width() // 2,
+                               my - rot.get_height() // 2))
+
     def _draw_river(self) -> None:
-        """The walkable river: a translucent diagonal band drawn under the
-        lanes. Crosses the mid lane to form an X."""
+        """The walkable river: a textured (or translucent) diagonal band under
+        the lanes. Crosses the mid lane to form an X."""
         if RIVER is None:
             return
         p1 = self.camera.world_to_screen(RIVER.x1, RIVER.y1)
         p2 = self.camera.world_to_screen(RIVER.x2, RIVER.y2)
         thpx = max(2, int(RIVER.thickness))
-        band = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        pygame.draw.line(band, (70, 130, 210, 70), p1, p2, thpx)
-        self.screen.blit(band, (0, 0))
+        self._world_strip("river", p1, p2, thpx, (70, 130, 210, 70))
 
     def _draw_fog(self, entities, my_team) -> None:
         """Darken ground the player can't currently see. Each alive friendly
@@ -336,11 +549,16 @@ class Renderer:
         # corners). A filled circle at each vertex rounds the joint so the lane
         # body stays continuous through the corner bends (no notch). Jungle camps
         # marked as faint circles in the dead zones.
+        has_lane_tile = self.sprites.terrain_tile("lane") is not None
         for path in LANE_PATHS.values():
             pts = [self.camera.world_to_screen(wx, wy) for wx, wy in path]
-            pygame.draw.lines(self.screen, COLOR_LANE, False, pts, LANE_WIDTH)
-            for p in pts:
-                pygame.draw.circle(self.screen, COLOR_LANE, p, LANE_WIDTH // 2)
+            if has_lane_tile:  # textured: a strip per segment
+                for a, b in zip(pts, pts[1:]):
+                    self._world_strip("lane", a, b, LANE_WIDTH, COLOR_LANE)
+            else:
+                pygame.draw.lines(self.screen, COLOR_LANE, False, pts, LANE_WIDTH)
+                for p in pts:
+                    pygame.draw.circle(self.screen, COLOR_LANE, p, LANE_WIDTH // 2)
         for cx, cy, _count in JUNGLE_CAMPS:
             c = self.camera.world_to_screen(cx, cy)
             pygame.draw.circle(self.screen, COLOR_LANE, c, 55, 3)
@@ -368,25 +586,23 @@ class Renderer:
             return
 
         if et == EntityType.PROJECTILE:
-            if ent.get("b"):  # basic attack: tinted by the shooter's team
-                base = _team_color(ent.get("tm", 0))
-                pygame.draw.circle(self.screen, base, (sx, sy), radius)
-                pygame.draw.circle(self.screen, (255, 255, 255), (sx, sy), max(2, radius - 4))
-            else:  # ability projectile: bright
-                pygame.draw.circle(self.screen, COLOR_PROJECTILE, (sx, sy), radius)
+            self._draw_projectile(ent, sx, sy, radius)
             return
         if et in (EntityType.TOWER, EntityType.BASE):
             self._draw_structure(ent, sx, sy, radius)
             return
         if et == EntityType.MINION:
+            eid = ent.get("id")
             if ent.get("rune"):  # a roaming rune neutral
-                pygame.draw.circle(self.screen, (180, 120, 230), (sx, sy), radius)
-                pygame.draw.circle(self.screen, (250, 230, 255), (sx, sy), radius + 3, 2)
+                if not self._blit_entity("rune", "idle", "", sx, sy, radius,
+                                         None, eid):
+                    pygame.draw.circle(self.screen, (180, 120, 230), (sx, sy), radius)
+                    pygame.draw.circle(self.screen, (250, 230, 255), (sx, sy), radius + 3, 2)
                 self._draw_hp_bar(ent, sx, sy, radius)
                 return
             if ent.get("body"):  # a Manananggal's detached lower body
                 if not self._blit_sprite("manananggal", "split_body", "s",
-                                         sx, sy, radius):
+                                         sx, sy, radius, None, eid):
                     color = _team_color(ent.get("tm", 0))
                     pygame.draw.circle(self.screen, color, (sx, sy), radius)
                     pygame.draw.circle(self.screen, (200, 40, 40), (sx, sy), radius + 3, 3)
@@ -400,14 +616,25 @@ class Renderer:
         self._draw_unit(ent, sx, sy, radius, hp_bar=True, name=True, ring=is_me)
 
     def _draw_unit(self, ent, sx, sy, radius, hp_bar, name, ring) -> None:
+        eid = ent.get("id")
         color = _team_color(ent.get("tm", 0))
-        action, facing = self._resolve_pose(ent)
-        drew_sprite = self._blit_sprite(
-            ent.get("hid", ""), action, facing, sx, sy, radius)
+        action, facing, anim_t = self._resolve_pose(ent)
+        # Lunge/recoil shift the body (not the bars) for an attack-reaction feel.
+        ox, oy = self._attack_offset(eid)
+        bx, by = int(sx + ox), int(sy + oy)
+        hid = ent.get("hid", "")
+        if hid:
+            drew_sprite = self._blit_sprite(hid, action, facing, bx, by,
+                                            radius, anim_t, eid)
+        else:  # minion: pick art by subtype tag
+            drew_sprite = self._blit_entity(
+                f"minion_{ent.get('sub', 'melee')}", action, facing,
+                bx, by, radius, anim_t, eid)
         if not drew_sprite:
-            pygame.draw.circle(self.screen, color, (sx, sy), radius)
+            pygame.draw.circle(self.screen, self._flash_color(color, eid),
+                               (bx, by), radius)
         if ring:
-            pygame.draw.circle(self.screen, (255, 255, 255), (sx, sy), radius + 3, 2)
+            pygame.draw.circle(self.screen, (255, 255, 255), (bx, by), radius + 3, 2)
         if hp_bar:
             self._draw_hp_bar(ent, sx, sy, radius)
         # Heroes carry mana; show a thin mana bar directly under the HP bar.
@@ -420,39 +647,159 @@ class Renderer:
             self.screen.blit(label, (sx - label.get_width() // 2,
                                      sy - radius - 26))
 
-    def _resolve_pose(self, ent) -> tuple[str, str]:
-        """Derive (action, facing) for a unit from its motion since last frame.
+    def _resolve_pose(self, ent) -> tuple[str, str, float]:
+        """Derive (action, facing, anim_t) for a unit from its motion + cast signal.
 
-        Facing follows the movement direction (kept when standing still); action
-        is move/idle by whether it moved, overridden to the split flyer pose
-        while a Manananggal's upper half is detached.
+        Facing follows movement (kept when standing still); action is move/idle,
+        overridden by a one-shot cast pose (q/w/e/r) for ~CAST_DUR after the server
+        flags a cast, and by the split-flyer pose while detached. `anim_t` is the
+        clock to drive frame cycling: elapsed-since-cast for one-shots (so they
+        play through), else wall-clock for looping idle/move.
         """
         eid = ent.get("id")
         x, y = ent.get("x", 0.0), ent.get("y", 0.0)
-        prev = self._unit_pose.get(eid)
-        facing = prev["facing"] if prev else "s"
-        moving = False
-        if prev is not None:
-            dx, dy = x - prev["x"], y - prev["y"]
-            if (dx * dx + dy * dy) > 0.25:  # moved noticeably this frame
-                facing = facing_from_delta(dx, dy)
-                moving = True
-        self._unit_pose[eid] = {"x": x, "y": y, "facing": facing}
+        mem = self._unit_pose.get(eid)
+        if mem is None:
+            mem = {"x": x, "y": y, "facing": "s"}
+            self._unit_pose[eid] = mem
+        facing, moving = mem["facing"], False
+        dx, dy = x - mem["x"], y - mem["y"]
+        if (dx * dx + dy * dy) > 0.25:  # moved noticeably this frame
+            facing = facing_from_delta(dx, dy)
+            moving = True
+        mem["x"], mem["y"], mem["facing"] = x, y, facing
 
+        # One-shot cast: latch on the rising edge of the server's `cast` flag.
+        cast = ent.get("cast")
+        if cast and cast != mem.get("cast_seen"):
+            mem["cast_seen"] = cast
+            mem["cast_action"] = cast.lower()
+            mem["cast_t0"] = time.monotonic()
+        elif not cast:
+            mem["cast_seen"] = None  # let the same key re-trigger next time
+
+        now = time.monotonic()
         if ent.get("split"):
-            return "split_flyer", facing
-        return ("move" if moving else "idle"), facing
+            return "split_flyer", facing, time.time()
+        ct0 = mem.get("cast_t0")
+        if ct0 is not None and now - ct0 < CAST_DUR:
+            return mem["cast_action"], facing, now - ct0
+        return ("move" if moving else "idle"), facing, time.time()
 
-    def _blit_sprite(self, hero_id, action, facing, sx, sy, radius) -> bool:
-        """Blit a centered sprite frame if one exists; return False to fall back."""
-        surf = self.sprites.hero_frame(hero_id, action, facing, time.time())
+    def _blit_sprite(self, hero_id, action, facing, sx, sy, radius,
+                     anim_t=None, eid=None) -> bool:
+        """Blit a centered hero sprite frame if one exists; else return False."""
+        surf = self.sprites.hero_frame(
+            hero_id, action, facing,
+            time.time() if anim_t is None else anim_t)
+        return self._blit_surf(surf, sx, sy, radius, eid)
+
+    def _blit_entity(self, key, action, facing, sx, sy, radius,
+                     anim_t=None, eid=None) -> bool:
+        """Blit a centered non-hero entity sprite (minions/towers/...) or False."""
+        surf = self.sprites.frame(
+            "entities", key, action, facing,
+            time.time() if anim_t is None else anim_t)
+        return self._blit_surf(surf, sx, sy, radius, eid)
+
+    def _blit_surf(self, surf, sx, sy, radius, eid) -> bool:
         if surf is None:
             return False
         target = max(8, int(radius * 3.0))
         if surf.get_height() != target:
             surf = pygame.transform.smoothscale(surf, (target, target))
+        surf = self._apply_hit_flash(surf, eid)
         self.screen.blit(surf, (sx - target // 2, sy - target // 2))
         return True
+
+    def _apply_hit_flash(self, surf, eid):
+        """Additive red flash on a sprite copy for FLASH_DUR after a hit."""
+        if eid is None:
+            return surf
+        t0 = self._last_hit.get(eid)
+        if t0 is None:
+            return surf
+        age = time.monotonic() - t0
+        if age >= FLASH_DUR:
+            return surf
+        s = surf.copy()
+        a = int(150 * (1 - age / FLASH_DUR))
+        s.fill((a, a // 4, a // 4), special_flags=pygame.BLEND_RGB_ADD)
+        return s
+
+    def _flash_color(self, color, eid):
+        """Lerp a primitive fill toward red while a unit is freshly hit."""
+        if eid is None:
+            return color
+        t0 = self._last_hit.get(eid)
+        if t0 is None:
+            return color
+        age = time.monotonic() - t0
+        if age >= FLASH_DUR:
+            return color
+        k = 1 - age / FLASH_DUR
+        return tuple(int(c + (255 - c) * k * 0.6 if i == 0 else c * (1 - k * 0.4))
+                     for i, c in enumerate(color))
+
+    def _projectile_heading(self, ent, sx, sy) -> float:
+        """Heading (radians) from per-projectile position memory; keeps the last
+        good value when the projectile is momentarily stationary."""
+        eid = ent.get("id")
+        x, y = ent.get("x", 0.0), ent.get("y", 0.0)
+        prev = self._proj_pose.get(eid)
+        heading = prev[2] if prev else 0.0
+        if prev is not None:
+            dx, dy = x - prev[0], y - prev[1]
+            if dx * dx + dy * dy > 0.5:
+                heading = math.atan2(dy, dx)
+        self._proj_pose[eid] = (x, y, heading)
+        return heading
+
+    def _draw_projectile(self, ent, sx, sy, radius) -> None:
+        heading = self._projectile_heading(ent, sx, sy)
+        # Tiktik's tongue: a stretched band from the owner's mouth to the head.
+        if ent.get("hook"):
+            self._draw_tongue(ent, sx, sy, heading)
+            return
+        kind = ent.get("k")
+        if kind:
+            facing = facing_from_delta(math.cos(heading), math.sin(heading))
+            surf = self.sprites.projectile_frame(kind, facing, time.time())
+            if surf is not None:
+                rot = pygame.transform.rotate(surf, -math.degrees(heading))
+                self.screen.blit(rot, (sx - rot.get_width() // 2,
+                                       sy - rot.get_height() // 2))
+                return
+        if ent.get("b"):  # basic attack: tinted by the shooter's team
+            base = _team_color(ent.get("tm", 0))
+            pygame.draw.circle(self.screen, base, (sx, sy), radius)
+            pygame.draw.circle(self.screen, (255, 255, 255), (sx, sy),
+                               max(2, radius - 4))
+        else:  # generic ability projectile: bright
+            pygame.draw.circle(self.screen, COLOR_PROJECTILE, (sx, sy), radius)
+
+    def _draw_tongue(self, ent, sx, sy, heading) -> None:
+        """Render a hook projectile as a fleshy tongue from owner mouth to head,
+        not a moving dot. Owner anchor via `own`; falls back to a stub behind the
+        head when the owner is fogged."""
+        owner = self._find(self._frame_entities, ent.get("own"))
+        if owner is not None:
+            ax, ay = self.camera.world_to_screen(owner["x"], owner["y"])
+        else:
+            ax = sx - int(math.cos(heading) * 46)
+            ay = sy - int(math.sin(heading) * 46)
+        # Tapered tongue: dark outline, fleshy body, bright centerline, bulb tip.
+        pygame.draw.line(self.screen, (120, 24, 48), (ax, ay), (sx, sy), 11)
+        pygame.draw.line(self.screen, (206, 70, 96), (ax, ay), (sx, sy), 7)
+        pygame.draw.line(self.screen, (236, 132, 150), (ax, ay), (sx, sy), 3)
+        head = self.sprites.frame("projectiles", "tiktik_q", "tongue_head", "",
+                                  time.time())
+        if head is not None:
+            self.screen.blit(head, (sx - head.get_width() // 2,
+                                    sy - head.get_height() // 2))
+        else:
+            pygame.draw.circle(self.screen, (210, 80, 104), (sx, sy), 9)
+            pygame.draw.circle(self.screen, (120, 24, 48), (sx, sy), 9, 2)
 
     def _draw_obstacle(self, ent) -> None:
         if not ent.get("a", True):
@@ -468,28 +815,50 @@ class Renderer:
         if hi_x < 0 or lo_x > SCREEN_WIDTH or hi_y < 0 or lo_y > SCREEN_HEIGHT:
             return
         is_tree = ent.get("et") == EntityType.TREE
-        fill = (40, 95, 45) if is_tree else (90, 88, 96)
-        edge = (60, 140, 65) if is_tree else (130, 128, 140)
-        # Oriented band: a thick line + rounded caps, outlined by its rectangle.
-        pygame.draw.line(self.screen, fill, p1, p2, thpx)
-        pygame.draw.circle(self.screen, fill, p1, thpx // 2)
-        pygame.draw.circle(self.screen, fill, p2, thpx // 2)
-        corners = _capsule_corners(p1, p2, thpx)
-        if corners:
-            pygame.draw.polygon(self.screen, edge, corners, 2)
+        key = "tree" if is_tree else "wall"
+        # Textured capsule: tile the wall/tree segment sprite along the centerline,
+        # rotated to its angle. Falls back to the primitive band when art is absent.
+        seg = self.sprites.frame("entities", key, "seg", "", time.time())
+        if seg is not None:
+            length = int(math.hypot(p2[0] - p1[0], p2[1] - p1[1]))
+            if length >= 1:
+                eid = ent.get("id")
+                self._blit_tiled_strip(seg, (key, eid, length, thpx),
+                                       p1, p2, length, thpx)
+        else:
+            fill = (40, 95, 45) if is_tree else (90, 88, 96)
+            edge = (60, 140, 65) if is_tree else (130, 128, 140)
+            # Oriented band: a thick line + rounded caps, outlined by its rectangle.
+            pygame.draw.line(self.screen, fill, p1, p2, thpx)
+            pygame.draw.circle(self.screen, fill, p1, thpx // 2)
+            pygame.draw.circle(self.screen, fill, p2, thpx // 2)
+            corners = _capsule_corners(p1, p2, thpx)
+            if corners:
+                pygame.draw.polygon(self.screen, edge, corners, 2)
         if is_tree:  # show a damage bar on hurt trees, at the capsule midpoint
             if ent.get("hp", 1) < ent.get("mhp", 1):
                 mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
                 self._draw_hp_bar(ent, mx, my - thpx // 2, thpx // 2)
 
     def _draw_structure(self, ent, sx, sy, radius) -> None:
+        eid = ent.get("id")
+        is_core = ent.get("core")
+        key = "base" if (is_core or ent.get("et") == EntityType.BASE) else "tower"
+        alive = ent.get("a", True)
+        action = "idle" if alive else "dead"
+        if alive and is_core:
+            action = "core"
+        if self._blit_entity(key, action, "", sx, sy, radius, None, eid):
+            if alive:
+                self._draw_hp_bar(ent, sx, sy, radius)
+            return
         rect = pygame.Rect(sx - radius, sy - radius, radius * 2, radius * 2)
-        if not ent.get("a", True):
+        if not alive:
             pygame.draw.rect(self.screen, COLOR_STRUCTURE_DEAD, rect, border_radius=4)
             return
-        color = _team_color(ent.get("tm", 0))
+        color = self._flash_color(_team_color(ent.get("tm", 0)), eid)
         pygame.draw.rect(self.screen, color, rect, border_radius=4)
-        if ent.get("core"):
+        if is_core:
             pygame.draw.rect(self.screen, (255, 255, 255), rect, 3, border_radius=4)
         self._draw_hp_bar(ent, sx, sy, radius)
 

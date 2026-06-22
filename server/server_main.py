@@ -479,6 +479,16 @@ class GameServer:
         if to_remove and self.state.phase == GamePhase.WAITING:
             self._broadcast_lobby()
 
+    def _event_visible(self, ev: dict, team, vis) -> bool:
+        """Whether a combat event should reach `team`. gold/xp reveal only by the
+        source entity's visibility; fx/hit also reveal by their world position, so
+        AoE telegraphs and damage near you show even if the caster is fogged."""
+        if ev.get("eid") in vis:
+            return True
+        if ev.get("k") in ("fx", "hit"):
+            return self.state.point_visible_for(team, ev["x"], ev["y"])
+        return False
+
     async def _broadcast_snapshot(self) -> None:
         """Sends the current authoritative state to every connected client.
 
@@ -508,7 +518,8 @@ class GameServer:
             vis = self.state.visible_entity_ids_for(team)
             ents = [e.to_snapshot() for e in self.state.entities.values()
                     if e.entity_id in vis]
-            evs = [ev for ev in events if ev.get("eid") in vis]
+            evs = [ev for ev in events
+                   if self._event_visible(ev, team, vis)]
             per_team[team] = (ents, evs)
         for client_id, handler in self.clients.items():
             hero = self.state.get_hero(client_id)

@@ -28,7 +28,8 @@ class Ranger(HeroDef):
     @ability("Q", "Piercing Shot", cd=5, mana=50, cast=CastType.POINT,
              desc="Fire a long-range shot that damages the first enemy hit.")
     def piercing_shot(ctx):
-        skills.projectile(ctx, dmg=95, speed=950, range=900, radius=18)
+        skills.projectile(ctx, dmg=95, speed=950, range=900, radius=18,
+                          kind="ranger_q")
 
     @ability("W", "Tumble", cd=11, mana=40, cast=CastType.POINT,
              desc="Roll a short distance toward the cursor.")
@@ -43,4 +44,4 @@ class Ranger(HeroDef):
     @ability("R", "Arrow Storm", cd=60, mana=100, cast=CastType.POINT,
              desc="Rain arrows over a target area, damaging all enemies.")
     def arrow_storm(ctx):
-        skills.area_dmg(ctx, dmg=230, radius=360)
+        skills.area_dmg(ctx, dmg=230, radius=360, fx="arrowstorm")

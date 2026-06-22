@@ -30,12 +30,12 @@ class Mender(HeroDef):
              desc="Fire a spirit bolt dealing special damage to the first enemy hit.")
     def spirit_bolt(ctx):
         skills.projectile(ctx, dmg=80, speed=850, range=800, radius=18,
-                          dtype="special")
+                          dtype="special", kind="mender_q")
 
     @ability("W", "Renewing Wave", cd=12, mana=70, cast=CastType.POINT,
              desc="Heal allies in a target area.")
     def renewing_wave(ctx):
-        skills.area_heal(ctx, heal=140, radius=300)
+        skills.area_heal(ctx, heal=140, radius=300, fx="renewwave")
 
     @ability("E", "Blink", cd=13, mana=50, cast=CastType.POINT,
              desc="Teleport a short distance toward the cursor.")
@@ -45,4 +45,4 @@ class Mender(HeroDef):
     @ability("R", "Sanctuary", cd=80, mana=120, cast=CastType.POINT,
              desc="Bless a large area, healing all allies within it.")
     def sanctuary(ctx):
-        skills.area_heal(ctx, heal=320, radius=420)
+        skills.area_heal(ctx, heal=320, radius=420, fx="sanctuary")

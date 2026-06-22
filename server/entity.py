@@ -186,6 +186,12 @@ class Hero(Entity):
     # (e.g. Kapre attacking from the trees). Ticked down by system_status.
     reveal_timer: float = 0.0
 
+    # Render-only cast signal: the last ability key cast ("Q".."R") and a short
+    # countdown, so the client can play a one-shot cast animation. Ticked down by
+    # system_status; emitted in to_snapshot while >0.
+    cast_key: str = ""
+    cast_timer: float = 0.0
+
     # Scoreboard: kills / deaths / assists + last-hit counters (enemy minions /
     # neutral monsters this hero killed).
     kills: int = 0
@@ -333,6 +339,9 @@ class Hero(Entity):
         # so the client can swap to the flying-torso sprite. Cheap one-bit flag.
         if self.ability_state.get("split"):
             d["split"] = True
+        # Transient cast signal for the client's one-shot skill animation.
+        if self.cast_timer > 0 and self.cast_key:
+            d["cast"] = self.cast_key
         # Extra sight radius (e.g. during the split ult) so the client's fog
         # reveal matches the server's vision. Only sent when nonzero.
         vis_bonus = self.bonus_vision()
@@ -424,6 +433,15 @@ class Minion(Entity):
     meet_y: float = 0.0
     meet_speed: float = 0.0
 
+    # Render-only subtype tag for the client sprite picker. Non-annotated so the
+    # dataclass leaves it a plain class attribute; subclasses override.
+    _sub = "melee"
+
+    def to_snapshot(self) -> dict:
+        d = super().to_snapshot()
+        d["sub"] = self._sub
+        return d
+
     def advance(self, dt: float) -> None:
         """Walk toward the current waypoint, advancing along the path as each is
         reached (called when no enemy is in range)."""
@@ -446,10 +464,12 @@ class Minion(Entity):
 @dataclass
 class MeleeMinion(Minion):
     """The default frontline minion (uses the base Minion stats)."""
+    _sub = "melee"
 
 
 @dataclass
 class RangedMinion(Minion):
+    _sub = "ranged"
     radius: float = MINION_RADIUS
     hp: int = RANGED_MINION_HP
     max_hp: int = RANGED_MINION_HP
@@ -463,6 +483,7 @@ class RangedMinion(Minion):
 
 @dataclass
 class CartMinion(Minion):
+    _sub = "cart"
     radius: float = CART_MINION_RADIUS
     hp: int = CART_MINION_HP
     max_hp: int = CART_MINION_HP
@@ -475,6 +496,7 @@ class CartMinion(Minion):
 
 @dataclass
 class NeutralMinion(Minion):
+    _sub = "neutral"
     team: Team = Team.NONE
     radius: float = NEUTRAL_RADIUS
     hp: int = NEUTRAL_HP
@@ -527,10 +549,18 @@ class Projectile(Entity):
     target_id: int = 0
     speed: float = 0.0
     is_basic: bool = False  # basic attack (team-colored) vs ability (bright)
+    # Art selector for the client: "<hero>_<key>" (e.g. "tiktik_q"). Empty keeps
+    # the generic projectile look. `own` is the firing entity (tongue anchor).
+    kind: str = ""
+    own: int = 0
 
     def to_snapshot(self) -> dict:
         d = super().to_snapshot()
         d["b"] = self.is_basic
+        if self.kind:
+            d["k"] = self.kind
+        if self.own:
+            d["own"] = self.own
         return d
 
 

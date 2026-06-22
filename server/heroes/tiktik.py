@@ -73,7 +73,8 @@ class Tiktik(HeroDef):
         slow_pct = E_SLOW_PCT if erank > 0 else 0.0
         skills.hook(ctx, dmg=dmg, speed=HOOK_SPEED, range=rng, radius=HOOK_RADIUS,
                     stop_dist=HOOK_STOP, pull_speed=HOOK_PULL_SPEED,
-                    stun_dur=stun, slow_dur=slow_dur, slow_pct=slow_pct)
+                    stun_dur=stun, slow_dur=slow_dur, slow_pct=slow_pct,
+                    kind="tiktik_q")
         if frenzy:
             hero.cooldowns["Q"] = FRENZY_HOOK_CD  # spammable during Frenzy
 
