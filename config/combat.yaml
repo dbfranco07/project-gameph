@@ -2,19 +2,19 @@
 
 # Hero body / movement / base combat (data-driven heroes override these)
 hero_radius: 20
-hero_move_speed: 250          # units per second
+hero_move_speed: 140          # units per second
 hero_base_hp: 600
 hero_base_mana: 200
 hero_attack_damage: 55
-hero_attack_range: 160
+hero_attack_range: 100
 hero_attack_interval: 1.0     # seconds between auto-attacks
 basic_projectile_speed: 1100  # ranged basic-attack projectile speed
-basic_projectile_radius: 10
+basic_projectile_radius: 8
 attack_click_pixels: 14       # cursor pickup tolerance for "A + click enemy"
 
 # Respawn
 hero_respawn_base: 5.0        # base respawn seconds
-hero_respawn_per_level: 1.0   # extra seconds per hero level
+hero_respawn_per_level: 3.0   # extra seconds per hero level
 
 # Leveling / progression. 15 levels = 15 skill points (Q/W/E x4 + R x3).
 max_level: 15

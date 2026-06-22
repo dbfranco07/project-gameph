@@ -1,11 +1,11 @@
 # Towers and cores. Placement lives in map.yaml; these are the unit stats.
 
-tower_hp: 1600
-tower_damage: 130
-tower_range: 620
+tower_hp: 1500
+tower_damage: 90
+tower_range: 340
 tower_interval: 1.0
-tower_radius: 40
-tower_projectile_speed: 900   # towers fire visible shots
+tower_radius: 30
+tower_projectile_speed: 800   # towers fire visible shots
 
 core_hp: 3200
 core_damage: 150

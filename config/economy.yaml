@@ -11,6 +11,6 @@ structure_gold: 150
 
 # Last-hit economy: killer gets full gold; nearby allies get a share of gold but
 # full XP regardless of who landed the killing blow.
-minion_assist_gold_fraction: 0.33
-gold_share_radius: 900        # allies within this of a dying minion get share gold
-xp_share_radius: 900          # allies within this of a dying minion get full XP
+minion_assist_gold_fraction: 0.40
+gold_share_radius: 400        # allies within this of a dying minion get share gold
+xp_share_radius: 400          # allies within this of a dying minion get full XP

@@ -12,78 +12,115 @@
 #   core     - the win-condition structure, sitting INLAND between the fountain
 #              and the mid-lane base tower (NOT on top of the fountain).
 # Minions spawn at each lane's base tower (lane_order 2), not here.
-fountain: [800, 5200]
-core: [1150, 4850]
+fountain: [200, 5800]
+core: [650, 5350]
 
 # Lane polylines (full path, base-to-base). Symmetric, so listed in full.
 # `mid` is the diagonal; `top` bends at the top-left corner, `bot` at the
 # bottom-right corner.
-lane_width: 170
+lane_width: 500
 lanes:
   top:
-    - [800, 5200] # bottom-left corner
-    - [800, 800] # top-left corner
-    - [5200, 800] # top-right corner
+    - [500, 4500] # bottom-left corner
+    - [500, 500] # top-left corner
+    - [4500, 500] # top-right corner
   mid:
-    - [800, 5200] # bottom-left corner
-    - [5200, 800] # top-right corner
+    - [1500, 4500] # bottom-left corner
+    - [4500, 1500] # top-right corner
   bot:
-    - [800, 5200] # bottom-left corner
-    - [5200, 5200] # bottom-right corner
-    - [5200, 800] # top-right corner
+    - [1500, 5500] # bottom-left corner
+    - [5500, 5500] # bottom-right corner
+    - [5500, 1500] # top-right corner
 
 # Towers along each lane, as arc-length fractions from the Team 1 base (t=0).
 # Authored for Team 1; Team 2's towers are built as (lane_order, 1 - t, kind).
 # lane_order: outer=0 (closest to mid, falls first) -> inner=1 -> base=2.
 towers:
-  - { lane_order: 2, t: 0.18, kind: base }
-  - { lane_order: 1, t: 0.30, kind: inner }
-  - { lane_order: 0, t: 0.42, kind: outer }
+  - { lane_order: 2, t: 0.00, kind: base }
+  - { lane_order: 1, t: 0.19, kind: inner }
+  - { lane_order: 0, t: 0.38, kind: outer }
 
 # Neutral jungle camps (Team 1 frame; mirror builds the rest). (x, y, count).
 # The last entry sits at the bottom-right river end; its mirror lands at the
 # top-left river end, so both river mouths get a camp.
 jungle_camps:
-  - [1500, 4400, 3]
-  - [2100, 3900, 2]
-  - [2700, 4500, 3]
-  - [2400, 3000, 2]
-  - [3300, 4300, 3]
-  - [4700, 4700, 3]   # bottom-right river end (mirror -> top-left river end)
+  - [1490, 3380, 3]
+  - [1380, 2230, 3]
 
+  - [2280, 4800, 3]
+  - [3080, 4810, 2]
+  - [3980, 4810, 2]
+  - [3130, 4050, 2]
 
 # Wave-1 minion meeting points per lane (single, shared between sides). Wave-1
 # minion speed is tuned so both sides arrive here together, then reverts.
 meet_points:
-  top: [800, 800]
+  top: [500, 500]
   mid: [3000, 3000]
-  bot: [5200, 5200]
+  bot: [5500, 5550]
 
 # Spawn-point regen zone radius around each core (fast regen for the owner;
 # enemies inside take damage at the same rate).
-spawn_zone_radius: 700
+spawn_zone_radius: 500
 
 # The river: a single WALKABLE band running the anti-diagonal (top-left to
 # bottom-right), crossing the mid lane to form an X. Center-symmetric, so it is
 # authored once. Units walk through it freely; future hero effects may key off
 # standing in it.
-river: { p1: [800, 800], p2: [5200, 5200], thickness: 520 }
+river: { p1: [1200, 1200], p2: [4800, 4800], thickness: 540 }
 
 # Runes: roaming neutrals that patrol near their spawn, fight back, and on death
 # grant the killer a timed buff. `buff` in: haste | double_damage | cdr_50 |
 # regen_10x. Each rune (re)spawns at a UNIFORM-random point inside `zone`
 # (x, y, w, h); `patrol` is the wander radius around that spawn point.
 runes:
-  - { zone: [1900, 3100, 700, 700], buff: haste, patrol: 350 }   # off-lane jungle (mirrored)
+  - { zone: [1750, 1750, 300, 300], buff: haste, patrol: 180 }   # off-lane jungle (mirrored)
 
 # Walls: permanent, unwalkable, vision-blocking. Trees: like walls but
 # destructible (have hp) and clear when killed. Both are oriented CAPSULES:
 # a centerline p1->p2 plus a thickness (so they can run diagonally). Team 1
 # frame; the mirror builds Team 2's set.
 walls:
-  - { p1: [1500, 5000], p2: [1900, 4400], thickness: 60 }
-  - { p1: [2400, 3650], p2: [3000, 3750], thickness: 60 }
+  # top lane cover
+  - { p1: [0, 4350], p2: [200, 4350], thickness: 50 }
+  - { p1: [800, 4350], p2: [1200, 4350], thickness: 50 }
 
+  # bot lane cover
+  - { p1: [1650, 4800], p2: [1650, 5200], thickness: 50 }
+  - { p1: [1650, 5800], p2: [1650, 6000], thickness: 50 }
+
+  # bot lane inner-outer 
+  - { p1: [3390, 5230], p2: [3555, 4520], thickness: 40 }
+  # mid lane base-inner
+  - { p1: [1860, 4555], p2: [2210, 4220], thickness: 100 }
+  # mid lane base-inner
+  - { p1: [1735, 3775], p2: [2505, 3015], thickness: 50 }
+  # top lane base-inner
+  - { p1: [870, 3815], p2: [870, 2540], thickness: 50 } 
+
+  # bot-river
+  - { p1: [3124, 3495], p2: [3358, 3749], thickness: 50 }
+
+  # top-river
+  - { p1: [988, 1902], p2: [1552, 1956], thickness: 50 }
+  - { p1: [1552, 1956], p2: [1994, 2375], thickness: 50 }
+  
 trees:
-  - { p1: [1900, 4600], p2: [2150, 4520], thickness: 80 }
-  - { p1: [3300, 4000], p2: [3380, 4250], thickness: 80 }
+  # bot lane base-inner
+  - { p1: [1860, 5260], p2: [3010, 5260], thickness: 80 }
+  # bot lane outer
+  - { p1: [4095, 5200], p2: [4960, 5200], thickness: 80 }
+  # top z-tree
+  - { p1: [1194, 3076], p2: [1422, 2771], thickness: 60 } 
+  - { p1: [1422, 2771], p2: [1933, 2787], thickness: 60 } 
+  - { p1: [1933, 2787], p2: [2101, 2611], thickness: 60 } 
+
+  # mid-bot tree
+  - { p1: [2550, 3998], p2: [2718, 4364], thickness: 60 } 
+  - { p1: [2718, 4364], p2: [2657, 4806], thickness: 60 } 
+
+  # bot-river
+  - { p1: [3612, 3993], p2: [4224, 4595], thickness: 60 }
+
+  # mid-river
+  - { p1: [2672, 2787], p2: [2771, 2688], thickness: 30 }

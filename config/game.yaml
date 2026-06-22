@@ -25,12 +25,12 @@ default_kill_target: 100      # first team to this many hero kills wins
 
 # Match start: clock counts down from this many seconds; at 0 the first minion
 # wave + neutrals + runes spawn, then the clock counts up as elapsed time.
-pregame_countdown: 20.0
+pregame_countdown: 5.0
 
 # Vision (fog-of-war) radii
-vision_radius: 1500           # hero sight radius
-minion_vision_radius: 800
-tower_vision_radius: 1200
+vision_radius: 700           # hero sight radius
+minion_vision_radius: 700
+tower_vision_radius: 700
 
 # Colors (RGB) -> exposed as COLOR_<NAME> tuples
 colors:
