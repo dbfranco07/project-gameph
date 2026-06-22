@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import math
 
+import random
+
 from shared.config import MAP_WIDTH, MAP_HEIGHT
-from server.entity import Hero, Projectile, HookProjectile, Structure
+from server.entity import (
+    Hero, Projectile, HookProjectile, Structure, Minion, SummonedMinion,
+)
 from server.effects import make_effect
 
 
@@ -25,7 +29,9 @@ from server.effects import make_effect
 def enemies_in_radius(state, team, cx, cy, radius):
     out = []
     for e in state.entities.values():
-        if not e.alive or e.team == team or e.team.value == 0:
+        # Teamless units (Team.NONE: neutrals/runes) are hostile to everyone, so
+        # only the caster's own team is excluded here.
+        if not e.alive or e.team == team:
             continue
         if isinstance(e, Projectile):
             continue
@@ -269,3 +275,61 @@ def stun_nearby(ctx, radius, duration) -> list:
     for e in stunned:
         apply_effect(e, duration, stun=True)
     return stunned
+
+
+def shred_armor(ctx, target, amount, duration) -> None:
+    """Reduce a single enemy's physical defense for `duration` (a negative
+    phys_def buff; effective_phys_def sums it in)."""
+    apply_effect(target, duration, phys_def=-abs(amount))
+
+
+def shred_sp_def(ctx, target, amount, duration) -> None:
+    """Reduce a single enemy's special defense for `duration`."""
+    apply_effect(target, duration, sp_def=-abs(amount))
+
+
+def summon(ctx, count, lifetime, target_id=None, spread=50.0,
+           **overrides) -> list:
+    """Spawn `count` short-lived creatures on the caster's team near the caster,
+    each chasing `target_id` (or the nearest enemy). Extra kwargs override the
+    SummonedMinion stat defaults (hp, attack_damage, move_speed, ...)."""
+    caster, state = ctx.caster, ctx.state
+    out = []
+    for _ in range(count):
+        ang = random.uniform(0, 2 * math.pi)
+        rad = random.uniform(0, spread)
+        px = caster.x + math.cos(ang) * rad
+        py = caster.y + math.sin(ang) * rad
+        worm = SummonedMinion(
+            team=caster.team, x=px, y=py, dest_x=px, dest_y=py,
+            owner_id=caster.entity_id, lifetime=lifetime,
+            forced_target_id=target_id, **overrides)
+        state.entities[worm.entity_id] = worm
+        out.append(worm)
+    return out
+
+
+def devour(ctx, range, buff_dur=0.0, hero_bite=0, dtype="physical",
+           **buff_mods) -> object | None:
+    """Consume the targeted enemy. A minion/neutral is instantly slain and the
+    caster gains a timed buff (`buff_mods`); a hero instead takes `hero_bite`
+    damage. Returns the target acted on, or None."""
+    caster = ctx.caster
+    target = ctx.state.entities.get(ctx.tid) if ctx.tid else None
+    if target is None or not target.alive or target.team == caster.team:
+        target = nearest_enemy(ctx.state, caster.team, caster.x, caster.y,
+                               range, toward=(ctx.tx, ctx.ty))
+    if target is None or caster.distance_to(target) > range + target.radius:
+        return None
+    if isinstance(target, Minion):
+        # Lethal true damage routes through the normal death/reward flow.
+        ctx.state.damage_events.append(
+            {"src": caster.entity_id, "tgt": target.entity_id,
+             "amt": int(target.hp) + 1, "dtype": "true"})
+        if buff_dur > 0 and buff_mods:
+            apply_effect(caster, buff_dur, source="aswang:devour", **buff_mods)
+    else:  # an enemy hero: a heavy bite instead of an instant kill
+        ctx.state.damage_events.append(
+            {"src": caster.entity_id, "tgt": target.entity_id,
+             "amt": hero_bite, "dtype": dtype})
+    return target

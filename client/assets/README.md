@@ -28,7 +28,7 @@ client/assets/<category>/<key>/<action>.png                   # non-directional
 
 | category      | key                                   | actions / stems |
 |---------------|---------------------------------------|-----------------|
-| `heroes`      | hero id (`hid` in snapshots)          | `idle` `move` `attack` `q` `w` `e` `r` `split_flyer` `split_body` |
+| `heroes`      | hero id (`hid` in snapshots)          | `idle` `move` `attack` `q` `w` `e` `r` `face` `split_flyer` `split_body` |
 | `projectiles` | `<hero>_<key>` (e.g. `tiktik_q`)       | `fly` (+ `tiktik_q/tongue_head`, `tongue_mid`) |
 | `effects`     | fx name (`smash`, `earthshatter`, `arrowstorm`, `sanctuary`, `renewwave`, `hit_phys`, `hit_special`) | `play_0…` one-shot sequence |
 | `entities`    | `minion_melee/ranged/cart/neutral`, `tower`, `base`, `rune` | `idle` `move` (`core`/`dead` for structures) |
@@ -41,6 +41,8 @@ client/assets/<category>/<key>/<action>.png                   # non-directional
 | `idle` / `move`       | standing / moving (animate `move` with `_0`, `_1`)       |
 | `attack`              | auto-attack (also the attacker lunge)                    |
 | `q` / `w` / `e` / `r` | one-shot cast pose, played for ~0.4s after the ability fires (server sends a transient `cast` flag) |
+| `t` / `y` / `u` / `i` | extra cast poses for wide kits (Pedro Penduko's 8 Mutya skills) |
+| `face`                | non-directional portrait shown in the lobby hero-select grid |
 | `split_flyer`         | Manananggal's detached upper half (hero has `split` set) |
 | `split_body`          | Manananggal's grounded lower body (the `body` entity)    |
 

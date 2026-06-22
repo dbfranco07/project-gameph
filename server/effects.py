@@ -13,11 +13,21 @@ Recognized keys:
     atkspd_pct, hp_regen_bonus, mana_regen_bonus, vision_bonus
   Multiplicative:
     slow_pct       (movement slow, 0..1; stacks additively, capped)
+  Combat modifiers (resolved in system_damage_death):
+    crit_chance      (added dodge-able crit chance, 0..1)
+    crit_mult        (added to base crit multiplier)
+    guaranteed_crit  (truthy; forces every eligible hit to crit)
+    lifesteal        (fraction of damage dealt healed back to the attacker)
+    evasion          (chance to dodge an incoming basic physical hit, 0..1)
+    true_strike      (truthy; this unit's basic hits ignore enemy evasion)
+    dmg_reduction    (flat incoming-damage mitigation fraction, 0..1, capped)
+    shield           (HP-absorb pool; depleted before damage reaches HP)
   Crowd-control flags (truthy):
     stun           (cannot move / attack / cast)
     silence        (cannot cast abilities)
     disarm         (cannot auto-attack, but may still move / cast)
     invuln         (takes no damage)
+    phase          (ignores wall/tree terrain collision)
   Stealth / vision flags (truthy):
     invisible          (hidden from enemies; allies still see; revealed while
                         attacking via Hero.reveal_timer)

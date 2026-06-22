@@ -130,6 +130,12 @@ class Hero(Entity):
     attack_interval: float = 1.0
     attack_type: str = "melee"
 
+    # Offensive/defensive combat modifiers (base; buffs add deltas on top).
+    crit_chance: float = 0.0   # 0..1 chance an auto-attack crits
+    crit_mult: float = 2.0     # damage multiplier on a crit
+    lifesteal: float = 0.0     # fraction of damage dealt returned as HP
+    evasion: float = 0.0       # 0..1 chance to dodge an incoming physical hit
+
     # Per-level stat growth (copied from the HeroDef on spawn).
     sp_atk_per_level: float = 0.0
     phys_def_per_level: float = 3.0
@@ -303,6 +309,46 @@ class Hero(Entity):
     def effective_sp_def(self) -> float:
         return self.sp_def + self.bonus_sp_def()
 
+    # ----- crit / lifesteal / evasion / mitigation --------------------------
+    def effective_crit_chance(self) -> float:
+        if any(b.get("guaranteed_crit") for b in self.buffs):
+            return 1.0
+        return min(1.0, self.crit_chance
+                   + sum(b.get("crit_chance", 0) for b in self.buffs))
+
+    def effective_crit_mult(self) -> float:
+        return self.crit_mult + sum(b.get("crit_mult", 0) for b in self.buffs)
+
+    def effective_lifesteal(self) -> float:
+        return self.lifesteal + sum(b.get("lifesteal", 0) for b in self.buffs)
+
+    def effective_evasion(self) -> float:
+        return min(0.95, self.evasion
+                   + sum(b.get("evasion", 0) for b in self.buffs))
+
+    def has_true_strike(self) -> bool:
+        return any(b.get("true_strike") for b in self.buffs)
+
+    def damage_reduction(self) -> float:
+        """Flat incoming-damage mitigation fraction from buffs (capped)."""
+        return min(0.8, sum(b.get("dmg_reduction", 0) for b in self.buffs))
+
+    def absorb_with_shield(self, amt: int) -> int:
+        """Spend shield buffs to soak `amt` damage; return the unabsorbed
+        remainder. Depleted shield buffs are dropped."""
+        for b in self.buffs:
+            pool = b.get("shield", 0)
+            if pool <= 0:
+                continue
+            used = min(pool, amt)
+            b["shield"] = pool - used
+            amt -= used
+            if amt <= 0:
+                break
+        self.buffs[:] = [b for b in self.buffs
+                         if "shield" not in b or b["shield"] > 0]
+        return amt
+
     def attack_speed_bonus(self) -> float:
         return sum(b.get("atkspd_pct", 0) for b in self.buffs)
 
@@ -394,6 +440,11 @@ class Hero(Entity):
         d["cds"] = {k: round(v, 1) for k, v in self.cooldowns.items()}
         d["alvl"] = dict(self.ability_levels)
         d["sp"] = self.skill_points
+        # Which key is this hero's ultimate (for the ult-readiness column). Most
+        # heroes ult on "R"; only emit when it differs (e.g. Pedro's White "I").
+        ult_key = getattr(self.hero_def, "ult_key", "R")
+        if ult_key != "R":
+            d["ult"] = ult_key
         d["inv"] = list(self.inventory)
         d["icds"] = {k: round(v, 1) for k, v in self.item_cooldowns.items()}
         # Scoreboard.
@@ -507,6 +558,27 @@ class NeutralMinion(Minion):
     gold_value: int = NEUTRAL_GOLD
     xp_value: int = NEUTRAL_XP
     is_neutral: bool = True
+
+
+@dataclass
+class SummonedMinion(Minion):
+    """A short-lived, player-owned creature (e.g. Mangkukulam's worms). Belongs
+    to its summoner's team, expires after `lifetime` seconds, steers toward an
+    optional `forced_target_id`, and grants no bounty when killed."""
+    _sub = "worm"
+    owner_id: int | None = None
+    lifetime: float = 6.0
+    forced_target_id: int | None = None
+    radius: float = 16.0
+    hp: int = 60
+    max_hp: int = 60
+    attack_damage: int = 12
+    attack_range: float = 90.0
+    attack_interval: float = 0.6
+    move_speed: float = 320.0
+    gold_value: int = 0
+    xp_value: int = 0
+    is_neutral: bool = False
 
 
 @dataclass

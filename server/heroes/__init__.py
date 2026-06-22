@@ -20,10 +20,21 @@ from server.heroes.mender import Mender
 from server.heroes.manananggal import Manananggal
 from server.heroes.kapre import Kapre
 from server.heroes.tiktik import Tiktik
+from server.heroes.tiyanak import Tiyanak
+from server.heroes.mangkukulam import Mangkukulam
+from server.heroes.aswang import Aswang
+from server.heroes.rizal import Rizal
+from server.heroes.mabini import Mabini
+from server.heroes.melchora import Melchora
+from server.heroes.bonifacio import Bonifacio
+from server.heroes.lastikman import Lastikman
+from server.heroes.pedro import Pedro
 
 HERO_REGISTRY: dict[str, type[HeroDef]] = {
     cls.hero_id: cls
-    for cls in (Ranger, Brawler, Mender, Manananggal, Kapre, Tiktik)
+    for cls in (Ranger, Brawler, Mender, Manananggal, Kapre, Tiktik,
+                Tiyanak, Mangkukulam, Aswang, Rizal, Mabini, Melchora,
+                Bonifacio, Lastikman, Pedro)
 }
 
 DEFAULT_HERO = "ranger"

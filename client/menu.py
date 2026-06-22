@@ -8,11 +8,15 @@ return high-level *actions* (e.g. ``("connect", name, host, port)`` or
 
 from __future__ import annotations
 
+import os
+
 import pygame
 
 from shared.config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BG, COLOR_TEXT, COLOR_TEAM1, COLOR_TEAM2,
 )
+
+_ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
 _PANEL = (28, 30, 38)
 _PANEL_HI = (44, 48, 60)
@@ -143,6 +147,9 @@ class LobbyScreen:
         self._hero_btns: list[tuple[pygame.Rect, str]] = []
         self._switch_btn = pygame.Rect(0, 0, 0, 0)
         self._start_btn = pygame.Rect(0, 0, 0, 0)
+        # hero-select face thumbnails, loaded lazily + cached.
+        self._face_px = 50
+        self._faces: dict[str, pygame.Surface | None] = {}
 
     def _my_team(self) -> int:
         for p in self.players:
@@ -150,17 +157,50 @@ class LobbyScreen:
                 return p["team"]
         return 1
 
+    # Hero picker is a centered grid of face thumbnails so every hero fits and
+    # is clickable no matter how many there are.
+    _GRID_TOP = 366
+    _CELL_W, _CELL_H = 92, 74
+    _MAX_COLS = 7
+
     def _layout(self) -> None:
         self._hero_btns = []
-        bw, bh, gap = 150, 36, 10
-        total = len(self.heroes) * (bw + gap) - gap
-        x0 = (SCREEN_WIDTH - total) // 2
-        y = 470
+        n = len(self.heroes)
+        cols = max(1, min(self._MAX_COLS, n))
+        rows = max(1, (n + cols - 1) // cols)
+        x0 = (SCREEN_WIDTH - cols * self._CELL_W) // 2
         for i, h in enumerate(self.heroes):
-            self._hero_btns.append(
-                (pygame.Rect(x0 + i * (bw + gap), y, bw, bh), h["id"]))
-        self._switch_btn = _center_rect(220, 42, 540)
-        self._start_btn = _center_rect(240, 54, 600)
+            r, c = divmod(i, cols)
+            rect = pygame.Rect(x0 + c * self._CELL_W,
+                               self._GRID_TOP + r * self._CELL_H,
+                               self._CELL_W, self._CELL_H)
+            self._hero_btns.append((rect, h["id"]))
+        grid_bottom = self._GRID_TOP + rows * self._CELL_H
+        self._switch_btn = _center_rect(220, 42, grid_bottom + 14)
+        self._start_btn = _center_rect(240, 54, grid_bottom + 66)
+
+    def _face(self, hid: str) -> pygame.Surface | None:
+        """Load + cache a hero's select portrait, scaled to the thumbnail size."""
+        if hid not in self._faces:
+            path = os.path.join(_ASSET_DIR, "heroes", hid, "face.png")
+            img = None
+            if os.path.isfile(path):
+                try:
+                    img = pygame.image.load(path).convert_alpha()
+                    img = pygame.transform.smoothscale(
+                        img, (self._face_px, self._face_px))
+                except pygame.error:
+                    img = None
+            self._faces[hid] = img
+        return self._faces[hid]
+
+    def _fit(self, text: str, max_w: int) -> str:
+        """Truncate `text` with an ellipsis so it fits within `max_w` px."""
+        if self.font_small.size(text)[0] <= max_w:
+            return text
+        while text and self.font_small.size(text + "…")[0] > max_w:
+            text = text[:-1]
+        return text + "…"
 
     def handle(self, events) -> list[tuple]:
         self._layout()
@@ -189,7 +229,7 @@ class LobbyScreen:
         title = self.font_big.render("LOBBY", True, COLOR_TEXT)
         surf.blit(title, ((SCREEN_WIDTH - title.get_width()) // 2, 40))
 
-        col_w, col_h = 420, 300
+        col_w, col_h = 420, 210
         gap = 40
         x1 = SCREEN_WIDTH // 2 - col_w - gap // 2
         x2 = SCREEN_WIDTH // 2 + gap // 2
@@ -219,16 +259,32 @@ class LobbyScreen:
         my_hero = next((p["hero"] for p in self.players
                         if p["cid"] == self.my_cid), None)
         pick_lbl = self.font.render("PICK YOUR HERO", True, _MUTED)
-        surf.blit(pick_lbl, ((SCREEN_WIDTH - pick_lbl.get_width()) // 2, 442))
+        surf.blit(pick_lbl,
+                  ((SCREEN_WIDTH - pick_lbl.get_width()) // 2,
+                   self._GRID_TOP - 24))
         mouse = pygame.mouse.get_pos()
+        fpx = self._face_px
         for rect, hid in self._hero_btns:
             sel = hid == my_hero
             hot = rect.collidepoint(mouse)
-            bg = _ACCENT if sel else (_PANEL_HI if hot else _PANEL)
-            pygame.draw.rect(surf, bg, rect, border_radius=6)
-            name = self.font_small.render(self._hero_name(hid), True, COLOR_TEXT)
+            fx = rect.centerx - fpx // 2
+            fy = rect.y + 2
+            frame = pygame.Rect(fx - 3, fy - 3, fpx + 6, fpx + 6)
+            if sel:
+                pygame.draw.rect(surf, _ACCENT, frame, border_radius=8)
+            elif hot:
+                pygame.draw.rect(surf, _PANEL_HI, frame, border_radius=8)
+            face = self._face(hid)
+            if face is not None:
+                surf.blit(face, (fx, fy))
+            else:  # no art yet: a labelled placeholder tile
+                pygame.draw.rect(surf, _PANEL, (fx, fy, fpx, fpx),
+                                 border_radius=8)
+            col = COLOR_TEXT if (sel or hot) else _MUTED
+            name = self.font_small.render(
+                self._fit(self._hero_name(hid), self._CELL_W - 4), True, col)
             surf.blit(name, (rect.centerx - name.get_width() // 2,
-                             rect.centery - name.get_height() // 2))
+                             fy + fpx + 3))
 
         # Switch side
         hot = self._switch_btn.collidepoint(mouse)

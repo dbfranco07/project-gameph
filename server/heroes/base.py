@@ -109,10 +109,25 @@ class HeroDef:
     hp_regen: float = HERO_HP_REGEN_PER_SEC  # hp per second (slow passive)
     mana_regen: float = MANA_REGEN_PER_SEC
 
+    # Optional combat modifiers (most heroes leave these at zero and gain them
+    # only from buffs; a few — e.g. Tiyanak — carry a base value).
+    crit_chance: float = 0.0
+    crit_mult: float = 2.0
+    lifesteal: float = 0.0
+    evasion: float = 0.0
+
     # Per-level stat growth (the new stats; hp/atk growth stays global config).
     sp_atk_per_level: float = 0.0
     phys_def_per_level: float = 3.0
     sp_def_per_level: float = 2.0
+
+    # Ultimate configuration (override per hero with a non-standard ult). The
+    # leveling code (game_state.level_ability) reads these so the ultimate need
+    # not live on key "R": e.g. Pedro Penduko's ult is "I", gated to level 8.
+    # `ult_level_gates[rank]` is the hero level required to raise the ult to the
+    # next rank; its length should match the ult's max_rank.
+    ult_key: str = "R"
+    ult_level_gates: tuple[int, ...] = (4, 8, 12)
 
     # Populated by __init_subclass__ from decorated methods.
     abilities: list[Ability] = []

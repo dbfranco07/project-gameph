@@ -928,7 +928,7 @@ class Renderer:
             self._draw_game_over(winner, my_team)
         else:
             hint = self.font.render(
-                "RMB move | A+click attack | QWER cast | Shift+QWER level | "
+                "RMB move | A+click attack | QWERTYU+I cast | Shift+key level | "
                 "Cmd/Alt+QWE-ASD items | Enter chat | B shop",
                 True, (150, 150, 150))
             self.screen.blit(hint, (SCREEN_WIDTH - hint.get_width() - 10, 76))
@@ -982,8 +982,11 @@ class Renderer:
         for i, h in enumerate(heroes):
             x = anchor_x + direction * i * step
             alive = h.get("a", True)
-            r_rank = h.get("alvl", {}).get("R", 0)
-            r_cd = h.get("cds", {}).get("R", 0)
+            # Heroes ult on "R" unless the snapshot names a different ult key
+            # (e.g. Pedro Penduko's White Mutya on "I").
+            ult = h.get("ult", "R")
+            r_rank = h.get("alvl", {}).get(ult, 0)
+            r_cd = h.get("cds", {}).get(ult, 0)
             if not alive:
                 color = (90, 90, 90)
             elif r_rank >= 1 and r_cd <= 0:
@@ -998,19 +1001,24 @@ class Renderer:
                 self.screen.blit(t, (x - t.get_width() // 2, top + 14))
 
     def _draw_ability_bar(self, me: dict) -> None:
-        """Skills as a 2x2 grid (Q W / E R) at the bottom, left of the items.
-        Shows cooldown, rank pips, and a '+' badge when a point can be spent."""
+        """Skills as a grid at the bottom, left of the items. Standard 4-ability
+        heroes use a 2x2 (Q W / E R); wider kits (e.g. Pedro Penduko's 8 skills)
+        spill into a 4-wide grid (Q W E R / T Y U I). Shows cooldown, rank pips,
+        and a '+' badge when a point can be spent."""
         abilities = self.hero_abilities
         cds = me.get("cds", {})
         alvl = me.get("alvl", {})
         points = me.get("sp", 0)
         slot, gap = 54, 6
-        grid_w = 2 * slot + gap
+        n = min(len(abilities), 8)
+        cols = 2 if n <= 4 else 4
+        rows = max(1, (n + cols - 1) // cols)
+        grid_w = cols * slot + (cols - 1) * gap
         x0 = SCREEN_WIDTH - 3 * 46 - 12 - grid_w - 24  # left of the 3-wide item grid
-        y0 = SCREEN_HEIGHT - 2 * slot - gap - 8
+        y0 = SCREEN_HEIGHT - rows * slot - (rows - 1) * gap - 8
         self._skill_rects = []
-        for i, ab in enumerate(abilities[:4]):
-            col, row = i % 2, i // 2
+        for i, ab in enumerate(abilities[:n]):
+            col, row = i % cols, i // cols
             x = x0 + col * (slot + gap)
             y = y0 + row * (slot + gap)
             rect = pygame.Rect(x, y, slot, slot)

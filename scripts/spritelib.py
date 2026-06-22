@@ -134,13 +134,41 @@ def humanoid(pal: dict, action: str, facing: str, frame: int) -> pygame.Surface:
     return oriented(s, facing)
 
 
+def portrait(compose, pal: dict, face_fx=None) -> pygame.Surface:
+    """A 64x64 hero-select face: the idle head cropped + zoomed into a round
+    frame tinted by the hero's cloth colors. ``compose`` is the body builder
+    from ``emit_hero`` (so the portrait inherits the hero's overlay/back art —
+    fur, wings, etc.); ``face_fx(s)`` optionally adds a signature flourish."""
+    body = compose("idle", "s", 0)
+    crop = pygame.Rect(CX - 14, 4, 28, 28)
+    head_img = pygame.transform.scale(body.subsurface(crop).copy(), (54, 54))
+    s = surf()
+    bg = pal.get("cloth_dk", (48, 48, 60))
+    frame_col = pal.get("cloth", (90, 90, 110))
+    pygame.draw.circle(s, (*bg, 255), (CX, CX), 30)
+    s.blit(head_img, (CX - 27, CX - 22))
+    # Clip the zoomed head to the round frame so it doesn't spill past the rim.
+    mask = surf()
+    pygame.draw.circle(mask, (255, 255, 255, 255), (CX, CX), 29)
+    s.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+    if face_fx:
+        face_fx(s)
+    pygame.draw.circle(s, frame_col, (CX, CX), 30, 3)
+    return s
+
+
 def emit_hero(hero_id: str, pal: dict, *, back=None, overlay=None,
-              skill_fx=None) -> int:
-    """Write the standard hero set: idle/move/attack (4 facings) + q/w/e/r cast
-    one-shots (non-directional, 2 frames). Hooks layer the hero's signature:
+              skill_fx=None, face_fx=None,
+              skill_keys=("q", "w", "e", "r")) -> int:
+    """Write the standard hero set: idle/move/attack (4 facings) + a cast
+    one-shot per skill key (non-directional, 2 frames) + a `face` portrait for
+    hero-select. `skill_keys` defaults to the usual q/w/e/r but a wider kit can
+    pass more (e.g. Pedro Penduko's q/w/e/r/t/y/u/i). Hooks layer the hero's
+    signature:
       back(s, action, facing, frame)   -> behind the body (e.g. wings)
       overlay(s, action, facing, frame)-> over the body (e.g. fur, glow)
       skill_fx(s, key, frame)          -> the per-skill cast flourish
+      face_fx(s)                       -> extra flourish on the select portrait
     Returns the number of PNGs written.
     """
     count = 0
@@ -164,13 +192,15 @@ def emit_hero(hero_id: str, pal: dict, *, back=None, overlay=None,
         save(compose("attack", facing, 0), "heroes", hero_id,
              f"attack_{facing}")
         count += 4
-    for key in ("q", "w", "e", "r"):
+    for key in skill_keys:
         for fr in (0, 1):
             s = compose(key, "s", fr)
             if skill_fx:
                 skill_fx(s, key, fr)
             save(s, "heroes", hero_id, f"{key}_{fr}")
             count += 1
+    save(portrait(compose, pal, face_fx), "heroes", hero_id, "face")
+    count += 1
     return count
 
 

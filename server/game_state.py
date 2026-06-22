@@ -178,6 +178,10 @@ class GameState:
             attack_range=hdef.atk_range,
             attack_interval=hdef.atk_interval,
             attack_type=hdef.atk_type,
+            crit_chance=hdef.crit_chance,
+            crit_mult=hdef.crit_mult,
+            lifesteal=hdef.lifesteal,
+            evasion=hdef.evasion,
             attack_proj_speed=BASIC_PROJECTILE_SPEED,
             gold=STARTING_GOLD,
             hp_regen=hdef.hp_regen,
@@ -201,26 +205,32 @@ class GameState:
             self.entities.pop(eid, None)
         self.player_hero_choice.pop(client_id, None)
 
-    # Per-key rank caps and the hero-level gate for raising the ultimate.
-    ULT_KEY = "R"
-    ULT_RANK_CAP = 3
-    BASIC_RANK_CAP = 4
-    ULT_LEVEL_GATES = (4, 8, 12)  # hero level needed for R ranks 1/2/3
-
     def level_ability(self, client_id: int, key: str) -> bool:
         """Spend a skill point to raise an ability's rank, honoring caps and the
-        ultimate's level gates. Returns True on success."""
+        ultimate's level gates. Returns True on success.
+
+        Rank caps and which key is "the ultimate" both come from the hero
+        definition (per-ability ``max_rank`` + ``ult_key``/``ult_level_gates``),
+        so non-standard kits work: a normal hero ults on "R" (cap 3, gates
+        4/8/12), while e.g. Pedro Penduko ults on "I" and his "R" is an ordinary
+        skill."""
         hero = self.get_hero(client_id)
         if hero is None or key not in hero.ability_levels:
             return False
         if hero.skill_points <= 0:
             return False
-        cur = hero.ability_levels[key]
-        cap = self.ULT_RANK_CAP if key == self.ULT_KEY else self.BASIC_RANK_CAP
-        if cur >= cap:
+        hdef = hero.hero_def
+        adef = hdef.ability(key) if hdef is not None else None
+        if adef is None:
             return False
-        if key == self.ULT_KEY and hero.level < self.ULT_LEVEL_GATES[cur]:
-            return False  # not high enough level for the next ultimate rank
+        cur = hero.ability_levels[key]
+        if cur >= adef.max_rank:
+            return False
+        ult_key = getattr(hdef, "ult_key", "R")
+        if key == ult_key:
+            gates = getattr(hdef, "ult_level_gates", (4, 8, 12))
+            if cur < len(gates) and hero.level < gates[cur]:
+                return False  # not high enough level for the next ultimate rank
         hero.ability_levels[key] = cur + 1
         hero.skill_points -= 1
         return True

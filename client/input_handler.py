@@ -10,12 +10,18 @@ from shared.game_types import MsgType, CastType
 from shared.config import ATTACK_CLICK_PIXELS
 from client.camera import Camera
 
-# Ability keys mapped to their ability "key" label sent to the server.
+# Ability keys mapped to their ability "key" label sent to the server. Most
+# heroes use Q/W/E/R; a few (e.g. Pedro Penduko's seven-color Mutya) extend
+# across T/Y/U with the ultimate on I.
 _ABILITY_KEYS = {
     pygame.K_q: "Q",
     pygame.K_w: "W",
     pygame.K_e: "E",
     pygame.K_r: "R",
+    pygame.K_t: "T",
+    pygame.K_y: "Y",
+    pygame.K_u: "U",
+    pygame.K_i: "I",
 }
 
 # Digit keys 1..9 (shop: buy that catalog row).

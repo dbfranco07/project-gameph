@@ -17,6 +17,8 @@ import gen_sprite_mender
 import gen_sprite_manananggal
 import gen_sprite_kapre
 import gen_sprite_tiktik
+import gen_sprite_new_heroes
+import gen_sprite_pedro
 import gen_entities
 import gen_effects
 import gen_terrain
@@ -24,6 +26,7 @@ import gen_terrain
 _MODULES = [
     gen_sprite_ranger, gen_sprite_brawler, gen_sprite_mender,
     gen_sprite_manananggal, gen_sprite_kapre, gen_sprite_tiktik,
+    gen_sprite_new_heroes, gen_sprite_pedro,
     gen_entities, gen_effects, gen_terrain,
 ]
 

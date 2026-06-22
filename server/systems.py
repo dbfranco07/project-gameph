@@ -47,6 +47,7 @@ from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
     Structure, Projectile, HookProjectile, SplitBody, RuneCreature,
+    SummonedMinion,
 )
 from server.effects import make_effect
 from server.bind import release_bind
@@ -286,6 +287,7 @@ def _spawn_camp(state: GameState, camp_id: int, cx: float, cy: float,
 RUNE_BUFF_DURATION = 25.0      # haste / double_damage / cdr_50 last this long
 RUNE_REGEN_DURATION = 30.0     # regen_10x window (also cancels on taking damage)
 RUNE_HASTE_SPEED = 220         # near-max move speed bonus
+RUNE_BUFF_TYPES = ("haste", "double_damage", "cdr_50", "regen_10x")
 
 
 def apply_rune_buff(hero: Hero, kind: str) -> None:
@@ -339,11 +341,16 @@ def _spawn_rune(state: GameState, idx: int, cfg: dict) -> None:
     zx, zy, zw, zh = cfg["zone"]
     px = random.uniform(zx, zx + zw)
     py = random.uniform(zy, zy + zh)
+    # A "random" (or unset) config buff rerolls each spawn/respawn, so the two
+    # mirrored runes — and successive spawns — vary across the buff catalog.
+    buff = cfg.get("buff", "random")
+    if buff == "random":
+        buff = random.choice(RUNE_BUFF_TYPES)
     rune = RuneCreature(
         x=px, y=py, dest_x=px, dest_y=py,
         home_x=px, home_y=py,
         patrol_radius=cfg.get("patrol", 400),
-        rune_buff=cfg.get("buff", "haste"),
+        rune_buff=buff,
         rune_index=idx,
     )
     state.entities[rune.entity_id] = rune
@@ -539,7 +546,8 @@ def system_collision(state: GameState, dt: float) -> None:
         # A Manananggal's detached upper half flies over walls and trees; a hero
         # bound inside a tree/wall (Kapre R / Tiktik W) likewise ignores it.
         ignores_terrain = isinstance(u, Hero) and (
-            u.ability_state.get("split") or u.ability_state.get("bind"))
+            u.ability_state.get("split") or u.ability_state.get("bind")
+            or any(b.get("phase") for b in u.buffs))
         if not ignores_terrain:
             for cap in obstacles:
                 _push_out_of_capsule(u, cap)
@@ -670,7 +678,7 @@ def system_projectiles(state: GameState, dt: float) -> None:
             if hit is not None:
                 state.damage_events.append(
                     {"src": proj.owner_id, "tgt": hit.entity_id, "amt": proj.damage,
-                     "dtype": proj.damage_type}
+                     "dtype": proj.damage_type, "basic": proj.is_basic}
                 )
                 if isinstance(proj, HookProjectile):
                     _resolve_hook(state, proj, hit)
@@ -695,7 +703,8 @@ def _advance_homing(state: GameState, proj: Projectile, dt: float, dead: list) -
     if dist <= step + proj.radius + target.radius:
         proj.x, proj.y = target.x, target.y
         state.damage_events.append(
-            {"src": proj.owner_id, "tgt": target.entity_id, "amt": proj.damage}
+            {"src": proj.owner_id, "tgt": target.entity_id, "amt": proj.damage,
+             "basic": proj.is_basic}
         )
         dead.append(proj.entity_id)
         return True
@@ -711,7 +720,8 @@ def _projectile_hit(state: GameState, proj: Projectile):
     for e in state.entities.values():
         if e is proj or not e.alive:
             continue
-        if e.team == proj.team or e.team == Team.NONE:
+        # Team.NONE (neutrals/runes) are valid targets for either team's shots.
+        if e.team == proj.team:
             continue
         if isinstance(e, Projectile):
             continue
@@ -796,7 +806,8 @@ def system_combat(state: GameState, dt: float) -> None:
             _spawn_basic_projectile(state, e, target, dmg)
         else:
             state.damage_events.append(
-                {"src": e.entity_id, "tgt": target.entity_id, "amt": dmg}
+                {"src": e.entity_id, "tgt": target.entity_id, "amt": dmg,
+                 "basic": True}
             )
             # On-hit movement slow (e.g. Kapre attacking from the trees).
             if isinstance(e, Hero) and isinstance(target, Hero):
@@ -890,20 +901,54 @@ def system_damage_death(state: GameState, dt: float) -> None:
             continue
         if isinstance(tgt, Hero) and tgt.is_invulnerable():
             continue  # invulnerable (e.g. split upper half) takes no damage
-        amt = _apply_defense(tgt, ev["amt"], ev.get("dtype", "physical"))
+        src = state.entities.get(ev.get("src"))
+        dtype = ev.get("dtype", "physical")
+        is_basic = ev.get("basic", False)
+        attacker = src if isinstance(src, Hero) else None
+
+        # Evasion: dodge incoming basic physical attacks, unless the attacker has
+        # true-strike. Abilities and non-physical damage can't be dodged.
+        if (isinstance(tgt, Hero) and is_basic and dtype == "physical"
+                and tgt.effective_evasion() > 0
+                and not (attacker is not None and attacker.has_true_strike())):
+            if random.random() < tgt.effective_evasion():
+                state.combat_events.append(
+                    {"k": "miss", "x": round(tgt.x, 1), "y": round(tgt.y, 1),
+                     "eid": tgt.entity_id})
+                continue
+
+        # Critical strike: basic attacks always roll; abilities only if they opt
+        # in with "crit_ok". Multiplies the pre-mitigation amount.
+        raw = ev["amt"]
+        crit = False
+        if attacker is not None and (is_basic or ev.get("crit_ok")):
+            if random.random() < attacker.effective_crit_chance():
+                crit = True
+                raw = int(raw * attacker.effective_crit_mult())
+
+        amt = _apply_defense(tgt, raw, dtype)
+        if isinstance(tgt, Hero):
+            amt = int(amt * (1.0 - tgt.damage_reduction()))  # flat mitigation
+            amt = tgt.absorb_with_shield(amt)                # soak with shields
         if isinstance(tgt, SplitBody):
             amt = int(amt * tgt.dmg_mult)  # the lower body takes amplified damage
         tgt.hp -= amt
+
+        # Lifesteal: heal the attacker for a fraction of the damage dealt.
+        if attacker is not None and amt > 0 and attacker.alive:
+            ls = attacker.effective_lifesteal()
+            if ls > 0:
+                attacker.hp = min(attacker.max_hp, attacker.hp + int(amt * ls))
+
         # Render-only hit event: damage number + flash + lunge/recoil on the
         # client. Gated to hero-involved trades so creep fights don't flood the
         # wire. `eid` = victim (also the vision key); `src` = attacker (lunge).
-        src = state.entities.get(ev.get("src"))
         if amt > 0 and (isinstance(tgt, (Hero, SplitBody, RuneCreature))
                         or isinstance(src, Hero)):
             state.combat_events.append({
                 "k": "hit", "x": round(tgt.x, 1), "y": round(tgt.y, 1),
-                "amt": int(amt), "eid": tgt.entity_id,
-                "src": ev.get("src"), "dt": ev.get("dtype", "physical")})
+                "amt": int(amt), "eid": tgt.entity_id, "crit": crit,
+                "src": ev.get("src"), "dt": dtype})
         # Effects that fizzle the moment their bearer takes damage (e.g. the
         # rune regen buff) are dropped here.
         if isinstance(tgt, Hero) and amt > 0:
@@ -1042,6 +1087,27 @@ def _kill(state: GameState, victim, src_id) -> None:
 # Per-hero tick hooks (stateful abilities)
 # ---------------------------------------------------------------------------
 
+def system_summons(state: GameState, dt: float) -> None:
+    """Tick player-summoned creatures: age them out and steer them toward their
+    assigned target (falling back to the nearest enemy) so the shared minion
+    movement/combat systems carry them the rest of the way."""
+    dead: list[int] = []
+    for e in state.entities.values():
+        if not isinstance(e, SummonedMinion) or not e.alive:
+            continue
+        e.lifetime -= dt
+        if e.lifetime <= 0:
+            dead.append(e.entity_id)
+            continue
+        tgt = state.entities.get(e.forced_target_id) if e.forced_target_id else None
+        if tgt is None or not tgt.alive or tgt.team == e.team:
+            tgt = find_attack_target(state, e)
+        if tgt is not None:
+            e.dest_x, e.dest_y = tgt.x, tgt.y
+    for eid in dead:
+        state.entities.pop(eid, None)
+
+
 def system_hero_hooks(state: GameState, dt: float) -> None:
     """Run each hero definition's optional on_tick hook (e.g. the Manananggal
     split leash + auto-recombine). Runs after movement so position clamps stick."""
@@ -1153,6 +1219,7 @@ def step(state: GameState, dt: float) -> None:
     system_spawn_creeps(state, dt)
     system_neutral_camps(state, dt)
     system_runes(state, dt)
+    system_summons(state, dt)
     system_movement(state, dt)
     system_ability_cast(state, dt)
     system_collision(state, dt)
