@@ -34,6 +34,22 @@ def enemies_in_radius(state, team, cx, cy, radius):
     return out
 
 
+def nearest_enemy(state, team, cx, cy, radius, toward=None):
+    """Nearest non-structure enemy within `radius` of (cx, cy), or None. Ranked
+    by distance to `toward` (a point) when given, else to (cx, cy) — so a skill
+    can gather candidates around the caster but prefer the one under the cursor.
+    Reuses `enemies_in_radius` (skips allies, projectiles, teamless units)."""
+    rx, ry = toward if toward is not None else (cx, cy)
+    best, best_d = None, None
+    for e in enemies_in_radius(state, team, cx, cy, radius):
+        if isinstance(e, Structure):
+            continue
+        d = math.hypot(e.x - rx, e.y - ry)
+        if best_d is None or d < best_d:
+            best, best_d = e, d
+    return best
+
+
 def allies_in_radius(state, team, cx, cy, radius):
     out = []
     for e in state.entities.values():
@@ -87,6 +103,11 @@ def dash(ctx, dist) -> Hero:
         caster.y += (dy / d) * step
         caster.x = max(caster.radius, min(MAP_WIDTH - caster.radius, caster.x))
         caster.y = max(caster.radius, min(MAP_HEIGHT - caster.radius, caster.y))
+    # Teleporting cancels any in-flight move/attack-move order so the hero stops
+    # at the blink spot instead of drifting back toward a stale destination.
+    caster.target_x = caster.target_y = None
+    caster.attack_move = False
+    caster.attack_move_x = caster.attack_move_y = None
     return caster
 
 

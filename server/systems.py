@@ -367,6 +367,7 @@ def system_movement(state: GameState, dt: float) -> None:
             if entity.is_stunned():
                 continue  # stunned heroes hold position
             _update_focus_chase(state, entity)
+            _update_attack_move(state, entity)
             entity.move_toward_target(dt)
             _block_hero_against_units(state, entity)
             entity.x = max(entity.radius, min(MAP_WIDTH - entity.radius, entity.x))
@@ -467,6 +468,30 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
         hero.target_x, hero.target_y = target.x, target.y  # close the gap
 
 
+_ATTACK_MOVE_ARRIVE = 8.0  # distance at which an attack-move goal counts as reached
+
+
+def _update_attack_move(state: GameState, hero: Hero) -> None:
+    """Attack-move ('A + click ground'): walk toward the stored goal, but stop
+    (clear the move target so combat can fire) whenever an enemy is in attack
+    range, then resume once nothing is in range. A focus target takes priority."""
+    if hero.forced_target_id is not None or not hero.attack_move:
+        return
+    if hero.attack_move_x is None or hero.attack_move_y is None:
+        hero.attack_move = False
+        return
+    if math.hypot(hero.attack_move_x - hero.x,
+                  hero.attack_move_y - hero.y) <= _ATTACK_MOVE_ARRIVE:
+        hero.attack_move = False
+        hero.attack_move_x = hero.attack_move_y = None
+        hero.target_x = hero.target_y = None
+        return
+    if find_attack_target(state, hero) is not None:
+        hero.target_x = hero.target_y = None  # stop and let combat attack it
+    else:
+        hero.target_x, hero.target_y = hero.attack_move_x, hero.attack_move_y
+
+
 def _block_hero_against_units(state: GameState, hero: Hero) -> None:
     """One-sided block: after the hero has moved, eject IT out of any other unit
     it now overlaps (the other unit is never moved). The radial eject only undoes
@@ -497,8 +522,11 @@ def system_collision(state: GameState, dt: float) -> None:
     for u in units:
         for s in structs:
             _eject_circle(u, s.x, s.y, s.radius)
-        for cap in obstacles:
-            _push_out_of_capsule(u, cap)
+        # A Manananggal's detached upper half flies over walls and trees.
+        flies_over_terrain = isinstance(u, Hero) and u.ability_state.get("split")
+        if not flies_over_terrain:
+            for cap in obstacles:
+                _push_out_of_capsule(u, cap)
         u.x = max(u.radius, min(MAP_WIDTH - u.radius, u.x))
         u.y = max(u.radius, min(MAP_HEIGHT - u.radius, u.y))
 
@@ -686,6 +714,11 @@ def system_combat(state: GameState, dt: float) -> None:
             continue  # stunned heroes can't auto-attack
         if e.attack_timer > 0:
             e.attack_timer = max(0.0, e.attack_timer - dt)
+            continue
+        # Moving and attacking are mutually exclusive: a hero on the move holds
+        # its fire (the cooldown still ticks above, so it can shoot the instant
+        # it stops). Minions/towers are unaffected.
+        if isinstance(e, Hero) and (e.target_x is not None or e.target_y is not None):
             continue
         target = _combat_target(state, e)
         if target is None:
@@ -875,6 +908,8 @@ def _kill(state: GameState, victim, src_id) -> None:
                 state.entities.pop(body.entity_id, None)
         victim.respawn_timer = HERO_RESPAWN_BASE + victim.level * HERO_RESPAWN_PER_LEVEL
         victim.target_x = victim.target_y = None
+        victim.attack_move = False
+        victim.attack_move_x = victim.attack_move_y = None
         victim.buffs.clear()
         kteam = killer.team if killer is not None else None
         if kteam is not None and kteam != victim.team and kteam in state.team_kills:
@@ -977,6 +1012,8 @@ def system_respawn(state: GameState, dt: float) -> None:
             hero.alive = True
             hero.respawn_timer = 0.0
             hero.target_x = hero.target_y = None
+            hero.attack_move = False
+            hero.attack_move_x = hero.attack_move_y = None
 
 
 # ---------------------------------------------------------------------------

@@ -7,8 +7,10 @@ descriptor to a sprite later needs no gameplay changes.
 
 from __future__ import annotations
 
+import math
 import time
 import pygame
+from shared.geometry import closest_point_on_segment
 from shared.config import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
@@ -30,8 +32,16 @@ from shared.config import (
     COLOR_LANE,
     PASSIVE_GOLD_PER_SEC,
     RIVER,
+    HERO_VISION_RADIUS,
+    MINION_VISION_RADIUS,
+    TOWER_VISION_RADIUS,
 )
 from shared.game_types import Team, GamePhase, EntityType
+
+# Fog-of-war overlay: ground outside your vision is darkened by this much
+# (0 = off, 255 = pitch black). Vision footprints are punched back to full
+# brightness, so seen areas read lighter than the fogged ones.
+FOG_ALPHA = 95
 from client.camera import Camera
 from client.sprites import SpriteManager, facing_from_delta
 
@@ -132,6 +142,7 @@ class Renderer:
         for ent in sorted(entities, key=lambda e: order.get(e.get("et"), 2)):
             self._draw_entity(ent, ent["id"] == my_entity_id if my_entity_id else False)
 
+        self._draw_fog(entities, my_team)
         self._draw_floaters()
         self._draw_hud(entities, my_entity_id, my_team, phase, tick,
                        score or {}, ktarget, winner, clock)
@@ -196,6 +207,122 @@ class Renderer:
         band = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         pygame.draw.line(band, (70, 130, 210, 70), p1, p2, thpx)
         self.screen.blit(band, (0, 0))
+
+    def _draw_fog(self, entities, my_team) -> None:
+        """Darken ground the player can't currently see. Each alive friendly
+        vision source reveals a circle that is occluded by walls and trees (they
+        cast shadows, just like the server's line-of-sight check), so areas you
+        have vision over read lighter than the fogged ones.
+
+        Reveals are accumulated into a separate mask with BLEND_RGBA_MAX (so a
+        wall's shadow from one unit can't un-reveal what another unit sees), then
+        subtracted from the fog. Radii mirror the server (no camera zoom, so world
+        units == pixels); a hero in the split ult carries bonus sight via `visb`.
+        Every vision source (heroes, towers, minions) is occluded by walls/trees;
+        sources with no occluder nearby take a cheap plain-circle fast path."""
+        if FOG_ALPHA <= 0 or my_team not in (Team.TEAM1, Team.TEAM2):
+            return  # spectators see everything; no fog overlay
+        blockers = self._fog_blockers(entities)
+        fog = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        fog.fill((0, 0, 0, FOG_ALPHA))
+        vis = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        for ent in entities:
+            if ent.get("tm") != my_team or not ent.get("a", True):
+                continue
+            et = ent.get("et")
+            if et == EntityType.HERO:
+                radius = int(HERO_VISION_RADIUS + ent.get("visb", 0))
+            elif et in (EntityType.TOWER, EntityType.BASE):
+                radius = int(TOWER_VISION_RADIUS)
+            elif et == EntityType.MINION and not ent.get("body"):
+                radius = int(MINION_VISION_RADIUS)  # split body grants no vision
+            else:
+                continue
+            sx, sy = self.camera.world_to_screen(ent["x"], ent["y"])
+            self._reveal_source(vis, sx, sy, radius, blockers)
+        fog.blit(vis, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
+        self.screen.blit(fog, (0, 0))
+
+    def _fog_blockers(self, entities) -> list:
+        """Screen-space (x1,y1,x2,y2,thickness) for each alive wall/tree that
+        blocks line of sight."""
+        out = []
+        for ent in entities:
+            if ent.get("et") not in (EntityType.WALL, EntityType.TREE):
+                continue
+            if not ent.get("a", True) or ent.get("x1") is None:
+                continue
+            ax, ay = self.camera.world_to_screen(ent["x1"], ent["y1"])
+            bx, by = self.camera.world_to_screen(ent["x2"], ent["y2"])
+            out.append((ax, ay, bx, by, ent.get("th", 60)))
+        return out
+
+    def _reveal_source(self, vis, sx, sy, radius, blockers) -> None:
+        """Reveal a vision source onto the mask `vis` (white = visible). With a
+        wall/tree in range the lit area is a raycast visibility polygon (rays
+        stop at occluders); otherwise it is a plain circle. Reveals from several
+        sources just overdraw (vision is a union), so no per-source compositing
+        is needed."""
+        pts = self._visibility_polygon(sx, sy, radius, blockers)
+        if pts is None:
+            pygame.draw.circle(vis, (255, 255, 255, 255), (sx, sy), radius)
+        elif len(pts) >= 3:
+            pygame.draw.polygon(vis, (255, 255, 255, 255),
+                                [(int(x), int(y)) for x, y in pts])
+
+    def _visibility_polygon(self, sx, sy, radius, blockers):
+        """Field-of-view polygon for a source at (sx, sy): cast rays around the
+        circle, each stopping at the nearest wall/tree centerline in range (ends
+        extended by half-thickness for the round caps). Returns the ring of hit
+        points, or None when nothing occludes (caller draws a plain circle).
+
+        Extra rays are aimed just to either side of every occluder endpoint so
+        the shadow edges stay crisp instead of being rounded off by the ray step."""
+        segs = []
+        for (ax, ay, bx, by, th) in blockers:
+            cpx, cpy = closest_point_on_segment(sx, sy, ax, ay, bx, by)
+            if math.hypot(cpx - sx, cpy - sy) > radius + th * 0.5:
+                continue  # too far to occlude anything inside the reveal circle
+            ux, uy = bx - ax, by - ay
+            seglen = math.hypot(ux, uy) or 1.0
+            h = th * 0.5
+            ux, uy = ux / seglen * h, uy / seglen * h
+            segs.append((ax - ux, ay - uy, bx + ux, by + uy))
+        if not segs:
+            return None
+        angles = [-math.pi + (2.0 * math.pi) * i / 160 for i in range(160)]
+        eps = 0.0006
+        for (ax, ay, bx, by) in segs:
+            for ex, ey in ((ax, ay), (bx, by)):
+                a = math.atan2(ey - sy, ex - sx)
+                angles.append(a - eps)
+                angles.append(a + eps)
+        angles.sort()
+        pts = []
+        for ang in angles:
+            dx, dy = math.cos(ang), math.sin(ang)
+            t = float(radius)
+            for (ax, ay, bx, by) in segs:
+                tt = self._ray_segment(sx, sy, dx, dy, ax, ay, bx, by)
+                if tt is not None and tt < t:
+                    t = tt
+            pts.append((sx + dx * t, sy + dy * t))
+        return pts
+
+    @staticmethod
+    def _ray_segment(sx, sy, dx, dy, ax, ay, bx, by):
+        """Distance along ray (sx,sy)+t*(dx,dy), t>=0, to its hit with segment
+        (ax,ay)-(bx,by), or None. (dx,dy) is a unit vector, so t is in pixels."""
+        ex, ey = bx - ax, by - ay
+        denom = dx * ey - dy * ex
+        if abs(denom) < 1e-9:
+            return None  # parallel
+        rx, ry = ax - sx, ay - sy
+        t = (rx * ey - ry * ex) / denom    # along the ray
+        u = (rx * dy - ry * dx) / denom    # along the segment
+        if t >= 0.0 and 0.0 <= u <= 1.0:
+            return t
+        return None
 
     def _draw_lane(self) -> None:
         # Three lanes, each a polyline (mid is the diagonal; top/bot bend at the

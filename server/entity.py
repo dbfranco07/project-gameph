@@ -137,6 +137,11 @@ class Hero(Entity):
     # Movement target (None = standing still)
     target_x: float | None = None
     target_y: float | None = None
+    # Attack-move ("A + click ground"): walk toward this goal but stop to attack
+    # any enemy that comes into range, then resume. None = not attack-moving.
+    attack_move: bool = False
+    attack_move_x: float | None = None
+    attack_move_y: float | None = None
     # Focus target from an "A + click enemy" command (chase + attack this entity)
     forced_target_id: int | None = None
 
@@ -240,6 +245,10 @@ class Hero(Entity):
     def effective_attack_range(self) -> float:
         return self.attack_range + self.bonus_range()
 
+    def bonus_vision(self) -> float:
+        """Extra sight radius from temporary buffs (e.g. Manananggal split)."""
+        return sum(b.get("vision_bonus", 0) for b in self.buffs)
+
     # Special attack + both defenses, including temporary buff/debuff deltas.
     def bonus_sp_atk(self) -> float:
         return sum(b.get("sp_atk", 0) for b in self.buffs)
@@ -295,6 +304,11 @@ class Hero(Entity):
         # so the client can swap to the flying-torso sprite. Cheap one-bit flag.
         if self.ability_state.get("split"):
             d["split"] = True
+        # Extra sight radius (e.g. during the split ult) so the client's fog
+        # reveal matches the server's vision. Only sent when nonzero.
+        vis_bonus = self.bonus_vision()
+        if vis_bonus:
+            d["visb"] = round(vis_bonus)
         # Extra stats for the HUD panel. Main fields carry the BASE (permanent)
         # value; the temporary buff/debuff portion is sent separately in `dlt`
         # so the HUD shows e.g. "55 +20" rather than double-counting the bonus.

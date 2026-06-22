@@ -363,7 +363,7 @@ class GameState:
             if not e.alive or e.team != team:
                 continue
             if isinstance(e, Hero):
-                yield e.x, e.y, HERO_VISION_RADIUS
+                yield e.x, e.y, HERO_VISION_RADIUS + e.bonus_vision()
             elif isinstance(e, Minion):
                 yield e.x, e.y, MINION_VISION_RADIUS
             elif isinstance(e, Structure):

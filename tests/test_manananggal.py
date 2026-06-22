@@ -3,14 +3,18 @@
 import unittest
 
 from server.game_state import GameState
-from server.entity import SplitBody
+from server.entity import SplitBody, Wall
 from server.systems import (
     system_ability_cast,
     system_damage_death,
     system_status,
     system_hero_hooks,
+    system_collision,
 )
-from server.heroes.manananggal import SPLIT_DURATION, SPLIT_LEASH
+from server.heroes.manananggal import (
+    SPLIT_DURATION, SPLIT_LEASH, SPLIT_VISION_BONUS, Q_RANGE,
+)
+from shared.config import HERO_VISION_RADIUS
 from shared.game_types import Team
 
 
@@ -44,11 +48,38 @@ class TestManananggal(unittest.TestCase):
         self.assertLess(self.enemy.hp, hp0)
         self.assertLess(self.enemy.effective_move_speed(), spd0)
 
+    def test_scratch_falls_back_to_nearest_when_no_target(self):
+        # A near-miss click sends no tid; Scratch should still claw an in-range
+        # enemy (enemy is 200 units away, well within Q_RANGE).
+        hp0 = self.enemy.hp
+        spd0 = self.enemy.effective_move_speed()
+        self._cast("Q", tid=None)  # tx/ty default to the caster's position
+        system_damage_death(self.state, 0.05)
+        self.assertLess(self.enemy.hp, hp0)
+        self.assertLess(self.enemy.effective_move_speed(), spd0)
+
+    def test_scratch_no_fallback_when_nothing_in_range(self):
+        self.enemy.x = self.hero.x + Q_RANGE + 500  # far out of Q range
+        hp0 = self.enemy.hp
+        self._cast("Q", tid=None)
+        system_damage_death(self.state, 0.05)
+        self.assertEqual(self.enemy.hp, hp0)
+
     def test_pounce_dashes_toward_target(self):
         self.enemy.x = 1500
         x0 = self.hero.x
         self._cast("W", tid=self.enemy.entity_id)
         self.assertGreater(self.hero.x, x0)
+
+    def test_pounce_cancels_pending_move(self):
+        # A stale move order must not pull the hero back after it blinks.
+        self.enemy.x = 1500
+        self.hero.target_x, self.hero.target_y = 0, 0  # old destination behind it
+        self.hero.attack_move = True
+        self._cast("W", tid=self.enemy.entity_id)
+        self.assertIsNone(self.hero.target_x)
+        self.assertIsNone(self.hero.target_y)
+        self.assertFalse(self.hero.attack_move)
 
     def test_bloodlust_haste_on_skill_use(self):
         interval0 = self.hero.effective_attack_interval()
@@ -131,6 +162,33 @@ class TestManananggal(unittest.TestCase):
         self.assertNotIn("split", self.hero.ability_state)
         self.assertFalse(self.hero.is_invulnerable())
         self.assertIsNone(self._body())
+
+    def test_split_grants_bonus_vision(self):
+        self.assertEqual(self.hero.bonus_vision(), 0)
+        # An enemy parked just beyond base sight is invisible until the ult.
+        far = self.state.add_hero(3, "F", Team.TEAM2, hero_id="brawler")
+        far.x = self.hero.x + HERO_VISION_RADIUS + 100
+        far.y = self.hero.y
+        self.assertNotIn(far.entity_id,
+                         self.state.visible_entity_ids_for(Team.TEAM1))
+        self._cast("R")
+        self.assertEqual(self.hero.bonus_vision(), SPLIT_VISION_BONUS)
+        self.assertIn(far.entity_id,
+                      self.state.visible_entity_ids_for(Team.TEAM1))
+
+    def test_split_upper_half_passes_through_walls(self):
+        wall = Wall(x1=self.hero.x, y1=self.hero.y - 100,
+                    x2=self.hero.x, y2=self.hero.y + 100, thickness=120)
+        self.state.entities[wall.entity_id] = wall
+        x0 = self.hero.x
+        # Grounded: collision ejects the hero out of the wall.
+        system_collision(self.state, 0.05)
+        self.assertNotAlmostEqual(self.hero.x, x0, places=1)
+        # While split, the flying upper half ignores the wall.
+        self.hero.x = x0
+        self._cast("R")
+        system_collision(self.state, 0.05)
+        self.assertAlmostEqual(self.hero.x, x0, places=1)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ SPLIT_MANA = 100
 SPLIT_DURATION = 8.0       # timed auto-recombine
 SPLIT_DMG_BONUS = 45
 SPLIT_RANGE_BONUS = 220
+SPLIT_VISION_BONUS = 400    # extra sight radius while the upper half is flying
 SPLIT_LEASH = 900          # max distance the upper half may roam from the body
 RECOMBINE_RANGE = 260      # must be this close to the body to recombine
 BODY_HP_FRAC = 0.6         # body hp as a fraction of max hp
@@ -52,10 +53,11 @@ def _begin_split(ctx) -> None:
     body.hp = body.max_hp = max(1, int(hero.max_hp * BODY_HP_FRAC))
     state.entities[body.entity_id] = body
     hero.buffs.append({
-        "split": True, 
+        "split": True,
         "invuln": True,
-        "dmg_bonus": SPLIT_DMG_BONUS, 
+        "dmg_bonus": SPLIT_DMG_BONUS,
         "range_bonus": SPLIT_RANGE_BONUS,
+        "vision_bonus": SPLIT_VISION_BONUS,
         "remaining": SPLIT_DURATION,
     })
     hero.ability_state["split"] = {"body_id": body.entity_id}
@@ -96,6 +98,16 @@ class Manananggal(HeroDef):
              desc="Claw an enemy for damage and a movement slow.")
     def scratch(ctx):
         target = skills.target_dmg(ctx, dmg=Q_DMG, range=Q_RANGE)
+        if target is None:
+            # No valid unit was clicked (near-miss): claw the enemy nearest the
+            # cursor that is within range, so Scratch reliably connects.
+            target = skills.nearest_enemy(
+                ctx.state, ctx.caster.team, ctx.caster.x, ctx.caster.y,
+                Q_RANGE, toward=(ctx.tx, ctx.ty))
+            if target is not None:
+                ctx.state.damage_events.append(
+                    {"src": ctx.caster.entity_id, "tgt": target.entity_id,
+                     "amt": Q_DMG, "dtype": "physical"})
         if target is not None:
             skills.slow(ctx, target, pct=Q_SLOW, duration=Q_SLOW_DUR)
 

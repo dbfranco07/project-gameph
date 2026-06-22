@@ -74,7 +74,7 @@ river: { p1: [1200, 1200], p2: [4800, 4800], thickness: 540 }
 # regen_10x. Each rune (re)spawns at a UNIFORM-random point inside `zone`
 # (x, y, w, h); `patrol` is the wander radius around that spawn point.
 runes:
-  - { zone: [1750, 1750, 300, 300], buff: haste, patrol: 180 }   # off-lane jungle (mirrored)
+  - { zone: [1750, 1750, 300, 300], buff: haste, patrol: 100 }   # off-lane jungle (mirrored)
 
 # Walls: permanent, unwalkable, vision-blocking. Trees: like walls but
 # destructible (have hp) and clear when killed. Both are oriented CAPSULES:

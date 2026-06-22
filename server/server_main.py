@@ -271,8 +271,11 @@ class GameServer:
         tx = msg.get("tx")
         ty = msg.get("ty")
         if tx is not None and ty is not None:
-            # A manual move command cancels any focus target.
+            # A manual move command cancels any focus target and just moves
+            # (never auto-attacks en route).
             hero.forced_target_id = None
+            hero.attack_move = False
+            hero.attack_move_x = hero.attack_move_y = None
             hero.target_x = max(0, min(MAP_WIDTH, float(tx)))
             hero.target_y = max(0, min(MAP_HEIGHT, float(ty)))
 
@@ -298,14 +301,20 @@ class GameServer:
         target = self.state.entities.get(tid) if tid is not None else None
         if (target is not None) and (target.team != hero.team) and target.alive:
             hero.forced_target_id = tid
+            hero.attack_move = False
+            hero.attack_move_x = hero.attack_move_y = None
             hero.target_x = target.x
             hero.target_y = target.y
         else:
-            # Attack-move: clear focus, advance to the point (auto-attacks en route).
+            # Attack-move: clear focus, advance to the point but stop to attack
+            # any enemy that comes into range (handled in _update_attack_move).
             hero.forced_target_id = None
             if tx is not None and ty is not None:
-                hero.target_x = max(0, min(MAP_WIDTH, float(tx)))
-                hero.target_y = max(0, min(MAP_HEIGHT, float(ty)))
+                px = max(0, min(MAP_WIDTH, float(tx)))
+                py = max(0, min(MAP_HEIGHT, float(ty)))
+                hero.attack_move = True
+                hero.attack_move_x, hero.attack_move_y = px, py
+                hero.target_x, hero.target_y = px, py
 
     def _handle_stop(self, client_id: int) -> None:
         """Halts a hero, clearing its focus target and move destination.
@@ -321,6 +330,8 @@ class GameServer:
         hero.forced_target_id = None
         hero.target_x = None
         hero.target_y = None
+        hero.attack_move = False
+        hero.attack_move_x = hero.attack_move_y = None
 
     def _handle_use_ability(self, client_id: int, msg: dict) -> None:
         """Queues an ability cast to be resolved by the simulation step.

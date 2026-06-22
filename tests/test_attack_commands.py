@@ -101,5 +101,50 @@ class TestFocusAndStop(unittest.TestCase):
         self.assertIsNone(self.hero.target_x)
 
 
+class TestMoveAttackExclusive(unittest.TestCase):
+    """Moving and attacking are mutually exclusive for heroes."""
+
+    def setUp(self):
+        self.state = GameState()
+        self.hero = self.state.add_hero(1, "H", Team.TEAM1, hero_id="brawler")
+        self.enemy = self.state.add_hero(2, "E", Team.TEAM2, hero_id="brawler")
+        self.hero.x, self.hero.y = 1000, 1000
+        self.enemy.x, self.enemy.y = 1100, 1000  # within brawler melee range
+
+    def _hero_attacked(self) -> bool:
+        return any(ev.get("src") == self.hero.entity_id
+                   for ev in self.state.damage_events)
+
+    def test_stationary_hero_attacks(self):
+        self.hero.target_x = self.hero.target_y = None
+        system_combat(self.state, 0.05)
+        self.assertTrue(self._hero_attacked())
+
+    def test_moving_hero_does_not_attack(self):
+        self.hero.target_x, self.hero.target_y = 2000, 1000  # walking away
+        system_combat(self.state, 0.05)
+        self.assertFalse(self._hero_attacked())  # holds fire while moving
+
+    def test_attack_move_stops_for_enemy_in_range(self):
+        # Attack-moving toward a far point, but an enemy is in range: the hero
+        # should halt (clear its move target) so combat can fire.
+        self.hero.attack_move = True
+        self.hero.attack_move_x, self.hero.attack_move_y = 5000, 1000
+        self.hero.target_x, self.hero.target_y = 5000, 1000
+        system_movement(self.state, 0.05)
+        self.assertIsNone(self.hero.target_x)
+        system_combat(self.state, 0.05)
+        self.assertTrue(self._hero_attacked())
+
+    def test_attack_move_advances_when_no_enemy(self):
+        self.enemy.x = 9000  # nothing in range
+        self.hero.attack_move = True
+        self.hero.attack_move_x, self.hero.attack_move_y = 5000, 1000
+        self.hero.target_x, self.hero.target_y = 5000, 1000
+        x0 = self.hero.x
+        system_movement(self.state, 0.05)
+        self.assertGreater(self.hero.x, x0)  # keeps walking toward the goal
+
+
 if __name__ == "__main__":
     unittest.main()
