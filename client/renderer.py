@@ -92,6 +92,8 @@ class Renderer:
         mm_w = 240
         mm_h = int(mm_w * MAP_HEIGHT / MAP_WIDTH)
         self.minimap = pygame.Rect(8, SCREEN_HEIGHT - 8 - mm_h, mm_w, mm_h)
+        # In-game chat box (set by the client); drawn just above the minimap.
+        self.chat = None
         # Floating combat text (gold/xp popups): {wx, wy, text, color, born, dur}.
         self.floaters: list[dict] = []
 
@@ -147,6 +149,8 @@ class Renderer:
         self._draw_hud(entities, my_entity_id, my_team, phase, tick,
                        score or {}, ktarget, winner, clock)
         self._draw_targeting_cursor()
+        if self.chat is not None:
+            self.chat.draw(self.screen, self.font, self.minimap.top - 12)
         pygame.display.flip()
 
     def _draw_floaters(self) -> None:
@@ -555,7 +559,8 @@ class Renderer:
             self._draw_game_over(winner, my_team)
         else:
             hint = self.font.render(
-                "RMB move | A+click attack | QWER cast | Alt+QWER level up | B shop",
+                "RMB move | A+click attack | QWER cast | Shift+QWER level | "
+                "Cmd/Alt+QWE-ASD items | Enter chat | B shop",
                 True, (150, 150, 150))
             self.screen.blit(hint, (SCREEN_WIDTH - hint.get_width() - 10, 76))
 
@@ -782,8 +787,12 @@ class Renderer:
         vh = int(SCREEN_HEIGHT / MAP_HEIGHT * mm.height)
         pygame.draw.rect(self.screen, (220, 220, 220), (vx, vy, vw, vh), 1)
 
+    # Inventory slot hotkey letters (Cmd/Alt + letter), laid out 2x3 to match
+    # the keyboard: Q/W/E on top, A/S/D on the bottom.
+    _ITEM_SLOT_LABELS = ("Q", "W", "E", "A", "S", "D")
+
     def _draw_inventory(self, me: dict) -> None:
-        """Inventory as a 2x3 grid (bottom-right), F1..F6, with active cooldowns."""
+        """Inventory as a 2x3 grid (bottom-right); Cmd/Alt+QWE/ASD activate."""
         inv = me.get("inv", [])
         icds = me.get("icds", {})
         names = {it["item_id"]: it["name"] for it in self.item_catalog}
@@ -799,8 +808,9 @@ class Renderer:
             rect = pygame.Rect(x, y, slot - 4, slot - 4)
             pygame.draw.rect(self.screen, (40, 45, 55), rect, border_radius=4)
             pygame.draw.rect(self.screen, (80, 80, 95), rect, 1, border_radius=4)
-            self.screen.blit(self.font.render(f"F{i+1}", True, (120, 120, 140)),
-                             (x + 2, y + 1))
+            self.screen.blit(
+                self.font.render(self._ITEM_SLOT_LABELS[i], True, (120, 120, 140)),
+                (x + 2, y + 1))
             if i < len(inv):
                 item_id = inv[i]
                 self._item_rects.append((rect, item_id))

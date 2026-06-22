@@ -6,6 +6,8 @@ import socket
 import sys
 import pygame
 
+_IS_MAC = sys.platform == "darwin"
+
 from shared.config import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
@@ -21,6 +23,7 @@ from client.camera import Camera
 from client.interpolation import Interpolator
 from client.input_handler import InputHandler
 from client.renderer import Renderer
+from client.chat import ChatBox
 from client.menu import MainMenu, LobbyScreen
 
 # Client screen states.
@@ -69,6 +72,7 @@ class GameClient:
         self.camera = Camera()
         self.interpolator = Interpolator()
         self.input_handler = InputHandler(self.camera)
+        self.chat = ChatBox()
         self.renderer: Renderer | None = None
 
     def connect(self) -> bool:
@@ -104,6 +108,7 @@ class GameClient:
         clock = pygame.time.Clock()
         self.screen = screen
         self.renderer = Renderer(screen, self.camera)
+        self.renderer.chat = self.chat
         self.menu = MainMenu(self.player_name, self.host, self.port)
         self.lobby = LobbyScreen()
 
@@ -116,6 +121,12 @@ class GameClient:
             events = pygame.event.get()
             for event in events:
                 if event.type == pygame.QUIT:
+                    # On macOS, Cmd+Q emits QUIT — but Cmd is now an item hotkey,
+                    # so ignore the quit while Cmd is held. The game exits only on
+                    # a deliberate window close (or Cmd+Q with no item bound).
+                    if _IS_MAC and (pygame.key.get_mods()
+                                    & (pygame.KMOD_GUI | pygame.KMOD_META)):
+                        continue
                     running = False
             if not running:
                 break
@@ -181,10 +192,11 @@ class GameClient:
         return True
 
     def _tick_game(self, events, dt: float) -> bool:
-        running = True
-        for event in events:
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
+        # Chat intercepts input first: while composing it swallows every event
+        # (gameplay frozen); otherwise it only consumes the Enter that opens it.
+        events, chat_msgs = self.chat.handle(events)
+        for msg in chat_msgs:
+            self._send(msg)
 
         # Minimap clicks recenter the camera (consumed before gameplay input).
         events = self._consume_minimap_clicks(events)
@@ -209,7 +221,7 @@ class GameClient:
         self.renderer.draw_frame(
             entities, self.my_entity_id, self.my_team, self.phase, self.tick,
             self.score, self.ktarget, self.winner, self.match_clock)
-        return running
+        return True
 
     def _center_on_hero(self, entities) -> None:
         """Snap the camera onto our hero once it appears at match start."""
@@ -340,6 +352,10 @@ class GameClient:
             self.interpolator.push_snapshot(msg.get("entities", []))
             if self.renderer is not None:
                 self.renderer.add_combat_events(msg.get("events", []))
+
+        elif msg_type == MsgType.CHAT:
+            self.chat.add_message(msg.get("name", "?"), msg.get("text", ""),
+                                  bool(msg.get("all")))
 
         elif msg_type == MsgType.GAME_OVER:
             self.winner = msg.get("winner", 0)

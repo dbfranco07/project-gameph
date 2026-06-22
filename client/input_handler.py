@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import pygame
 
 from shared.game_types import MsgType, CastType
@@ -20,8 +21,18 @@ _ABILITY_KEYS = {
 # Digit keys 1..9 (shop: buy that catalog row).
 _DIGIT_KEYS = {getattr(pygame, f"K_{i}"): i for i in range(1, 10)}
 
-# Function keys F1..F6 map to inventory slots 0..5 (use active / sell in shop).
-_ITEM_SLOT_KEYS = {getattr(pygame, f"K_F{i}"): i - 1 for i in range(1, 7)}
+# Item-activation keys: (Cmd on mac / Alt on win) + Q/W/E/A/S/D -> slots 0..5.
+# Function keys F1..F6 still map to the same slots (handy for selling in shop).
+_ITEM_KEY_ORDER = (pygame.K_q, pygame.K_w, pygame.K_e,
+                   pygame.K_a, pygame.K_s, pygame.K_d)
+_ITEM_SLOT_KEYS = {key: i for i, key in enumerate(_ITEM_KEY_ORDER)}
+_ITEM_FKEYS = {getattr(pygame, f"K_F{i}"): i - 1 for i in range(1, 7)}
+
+# Platform modifiers: items use Cmd (mac) / Alt (win); leveling uses Shift
+# (moved off Alt so it never collides with Alt-based item keys on Windows).
+_IS_MAC = sys.platform == "darwin"
+_ITEM_MOD = (pygame.KMOD_GUI | pygame.KMOD_META) if _IS_MAC else pygame.KMOD_ALT
+_LEVEL_MOD = pygame.KMOD_SHIFT
 
 
 class InputHandler:
@@ -57,12 +68,29 @@ class InputHandler:
 
         for event in events:
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_b:
+                mods = event.mod
+                if event.key == pygame.K_ESCAPE:
+                    # Escape only cancels current intent — it never quits.
+                    self.shop_open = False
+                    self.attack_armed = False
+                    self.pending_cast = None
+                elif event.key == pygame.K_b:
                     self.shop_open = not self.shop_open
                 elif self.shop_open and event.key in _DIGIT_KEYS:
                     self._buy(_DIGIT_KEYS[event.key] - 1, messages)
-                elif event.key in _ITEM_SLOT_KEYS:
+                elif (mods & _ITEM_MOD) and event.key in _ITEM_SLOT_KEYS:
+                    # Cmd/Alt + Q/W/E/A/S/D: activate that inventory slot.
                     self._on_item_slot(_ITEM_SLOT_KEYS[event.key], messages)
+                elif event.key in _ITEM_FKEYS:
+                    self._on_item_slot(_ITEM_FKEYS[event.key], messages)
+                elif (mods & _LEVEL_MOD) and event.key in _ABILITY_KEYS:
+                    # Shift + Q/W/E/R: spend a skill point to rank it up.
+                    messages.append({"t": int(MsgType.LEVEL_ABILITY),
+                                     "key": _ABILITY_KEYS[event.key]})
+                elif mods & _ITEM_MOD:
+                    pass  # item modifier held on a non-item key: swallow it
+                elif event.key in _ABILITY_KEYS:
+                    self._on_ability_key(_ABILITY_KEYS[event.key], messages)
                 elif event.key == pygame.K_a:
                     self.attack_armed = True
                     self.pending_cast = None
@@ -70,13 +98,6 @@ class InputHandler:
                     self.attack_armed = False
                     self.pending_cast = None
                     messages.append({"t": int(MsgType.STOP)})
-                elif event.key in _ABILITY_KEYS:
-                    if event.mod & pygame.KMOD_ALT:
-                        # Alt + Q/W/E/R: spend a skill point to rank it up.
-                        messages.append({"t": int(MsgType.LEVEL_ABILITY),
-                                         "key": _ABILITY_KEYS[event.key]})
-                    else:
-                        self._on_ability_key(_ABILITY_KEYS[event.key], messages)
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 wx, wy = self.camera.screen_to_world(*event.pos)

@@ -178,6 +178,8 @@ class GameServer:
             self._handle_level_ability(client_id, msg)
         elif msg_type == MsgType.START_GAME:
             self._handle_start_game(client_id, msg)
+        elif msg_type == MsgType.CHAT:
+            self._handle_chat(client_id, msg)
 
     def _handle_join(self, client_id: int, msg: dict) -> None:
         """Registers a joining client.
@@ -246,6 +248,33 @@ class GameServer:
         }
         for handler in self.clients.values():
             handler.send(msg)
+
+    def _handle_chat(self, client_id: int, msg: dict) -> None:
+        """Relay a chat line. All-chat goes to everyone; otherwise only to the
+        sender's teammates."""
+        text = (msg.get("text") or "").strip()[:200]
+        if not text:
+            return
+        all_chat = bool(msg.get("all"))
+        hero = self.state.get_hero(client_id)
+        if hero is not None:
+            name, team = hero.name, hero.team
+        else:  # not spawned yet (lobby/spectator): fall back to lobby roster
+            name = self.state.lobby.get(client_id, {}).get("name", f"Player{client_id}")
+            team = None
+        out = {
+            "t": int(MsgType.CHAT),
+            "name": name,
+            "text": text,
+            "all": all_chat,
+        }
+        for cid, handler in self.clients.items():
+            if all_chat:
+                handler.send(out)
+            elif team is not None:
+                other = self.state.get_hero(cid)
+                if other is not None and other.team == team:
+                    handler.send(out)
 
     def _handle_select_team(self, client_id: int, msg: dict) -> None:
         if self.state.set_lobby_team(client_id, msg.get("team")):
