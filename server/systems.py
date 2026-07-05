@@ -49,7 +49,7 @@ from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
     Structure, Projectile, HookProjectile, SplitBody, RuneCreature,
-    SummonedMinion, Wall, Tree,
+    SummonedMinion, Wall, Tree, Obstacle
 )
 from server.effects import make_effect
 from server.bind import release_bind
@@ -806,6 +806,8 @@ def _projectile_hit(state: GameState, proj: Projectile, px0=None, py0=None):
         if isinstance(e, Projectile):
             continue
         if isinstance(e, Structure) and not state.is_structure_vulnerable(e):
+            continue
+        if isinstance(e, Obstacle):
             continue
         cx, cy = closest_point_on_segment(e.x, e.y, px0, py0, proj.x, proj.y)
         if math.hypot(e.x - cx, e.y - cy) > proj.radius + e.radius:
