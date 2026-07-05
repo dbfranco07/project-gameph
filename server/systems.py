@@ -680,10 +680,13 @@ def system_projectiles(state: GameState, dt: float) -> None:
                 continue
         else:
             step = math.hypot(proj.vx, proj.vy) * dt
+            px0, py0 = proj.x, proj.y
             proj.x += proj.vx * dt
             proj.y += proj.vy * dt
             proj.range_left -= step
-            hit = _projectile_hit(state, proj)
+            # Swept test against the whole segment travelled this tick, so a fast
+            # projectile can't tunnel past a target between two ticks.
+            hit = _projectile_hit(state, proj, px0, py0)
             if hit is not None:
                 state.damage_events.append(
                     {"src": proj.owner_id, "tgt": hit.entity_id, "amt": proj.damage,
@@ -725,7 +728,14 @@ def _advance_homing(state: GameState, proj: Projectile, dt: float, dead: list) -
     return False
 
 
-def _projectile_hit(state: GameState, proj: Projectile):
+def _projectile_hit(state: GameState, proj: Projectile, px0=None, py0=None):
+    """Nearest enemy the projectile overlaps. When (px0, py0) is given, test the
+    swept segment from the projectile's previous position to its current one
+    (continuous collision) so a fast bolt can't skip over a target between ticks;
+    otherwise just test the current point."""
+    if px0 is None:
+        px0, py0 = proj.x, proj.y
+    best, best_d = None, None
     for e in state.entities.values():
         if e is proj or not e.alive:
             continue
@@ -736,9 +746,15 @@ def _projectile_hit(state: GameState, proj: Projectile):
             continue
         if isinstance(e, Structure) and not state.is_structure_vulnerable(e):
             continue
-        if math.hypot(e.x - proj.x, e.y - proj.y) <= proj.radius + e.radius:
-            return e
-    return None
+        cx, cy = closest_point_on_segment(e.x, e.y, px0, py0, proj.x, proj.y)
+        if math.hypot(e.x - cx, e.y - cy) > proj.radius + e.radius:
+            continue
+        # Resolve the earliest hit along the path, so the hook grabs the first
+        # unit it would have touched rather than an arbitrary one.
+        d = math.hypot(cx - px0, cy - py0)
+        if best_d is None or d < best_d:
+            best, best_d = e, d
+    return best
 
 
 def _resolve_hook(state: GameState, proj: HookProjectile, hit) -> None:

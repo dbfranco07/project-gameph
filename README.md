@@ -82,6 +82,24 @@ Once everyone has joined (you'll see each hero on the map), **any player presses
 
 ---
 
+## Standalone executables (friends without Python)
+
+Friends who don't have Python/`uv` installed can run a packaged executable instead of
+the `uv run` commands above — same client, just bundled with `pyinstaller.spec`.
+
+- **Mac:** `uv run pyinstaller pyinstaller.spec --noconfirm --clean` produces
+  `dist/ProjectGamePH.app` — double-click to run.
+- **Windows:** the same command on a Windows machine produces `dist/ProjectGamePH.exe`.
+  PyInstaller can't cross-compile, so the `.exe` must be built on Windows (or via the
+  `.github/workflows/build-executables.yml` CI workflow on `windows-latest`, run manually
+  from the Actions tab or by pushing a `v*` tag — download the artifact from there).
+
+The packaged app still needs a server to connect to (it doesn't bundle one) — the host
+runs `uv run python main.py --server ...` as usual, and friends point their executable at
+the host's address from the connect screen.
+
+---
+
 ## Controls
 
 | Input          | Action                                            |
