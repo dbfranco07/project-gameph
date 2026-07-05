@@ -100,6 +100,11 @@ def find_attack_target(state: GameState, attacker):
     if isinstance(attacker, Minion) and attacker.is_neutral and not attacker.provoked:
         return None
     order = _PRIORITY[_attacker_kind(attacker)]
+    # Heroes only acquire targets their team can currently see (fog of war).
+    # Minions/structures/neutrals stay ungated: Team.NONE has no vision
+    # sources, and lane units always fight what walks up to them.
+    vis = (state.visible_ids_cached(attacker.team)
+           if isinstance(attacker, Hero) else None)
     best = None
     best_key = None
     for e in state.entities.values():
@@ -121,6 +126,8 @@ def find_attack_target(state: GameState, attacker):
             continue  # can't be targeted while invulnerable (e.g. split upper half)
         if isinstance(e, Hero) and e.is_invisible() and e.reveal_timer <= 0:
             continue  # stealthed (e.g. in trees/walls) and not currently revealed
+        if vis is not None and e.entity_id not in vis:
+            continue  # fogged: the attacker's team has no line of sight
         d = attacker.distance_to(e)
         if d > attacker.effective_attack_range() + e.radius:
             continue
@@ -152,6 +159,14 @@ def system_status(state: GameState, dt: float) -> None:
             hero.cast_timer = max(0.0, hero.cast_timer - dt)
         if hero.alive:
             _regen(hero, dt)
+    # Non-hero units (minions, neutrals) can carry debuffs too (e.g. a hook's
+    # stun-then-slow); tick those the same way.
+    for e in state.entities.values():
+        if isinstance(e, Hero) or not e.buffs:
+            continue
+        for b in e.buffs:
+            b["remaining"] -= dt
+        e.buffs[:] = [b for b in e.buffs if b["remaining"] > 0]
 
 
 def _regen(hero: Hero, dt: float) -> None:
@@ -401,6 +416,8 @@ def system_movement(state: GameState, dt: float) -> None:
             entity.x = max(entity.radius, min(MAP_WIDTH - entity.radius, entity.x))
             entity.y = max(entity.radius, min(MAP_HEIGHT - entity.radius, entity.y))
         elif isinstance(entity, Minion):
+            if entity.is_stunned():
+                continue  # stunned minions hold position
             if entity.is_neutral:
                 continue  # jungle monsters hold their camp
             if find_attack_target(state, entity) is None:
@@ -447,6 +464,7 @@ def _advance_minion(state: GameState, minion: Minion, dt: float) -> None:
             minion.meet_speed = 0.0  # reached the meet point: back to default
         else:
             speed = minion.meet_speed
+    speed *= (1.0 - minion.slow_pct())
     step = min(speed * dt, dist)
     minion.x += dirx * step
     minion.y += diry * step
@@ -485,8 +503,12 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
     if hero.forced_target_id is None:
         return
     target = state.entities.get(hero.forced_target_id)
+    # A fogged target drops the order (no live-tracking through the fog of
+    # war); the last set target_x/y remains, so the hero walks to the spot
+    # where the enemy was last seen.
     if (target is None or not target.alive or target.team == hero.team
-            or (isinstance(target, Structure) and not state.is_structure_vulnerable(target))):
+            or (isinstance(target, Structure) and not state.is_structure_vulnerable(target))
+            or target.entity_id not in state.visible_ids_cached(hero.team)):
         hero.forced_target_id = None
         return
     in_range = hero.distance_to(target) <= hero.effective_attack_range() + target.radius
@@ -675,6 +697,9 @@ def system_projectiles(state: GameState, dt: float) -> None:
     for proj in state.entities.values():
         if not isinstance(proj, Projectile):
             continue
+        if isinstance(proj, HookProjectile) and proj.latched_id:
+            _tick_latched_hook(state, proj, dt, dead)
+            continue
         if proj.homing:
             if _advance_homing(state, proj, dt, dead):
                 continue
@@ -694,16 +719,49 @@ def system_projectiles(state: GameState, dt: float) -> None:
                 )
                 if isinstance(proj, HookProjectile):
                     _resolve_hook(state, proj, hit)
-                dead.append(proj.entity_id)
+                    # Latch instead of despawning, so a point-blank hook (which
+                    # would otherwise die before its first snapshot) and the
+                    # whole drag stay visible to clients.
+                    proj.latched_id = hit.entity_id
+                    proj.vx = proj.vy = 0.0
+                    proj.x, proj.y = hit.x, hit.y
+                    proj.linger = HOOK_LINGER
+                else:
+                    dead.append(proj.entity_id)
             elif proj.range_left <= 0 or not (0 <= proj.x <= MAP_WIDTH and 0 <= proj.y <= MAP_HEIGHT):
                 dead.append(proj.entity_id)
     for eid in dead:
         state.entities.pop(eid, None)
 
 
+HOOK_LINGER = 0.2  # min seconds a landed hook stays visible after latching
+
+
+def _tick_latched_hook(state: GameState, proj: HookProjectile, dt: float,
+                       dead: list) -> None:
+    """Keep a landed hook's head glued to its victim while the pull drags them,
+    despawning once the pull is done (plus a short linger so even an instantly
+    resolved hook is seen for at least one snapshot)."""
+    victim = state.entities.get(proj.latched_id)
+    owner = state.entities.get(proj.owner_id)
+    if victim is None or not victim.alive or owner is None or not owner.alive:
+        dead.append(proj.entity_id)
+        return
+    proj.x, proj.y = victim.x, victim.y
+    proj.linger = max(0.0, proj.linger - dt)
+    pull_active = proj.pull and any(
+        p["tgt"] == proj.latched_id and p["to"] == proj.owner_id
+        for p in state.pulls)
+    if not pull_active and proj.linger <= 0:
+        dead.append(proj.entity_id)
+
+
 def _advance_homing(state: GameState, proj: Projectile, dt: float, dead: list) -> bool:
     """Steer a basic-attack projectile toward its target. Returns True when the
-    projectile has been resolved (hit or fizzled) and added to `dead`."""
+    projectile has been resolved (hit or fizzled) and added to `dead`.
+
+    Deliberately not fog-gated: an attack already in flight still lands on a
+    target that just slipped into the fog of war (standard MOBA behavior)."""
     target = state.entities.get(proj.target_id)
     if target is None or not target.alive:
         dead.append(proj.entity_id)  # target gone before the shot landed
@@ -732,7 +790,10 @@ def _projectile_hit(state: GameState, proj: Projectile, px0=None, py0=None):
     """Nearest enemy the projectile overlaps. When (px0, py0) is given, test the
     swept segment from the projectile's previous position to its current one
     (continuous collision) so a fast bolt can't skip over a target between ticks;
-    otherwise just test the current point."""
+    otherwise just test the current point.
+
+    Deliberately not fog-gated: skillshots hit fogged units (standard MOBA
+    behavior — only auto-attack target *acquisition* respects fog)."""
     if px0 is None:
         px0, py0 = proj.x, proj.y
     best, best_d = None, None
@@ -764,7 +825,7 @@ def _resolve_hook(state: GameState, proj: HookProjectile, hit) -> None:
     if proj.pull and owner is not None and isinstance(hit, (Hero, Minion)):
         state.pulls.append({"tgt": hit.entity_id, "to": owner.entity_id,
                             "speed": proj.pull_speed, "stop": proj.stop_dist})
-    if isinstance(hit, Hero):
+    if isinstance(hit, (Hero, Minion)):
         if proj.stun_dur > 0:
             hit.buffs.append(make_effect(proj.stun_dur, stun=True))
         if proj.slow_dur > 0 and proj.slow_pct > 0:
@@ -815,6 +876,8 @@ def system_combat(state: GameState, dt: float) -> None:
             continue
         if isinstance(e, Hero) and e.is_disarmed():
             continue  # stunned or disarmed (e.g. Tiktik in a wall): no attacks
+        if isinstance(e, Minion) and e.is_stunned():
+            continue  # stunned minions/neutrals don't attack either
         if e.attack_timer > 0:
             e.attack_timer = max(0.0, e.attack_timer - dt)
             continue
@@ -856,6 +919,7 @@ def _combat_target(state: GameState, attacker):
                 and not (isinstance(t, Hero) and t.is_invulnerable())
                 and not (isinstance(t, Hero) and t.is_invisible() and t.reveal_timer <= 0)
                 and not (isinstance(t, Structure) and not state.is_structure_vulnerable(t))
+                and t.entity_id in state.visible_ids_cached(attacker.team)
                 and attacker.distance_to(t) <= attacker.effective_attack_range() + t.radius):
             return t
     return find_attack_target(state, attacker)

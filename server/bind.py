@@ -30,6 +30,9 @@ def enter_bind(state, hero, obstacle, kind: str, ability_key: str,
     # Snap onto the structure and drop any stale move order.
     caps = terrain.cluster_capsules(state, ids)
     hero.x, hero.y = terrain.clamp_to_cluster(hero.x, hero.y, caps)
+    # The snap is a discontinuous move: break any tow this hero owns so a
+    # hooked victim isn't dragged across the map after a wall-hop.
+    state.pulls = [p for p in state.pulls if p.get("to") != hero.entity_id]
     hero.target_x = hero.target_y = None
     hero.attack_move = False
     hero.attack_move_x = hero.attack_move_y = None

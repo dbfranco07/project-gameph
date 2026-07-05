@@ -86,6 +86,11 @@ class Entity:
     attack_type: str = "melee"  # "melee" = instant hit, "ranged" = fires a projectile
     attack_proj_speed: float = 1000.0
 
+    # Temporary buffs/debuffs: list of effect dicts with a `remaining` ttl.
+    # Any unit can carry them (heroes from items/abilities, minions and
+    # neutrals from enemy CC); system_status ticks them down.
+    buffs: list[dict] = field(default_factory=list)
+
     def distance_to(self, other: Entity) -> float:
         """Euclidean distance to another entity."""
         return math.hypot(self.x - other.x, self.y - other.y)
@@ -94,12 +99,19 @@ class Entity:
         """Attack range including any bonuses (base entities have none)."""
         return self.attack_range
 
-    # Defenses including any temporary modifiers (base entities have none).
+    def is_stunned(self) -> bool:
+        return any(b.get("stun") for b in self.buffs)
+
+    def slow_pct(self) -> float:
+        # Slows stack additively, capped so a unit is never fully rooted by them.
+        return min(0.8, sum(b.get("slow_pct", 0) for b in self.buffs))
+
+    # Defenses including temporary buff/debuff deltas (e.g. armor shreds).
     def effective_phys_def(self) -> float:
-        return self.phys_def
+        return self.phys_def + sum(b.get("phys_def", 0) for b in self.buffs)
 
     def effective_sp_def(self) -> float:
-        return self.sp_def
+        return self.sp_def + sum(b.get("sp_def", 0) for b in self.buffs)
 
     def to_snapshot(self) -> dict:
         """Minimal data sent to clients each tick."""
@@ -175,9 +187,6 @@ class Hero(Entity):
     ability_levels: dict[str, int] = field(default_factory=dict)
     skill_points: int = 0
 
-    # Temporary buffs: list of {speed_bonus, dmg_bonus, remaining}
-    buffs: list[dict] = field(default_factory=list)
-
     # Inventory: list of item_id strings + per-slot active cooldown remaining.
     inventory: list[str] = field(default_factory=list)
     item_cooldowns: dict[str, float] = field(default_factory=dict)
@@ -215,9 +224,6 @@ class Hero(Entity):
                 return ab
         return None
 
-    def is_stunned(self) -> bool:
-        return any(b.get("stun") for b in self.buffs)
-
     def is_silenced(self) -> bool:
         # A stun also silences (can't act at all).
         return any(b.get("silence") or b.get("stun") for b in self.buffs)
@@ -253,10 +259,6 @@ class Hero(Entity):
     def bonus_speed(self) -> float:
         return sum(b.get("speed_bonus", 0) for b in self.buffs)
 
-    def slow_pct(self) -> float:
-        # Slows stack additively, capped so a unit is never fully rooted by them.
-        return min(0.8, sum(b.get("slow_pct", 0) for b in self.buffs))
-
     def effective_move_speed(self) -> float:
         return (self.move_speed + self.bonus_speed()) * (1.0 - self.slow_pct())
 
@@ -290,24 +292,12 @@ class Hero(Entity):
         """Extra sight radius from temporary buffs (e.g. Manananggal split)."""
         return sum(b.get("vision_bonus", 0) for b in self.buffs)
 
-    # Special attack + both defenses, including temporary buff/debuff deltas.
+    # Special attack including temporary buff/debuff deltas.
     def bonus_sp_atk(self) -> float:
         return sum(b.get("sp_atk", 0) for b in self.buffs)
 
     def effective_sp_atk(self) -> int:
         return int(self.sp_atk + self.bonus_sp_atk())
-
-    def bonus_phys_def(self) -> float:
-        return sum(b.get("phys_def", 0) for b in self.buffs)
-
-    def effective_phys_def(self) -> float:
-        return self.phys_def + self.bonus_phys_def()
-
-    def bonus_sp_def(self) -> float:
-        return sum(b.get("sp_def", 0) for b in self.buffs)
-
-    def effective_sp_def(self) -> float:
-        return self.sp_def + self.bonus_sp_def()
 
     # ----- crit / lifesteal / evasion / mitigation --------------------------
     def effective_crit_chance(self) -> float:
@@ -493,6 +483,9 @@ class Minion(Entity):
         d["sub"] = self._sub
         return d
 
+    def effective_move_speed(self) -> float:
+        return self.move_speed * (1.0 - self.slow_pct())
+
     def advance(self, dt: float) -> None:
         """Walk toward the current waypoint, advancing along the path as each is
         reached (called when no enemy is in range)."""
@@ -649,6 +642,11 @@ class HookProjectile(Projectile):
     stun_dur: float = 0.0
     slow_dur: float = 0.0
     slow_pct: float = 0.0
+    # Once landed the hook latches onto its victim (head rides it) instead of
+    # despawning, so clients can draw the tongue for the whole drag. `linger`
+    # keeps it on screen a beat even for instant/point-blank resolutions.
+    latched_id: int = 0
+    linger: float = 0.0
 
     def to_snapshot(self) -> dict:
         d = super().to_snapshot()

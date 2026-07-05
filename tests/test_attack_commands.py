@@ -78,7 +78,9 @@ class TestFocusAndStop(unittest.TestCase):
         self.hero = self.state.add_hero(1, "H", Team.TEAM1, hero_id="brawler")
         self.enemy = self.state.add_hero(2, "E", Team.TEAM2, hero_id="brawler")
         self.hero.x, self.hero.y = 1000, 1000
-        self.enemy.x, self.enemy.y = 2000, 1000  # out of melee range
+        # Out of melee range, but inside hero vision (a fogged target drops the
+        # focus order, so the chase test needs a visible enemy).
+        self.enemy.x, self.enemy.y = 1600, 1000
 
     def test_focus_target_chases_enemy(self):
         self.hero.forced_target_id = self.enemy.entity_id

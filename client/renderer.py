@@ -667,6 +667,12 @@ class Renderer:
             return
         sx, sy = self.camera.world_to_screen(ent["x"], ent["y"])
         radius = int(ent.get("r", 20))
+        # Hooks are drawn even with the head off-screen: the tongue is a line
+        # back to the (possibly on-screen) owner, so culling by the head alone
+        # would drop the whole tongue.
+        if et == EntityType.PROJECTILE and ent.get("hook"):
+            self._draw_projectile(ent, sx, sy, radius)
+            return
         if sx < -radius or sx > SCREEN_WIDTH + radius:
             return
         if sy < -radius or sy > SCREEN_HEIGHT + radius:

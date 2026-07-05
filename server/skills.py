@@ -244,16 +244,17 @@ def dash_to_target(ctx, dist) -> Hero:
 
 
 def apply_effect(target, duration, source=None, **mods) -> None:
-    """Apply a generic buff/debuff (any recognized effect key) to one hero.
+    """Apply a generic buff/debuff (any recognized effect key) to one unit.
 
-    Sign of each value decides buff vs debuff. Non-heroes are ignored (only
-    heroes carry effects today)."""
-    if isinstance(target, Hero):
+    Sign of each value decides buff vs debuff. Heroes, minions and neutrals all
+    carry effects; anything else (structures, projectiles) is ignored. Keys a
+    unit can't act on (e.g. silence on a minion) are harmless no-ops."""
+    if isinstance(target, (Hero, Minion)):
         target.buffs.append(make_effect(duration, source=source, **mods))
 
 
 def slow(ctx, target, pct, duration) -> None:
-    """Apply a movement slow to a single enemy (heroes carry the debuff)."""
+    """Apply a movement slow to a single enemy unit."""
     apply_effect(target, duration, slow_pct=pct)
 
 
@@ -268,10 +269,10 @@ def stun_target(ctx, target, duration) -> None:
 
 
 def stun_nearby(ctx, radius, duration) -> list:
-    """Stun enemy heroes within `radius` of the caster (can't move/attack)."""
+    """Stun enemy units within `radius` of the caster (can't move/attack)."""
     stunned = [e for e in enemies_in_radius(
         ctx.state, ctx.caster.team, ctx.caster.x, ctx.caster.y, radius)
-        if isinstance(e, Hero)]
+        if isinstance(e, (Hero, Minion))]
     for e in stunned:
         apply_effect(e, duration, stun=True)
     return stunned

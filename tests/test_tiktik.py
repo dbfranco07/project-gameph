@@ -3,7 +3,7 @@
 import unittest
 
 from server.game_state import GameState
-from server.entity import HookProjectile, Wall
+from server.entity import HookProjectile, NeutralMinion, Wall
 from server.systems import (
     system_ability_cast,
     system_projectiles,
@@ -76,6 +76,46 @@ class TestTiktik(unittest.TestCase):
         self.assertFalse(self.enemy.is_stunned())
         self.assertGreater(self.enemy.slow_pct(), 0)
 
+    def test_hook_ccs_neutral_minion(self):
+        """The hook's pull/stun/slow land on neutrals, not just heroes."""
+        self.enemy.x = 9000  # out of the hook's path
+        mob = NeutralMinion(x=1400, y=1000)
+        self.state.entities[mob.entity_id] = mob
+        hp0, d0 = mob.hp, self.hero.distance_to(mob)
+        self._cast("Q", tx=mob.x, ty=mob.y)
+        self._advance()
+        self.assertLess(mob.hp, hp0)
+        self.assertLess(self.hero.distance_to(mob), d0)  # reeled in
+        self.assertTrue(mob.is_stunned())
+        for _ in range(20):
+            system_status(self.state, 0.05)
+        self.assertFalse(mob.is_stunned())
+        self.assertGreater(mob.slow_pct(), 0)  # slow lingers after the stun
+
+    def test_point_blank_hook_stays_visible(self):
+        """A hook that lands on its first movement tick latches instead of
+        despawning, so it appears in at least one snapshot."""
+        self.enemy.x, self.enemy.y = 1080, 1000
+        self._cast("Q", tx=self.enemy.x, ty=self.enemy.y)
+        system_projectiles(self.state, 0.05)  # resolves the hit this tick
+        proj = self._hook()
+        self.assertIsNotNone(proj)
+        self.assertEqual(proj.latched_id, self.enemy.entity_id)
+        self._advance()
+        self.assertIsNone(self._hook())  # gone once the pull + linger are done
+
+    def test_hook_head_rides_victim_during_pull(self):
+        self._cast("Q", tx=self.enemy.x, ty=self.enemy.y)
+        for _ in range(30):  # fly until it lands
+            system_projectiles(self.state, 0.05)
+            proj = self._hook()
+            if proj is not None and proj.latched_id:
+                break
+        self.assertEqual(proj.latched_id, self.enemy.entity_id)
+        system_displacements(self.state, 0.05)  # drag the victim a step
+        system_projectiles(self.state, 0.05)    # head follows
+        self.assertEqual((proj.x, proj.y), (self.enemy.x, self.enemy.y))
+
     def test_hook_without_E_has_no_cc(self):
         self.hero.ability_levels["E"] = 0
         self._cast("Q", tx=self.enemy.x, ty=self.enemy.y)
@@ -121,6 +161,24 @@ class TestTiktik(unittest.TestCase):
         self.assertFalse(self.hero.is_invisible())
         self.assertFalse(self.hero.is_disarmed())
         self.assertEqual(self.hero.cooldowns["W"], W_REAL_CD)
+
+    def test_wall_hop_cancels_active_pull(self):
+        """Binding to a wall is a teleport: any pull Tiktik owns is dropped so
+        the victim isn't dragged across the map (fountain-hook bug)."""
+        self._add_wall(1000, 1400, 1400, 1400)
+        self.enemy.x, self.enemy.y = 1700, 1000
+        self._cast("Q", tx=self.enemy.x, ty=self.enemy.y)
+        for _ in range(30):  # fly until the hook lands and queues the pull
+            system_projectiles(self.state, 0.05)
+            if self.state.pulls:
+                break
+        self.assertTrue(self.state.pulls)
+        self.hero.cooldowns["W"] = 0.0
+        self._cast("W", tx=1100, ty=1400)  # teleport onto the wall
+        self.assertEqual(self.state.pulls, [])
+        ex, ey = self.enemy.x, self.enemy.y
+        system_displacements(self.state, 0.05)
+        self.assertEqual((self.enemy.x, self.enemy.y), (ex, ey))  # no drag
 
     def test_wallrun_recast_on_wall_jumps(self):
         self._add_wall(1000, 1400, 1400, 1400)

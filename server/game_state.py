@@ -67,6 +67,11 @@ class GameState:
         self.econ_accum: float = 0.0
         self.wave_count: int = 0
 
+        # Per-tick memoized team-visibility sets for in-tick targeting (see
+        # visible_ids_cached). The snapshot broadcast computes fresh sets.
+        self._vis_cache: dict[Team, set[int]] = {}
+        self._vis_cache_tick: int = -1
+
         # Jungle camps: camp_id -> {"timer": seconds until respawn or 0.0 if up}.
         self.neutral_camps: dict[int, dict] = {}
         # Runes: rune_index -> {"timer": seconds until respawn or 0.0 if up}.
@@ -412,6 +417,18 @@ class GameState:
                 visible.add(e.entity_id)
                 break
         return visible
+
+    def visible_ids_cached(self, team: Team) -> set[int]:
+        """Per-tick memoized `visible_entity_ids_for`, used by combat targeting
+        (heroes can't acquire fogged targets) without recomputing line-of-sight
+        for every targeting call in the same tick."""
+        if self._vis_cache_tick != self.tick:
+            self._vis_cache = {}
+            self._vis_cache_tick = self.tick
+        s = self._vis_cache.get(team)
+        if s is None:
+            s = self._vis_cache[team] = self.visible_entity_ids_for(team)
+        return s
 
     def point_visible_for(self, team: Team, x: float, y: float) -> bool:
         """True if `team` has line-of-sight to the world point (x, y). Used to
