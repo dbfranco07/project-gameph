@@ -5,7 +5,7 @@ minion_damage: 18
 minion_range: 100
 minion_interval: 1.0
 minion_speed: 130
-minion_radius: 12
+minion_radius: 15
 minion_gold: 25
 minion_xp: 30
 
@@ -13,15 +13,15 @@ minion_xp: 30
 ranged_minion_hp: 90
 ranged_minion_damage: 22
 ranged_minion_range: 230
-ranged_minion_gold: 30
-ranged_minion_xp: 35
-ranged_minion_projectile_speed: 800
+ranged_minion_gold: 40
+ranged_minion_xp: 60
+ranged_minion_projectile_speed: 600
 
 # Cart (siege) minion: tanky, slow, big bounty. Added every Nth wave per lane.
-cart_minion_hp: 600
-cart_minion_damage: 30
-cart_minion_range: 190
-cart_minion_speed: 100
+cart_minion_hp: 500
+cart_minion_damage: 40
+cart_minion_range: 170
+cart_minion_speed: 120
 cart_minion_radius: 18
 cart_minion_gold: 60
 cart_minion_xp: 80

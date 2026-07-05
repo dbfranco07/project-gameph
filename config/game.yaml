@@ -13,8 +13,8 @@ screen_width: 1280
 screen_height: 720
 
 # Camera (free-roam, Dota-style)
-edge_pan_margin: 40           # px from a screen edge that triggers panning
-camera_pan_speed: 1400        # world units/sec while edge-panning
+edge_pan_margin: 20           # px from a screen edge that triggers panning
+camera_pan_speed: 1000        # world units/sec while edge-panning
 
 # Map dimensions (square so the three lanes are symmetric corner-to-corner)
 map_width: 6000
@@ -29,8 +29,8 @@ pregame_countdown: 5.0
 
 # Vision (fog-of-war) radii
 vision_radius: 700           # hero sight radius
-minion_vision_radius: 700
-tower_vision_radius: 700
+minion_vision_radius: 400
+tower_vision_radius: 600
 
 # Colors (RGB) -> exposed as COLOR_<NAME> tuples
 colors:

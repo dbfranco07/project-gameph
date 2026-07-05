@@ -2,7 +2,7 @@
 # Camp positions live in map.yaml.
 
 neutral_hp: 200
-neutral_damage: 20
+neutral_damage: 25
 neutral_range: 160
 neutral_interval: 1.0
 neutral_radius: 14
