@@ -23,16 +23,27 @@ from server.effects import make_effect
 from server import skills, terrain, bind
 
 # --- Tuning ----------------------------------------------------------------
-HOOK_DMG, HOOK_SPEED, HOOK_RANGE = 95, 1250, 820
-HOOK_RADIUS, HOOK_STOP, HOOK_PULL_SPEED = 24, 140, 1150
+HOOK_DMG = 95
+HOOK_SPEED = 1250
+HOOK_RANGE = 800
+HOOK_RADIUS = 24
+HOOK_STOP = 140
+HOOK_PULL_SPEED = 1150
 
-E_STUN_BASE, E_STUN_PER_RANK = 0.4, 0.2   # stun seconds (rank 1..4 -> 0.6..1.2)
-E_SLOW_PCT, E_SLOW_DUR = 0.4, 1.6          # lingering slow after the stun
+E_STUN_BASE = 0.4
+E_STUN_PER_RANK = 0.2   # stun seconds (rank 1..4 -> 0.6..1.2)
+E_SLOW_PCT = 0.4 
+E_SLOW_DUR = 1.6          # lingering slow after the stun
 
-FRENZY_DUR = 8.0
-FRENZY_HOOK_DMG, FRENZY_HOOK_RANGE, FRENZY_HOOK_CD = 135, 1100, 1.5
+FRENZY_DUR = 9.0
+FRENZY_HOOK_DMG = 135 
+FRENZY_HOOK_RANGE = 1100 
+FRENZY_HOOK_CD = 1.5
 
-W_TOGGLE_CD, W_JUMP_CD, W_REAL_CD = 1.0, 1.0, 14.0
+W_TOGGLE_CD = 1.0
+W_JUMP_CD = 1.0 
+W_REAL_CD = 14.0
+
 W_GRAB = 160
 W_VISION_BONUS = 400
 
@@ -71,9 +82,16 @@ class Tiktik(HeroDef):
         stun = (E_STUN_BASE + erank * E_STUN_PER_RANK) if erank > 0 else 0.0
         slow_dur = E_SLOW_DUR if erank > 0 else 0.0
         slow_pct = E_SLOW_PCT if erank > 0 else 0.0
-        skills.hook(ctx, dmg=dmg, speed=HOOK_SPEED, range=rng, radius=HOOK_RADIUS,
-                    stop_dist=HOOK_STOP, pull_speed=HOOK_PULL_SPEED,
-                    stun_dur=stun, slow_dur=slow_dur, slow_pct=slow_pct,
+        skills.hook(ctx, 
+                    dmg=dmg, 
+                    speed=HOOK_SPEED, 
+                    range=rng, 
+                    radius=HOOK_RADIUS,
+                    stop_dist=HOOK_STOP, 
+                    pull_speed=HOOK_PULL_SPEED,
+                    stun_dur=stun, 
+                    slow_dur=slow_dur, 
+                    slow_pct=slow_pct,
                     kind="tiktik_q")
         if frenzy:
             hero.cooldowns["Q"] = FRENZY_HOOK_CD  # spammable during Frenzy
