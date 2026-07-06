@@ -59,6 +59,9 @@ class ItemDef:
     cost: int = 0
     bonuses: dict = {}              # e.g. {"atk_dmg": 25, "hp": 150}
     active: ItemActive | None = None
+    # A "charge" item (e.g. the TP scroll) is bought into a dedicated slot rather
+    # than the inventory grid: buying stacks a charge instead of applying stats.
+    is_charge: bool = False
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
@@ -100,6 +103,8 @@ class ItemDef:
              "bonuses": dict(cls.bonuses)}
         if cls.active is not None:
             d["active"] = cls.active.describe()
+        if cls.is_charge:
+            d["charge"] = True  # client: a dedicated-slot charge item, cast via Z
         return d
 
     @classmethod

@@ -163,6 +163,39 @@ def hook(ctx, dmg, speed, range, radius=22, dtype="physical", pull=True,
     return proj
 
 
+def grapple(ctx, speed, range, radius=20, pull_speed=1200, stop_dist=70,
+            kind="") -> HookProjectile:
+    """Fire a self-hook toward (tx, ty). On striking the first wall / tree /
+    structure along its path it anchors there and reels the *caster* to it (see
+    _grapple_hit / system_displacements). Misses simply fizzle. Returns it."""
+    caster = ctx.caster
+    dx, dy = ctx.tx - caster.x, ctx.ty - caster.y
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6:
+        dx, dy, dist = 1.0, 0.0, 1.0
+    proj = HookProjectile(
+        team=caster.team,
+        x=caster.x,
+        y=caster.y,
+        radius=radius,
+        vx=(dx / dist) * speed,
+        vy=(dy / dist) * speed,
+        damage=0,
+        owner_id=caster.entity_id,
+        range_left=range,
+        speed=speed,
+        pull=True,
+        self_pull=True,
+        anchor_terrain=True,
+        pull_speed=pull_speed,
+        stop_dist=stop_dist,
+        kind=kind,
+        own=caster.entity_id,
+    )
+    ctx.state.entities[proj.entity_id] = proj
+    return proj
+
+
 def pull_to(state, target, owner, speed, stop) -> None:
     """Queue a displacement that drags `target` toward `owner` each tick until it
     is within `stop` units (resolved by system_displacements)."""

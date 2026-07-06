@@ -13,10 +13,12 @@ from server.items.base import ItemDef, ItemActive, item_active
 from server.items.starters import (
     LongSword, VitalityGem, ManaCrystal, SwiftBoots, HealthFlask,
 )
+from server.items.tp_scroll import TpScroll
 
 ITEM_REGISTRY: dict[str, type[ItemDef]] = {
     cls.item_id: cls
-    for cls in (LongSword, VitalityGem, ManaCrystal, SwiftBoots, HealthFlask)
+    for cls in (LongSword, VitalityGem, ManaCrystal, SwiftBoots, HealthFlask,
+                TpScroll)
 }
 
 

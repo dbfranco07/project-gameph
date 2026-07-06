@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass, field
 
 from shared.game_types import EntityType, Team
+from server.effects import describe_effect
 from shared.config import (
     MINION_HP,
     MINION_DAMAGE,
@@ -190,6 +191,11 @@ class Hero(Entity):
     # Inventory: list of item_id strings + per-slot active cooldown remaining.
     inventory: list[str] = field(default_factory=list)
     item_cooldowns: dict[str, float] = field(default_factory=dict)
+
+    # Dedicated TP-scroll slot (cast with Z): stacked charges + a shared cooldown
+    # that persists across rebuys (buying more charges does not clear it).
+    tp_charges: int = 0
+    tp_cooldown: float = 0.0
 
     # Free-form per-hero ability state (e.g. Manananggal split). Not networked.
     ability_state: dict = field(default_factory=dict)
@@ -426,6 +432,11 @@ class Hero(Entity):
             cc.append("slow")
         if cc:
             d["cc"] = cc
+        # Active buffs/debuffs for the HUD's effect row (icon + timer ring).
+        # Each carries a label, category, icon id and remaining/original duration.
+        effs = [desc for b in self.buffs if (desc := describe_effect(b))]
+        if effs:
+            d["eff"] = effs
         # Ability cooldown state for the owning client's HUD.
         d["cds"] = {k: round(v, 1) for k, v in self.cooldowns.items()}
         d["alvl"] = dict(self.ability_levels)
@@ -437,6 +448,8 @@ class Hero(Entity):
             d["ult"] = ult_key
         d["inv"] = list(self.inventory)
         d["icds"] = {k: round(v, 1) for k, v in self.item_cooldowns.items()}
+        # Dedicated TP-scroll slot: charge count + shared cooldown remaining.
+        d["tp"] = {"n": self.tp_charges, "cd": round(self.tp_cooldown, 1)}
         # Scoreboard.
         d["kills"] = self.kills
         d["deaths"] = self.deaths
@@ -642,6 +655,15 @@ class HookProjectile(Projectile):
     stun_dur: float = 0.0
     slow_dur: float = 0.0
     slow_pct: float = 0.0
+    # Grapple mode (Lastikman's W): the hook latches onto the first wall / tree /
+    # structure it strikes and reels the *caster* to it instead of a victim to
+    # the caster. `anchored` + anchor_x/y pin the head to the impact point while
+    # the self-pull drags the owner in.
+    self_pull: bool = False
+    anchor_terrain: bool = False
+    anchored: bool = False
+    anchor_x: float = 0.0
+    anchor_y: float = 0.0
     # Once landed the hook latches onto its victim (head rides it) instead of
     # despawning, so clients can draw the tongue for the whole drag. `linger`
     # keeps it on screen a beat even for instant/point-blank resolutions.

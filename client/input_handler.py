@@ -97,6 +97,11 @@ class InputHandler:
                     pass  # item modifier held on a non-item key: swallow it
                 elif event.key in _ABILITY_KEYS:
                     self._on_ability_key(_ABILITY_KEYS[event.key], messages)
+                elif event.key == pygame.K_z:
+                    # Dedicated TP-scroll slot: arm a ground-target teleport,
+                    # resolved on the next left-click (server validates + charges).
+                    self.attack_armed = False
+                    self.pending_cast = None if self.pending_cast == "TP" else "TP"
                 elif event.key == pygame.K_a:
                     self.attack_armed = True
                     self.pending_cast = None

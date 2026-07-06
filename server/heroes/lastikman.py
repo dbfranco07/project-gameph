@@ -11,20 +11,21 @@ Kit:
 
 from __future__ import annotations
 
-import math
-
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
 from server.effects import make_effect
-from server.entity import Obstacle
-from server import skills, terrain
-from shared.geometry import closest_point_on_segment
+from server import skills
 
 # --- Tuning ----------------------------------------------------------------
 Q_DMG, Q_SPEED, Q_RANGE = 120, 1400, 780
 Q_SLOW, Q_SLOW_DUR = 0.25, 1.2
 
-W_MAX_DIST, W_GRAB = 900, 130
+# Grapple: a hook that reels the caster to the first wall/tree/structure it hits.
+W_MAX_DIST = 900
+W_SPEED = 1600
+W_RADIUS = 22
+W_PULL_SPEED = 1500
+W_STOP = 70          # stop this far from the anchor (clears the wall surface)
 
 E_EVASION_PER_RANK = 0.05      # rank 1..4 -> 5%..20% dodge
 E_REDUCE_PER_RANK = 0.03       # rank 1..4 -> 3%..12% mitigation
@@ -60,18 +61,13 @@ class Lastikman(HeroDef):
                     kind="lastikman_q")
 
     @ability("W", "Grapple", cd=10, mana=40, cast=CastType.POINT,
-             desc="Grab a wall or tree and sling yourself to it.")
+             target="obstacle", range=W_MAX_DIST,
+             desc="Fling a grapple line; when it strikes a wall, tree or "
+                  "structure you are reeled to it.")
     def grapple(ctx):
-        hero = ctx.caster
-        obstacle = terrain.obstacle_at(ctx.state, ctx.tx, ctx.ty, Obstacle,
-                                       grab=W_GRAB)
-        if obstacle is None:
-            hero.cooldowns["W"] = 0.0   # nothing to grapple: refund the cast
-            return
-        x0, y0, x1, y1, _ = obstacle.capsule()
-        cx, cy = closest_point_on_segment(hero.x, hero.y, x0, y0, x1, y1)
-        ctx.tx, ctx.ty = cx, cy
-        skills.dash(ctx, dist=W_MAX_DIST)
+        skills.grapple(ctx, speed=W_SPEED, range=W_MAX_DIST, radius=W_RADIUS,
+                       pull_speed=W_PULL_SPEED, stop_dist=W_STOP,
+                       kind="lastikman_w")
 
     @ability("E", "Elastic Body", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive: rubbery body grants evasion and damage reduction.")
@@ -94,7 +90,7 @@ class Lastikman(HeroDef):
             erank = hero.ability_rank("E")
             if erank > 0:
                 hero.buffs.append(make_effect(
-                    0.5, source="lastik:elastic",
+                    0.5, source="lastik:elastic", nohud=True,
                     evasion=E_EVASION_PER_RANK * erank,
                     dmg_reduction=E_REDUCE_PER_RANK * erank))
 

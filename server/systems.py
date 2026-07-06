@@ -43,8 +43,11 @@ from shared.config import (
     SPAWN_ZONE_RADIUS,
     BASE_TOWER_T,
     TREE_RESPAWN,
+    TP_RANGE,
+    TP_COOLDOWN,
 )
-from shared.geometry import point_along, closest_point_on_segment
+from shared.geometry import (
+    point_along, closest_point_on_segment, segment_capsule_intersect)
 from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
@@ -149,6 +152,8 @@ def system_status(state: GameState, dt: float) -> None:
         for key in hero.item_cooldowns:
             if hero.item_cooldowns[key] > 0:
                 hero.item_cooldowns[key] = max(0.0, hero.item_cooldowns[key] - dt)
+        if hero.tp_cooldown > 0:
+            hero.tp_cooldown = max(0.0, hero.tp_cooldown - dt)
         if hero.buffs:
             for b in hero.buffs:
                 b["remaining"] -= dt
@@ -639,6 +644,9 @@ def system_ability_cast(state: GameState, dt: float) -> None:
         if isinstance(key, str) and key.startswith("I") and key[1:].isdigit():
             _cast_item_active(state, caster, cast, int(key[1:]) - 1)
             continue
+        if key == "TP":  # dedicated TP-scroll slot (Z)
+            _cast_tp(state, caster, cast)
+            continue
         ab = caster.ability_by_key(cast["key"])
         if ab is None or caster.hero_def is None:
             continue
@@ -688,6 +696,32 @@ def _cast_item_active(state: GameState, caster: Hero, cast: dict, slot: int) -> 
     active.fn(ctx)
 
 
+def near_allied_structure(state: GameState, team, x: float, y: float,
+                          radius: float) -> bool:
+    """True if (x, y) is within `radius` of an alive allied structure."""
+    for e in state.entities.values():
+        if isinstance(e, Structure) and e.team == team and e.alive:
+            if math.hypot(e.x - x, e.y - y) <= radius:
+                return True
+    return False
+
+
+def _cast_tp(state: GameState, caster: Hero, cast: dict) -> None:
+    """Cast the dedicated TP scroll: teleport to a point near an alive allied
+    structure, consuming a charge and starting the shared cooldown. Rejects
+    (no charge / on cooldown / invalid point) leave everything untouched."""
+    from server import skills
+    if caster.tp_charges <= 0 or caster.tp_cooldown > 0:
+        return
+    tx, ty = cast.get("tx", 0.0), cast.get("ty", 0.0)
+    if not near_allied_structure(state, caster.team, tx, ty, TP_RANGE):
+        return  # invalid target (the client crosshair already flagged it)
+    ctx = CastContext(state, caster, tx, ty, None)
+    skills.blink(ctx, dist=float(MAP_WIDTH + MAP_HEIGHT))
+    caster.tp_charges -= 1
+    caster.tp_cooldown = TP_COOLDOWN
+
+
 # ---------------------------------------------------------------------------
 # Projectiles
 # ---------------------------------------------------------------------------
@@ -697,12 +731,23 @@ def system_projectiles(state: GameState, dt: float) -> None:
     for proj in state.entities.values():
         if not isinstance(proj, Projectile):
             continue
-        if isinstance(proj, HookProjectile) and proj.latched_id:
+        if isinstance(proj, HookProjectile) and (proj.latched_id or proj.anchored):
             _tick_latched_hook(state, proj, dt, dead)
             continue
         if proj.homing:
             if _advance_homing(state, proj, dt, dead):
                 continue
+        elif isinstance(proj, HookProjectile) and proj.anchor_terrain:
+            step = math.hypot(proj.vx, proj.vy) * dt
+            px0, py0 = proj.x, proj.y
+            proj.x += proj.vx * dt
+            proj.y += proj.vy * dt
+            proj.range_left -= step
+            anchor = _grapple_hit(state, proj, px0, py0)
+            if anchor is not None:
+                _resolve_grapple(state, proj, anchor[0], anchor[1])
+            elif proj.range_left <= 0 or not (0 <= proj.x <= MAP_WIDTH and 0 <= proj.y <= MAP_HEIGHT):
+                dead.append(proj.entity_id)  # missed all terrain: fizzle
         else:
             step = math.hypot(proj.vx, proj.vy) * dt
             px0, py0 = proj.x, proj.y
@@ -737,11 +782,62 @@ def system_projectiles(state: GameState, dt: float) -> None:
 HOOK_LINGER = 0.2  # min seconds a landed hook stays visible after latching
 
 
+def _grapple_hit(state: GameState, proj: HookProjectile, px0: float, py0: float):
+    """Nearest wall / tree / structure the grapple's travel segment touches this
+    tick, as an anchor point (on the approach side) or None. The caster is reeled
+    to just outside this point (stop_dist)."""
+    best_pt, best_d = None, None
+    for e in state.entities.values():
+        if not e.alive:
+            continue
+        if isinstance(e, Obstacle):
+            x0, y0, x1, y1, th = e.capsule()
+            # Pad the capsule by the hook radius so a near-miss still grabs.
+            if not segment_capsule_intersect(px0, py0, proj.x, proj.y,
+                                              x0, y0, x1, y1, th + 2 * proj.radius):
+                continue
+            ax, ay = closest_point_on_segment(e.x, e.y, px0, py0, proj.x, proj.y)
+        elif isinstance(e, Structure):
+            ax, ay = closest_point_on_segment(e.x, e.y, px0, py0, proj.x, proj.y)
+            if math.hypot(e.x - ax, e.y - ay) > proj.radius + e.radius:
+                continue
+        else:
+            continue
+        d = math.hypot(ax - px0, ay - py0)
+        if best_d is None or d < best_d:
+            best_pt, best_d = (ax, ay), d
+    return best_pt
+
+
+def _resolve_grapple(state: GameState, proj: HookProjectile,
+                     ax: float, ay: float) -> None:
+    """A landed grapple: pin the hook head at (ax, ay) and reel the caster in."""
+    owner = state.entities.get(proj.owner_id)
+    if owner is not None and owner.alive:
+        state.pulls.append({"tgt": owner.entity_id, "pt": (ax, ay),
+                            "speed": proj.pull_speed, "stop": proj.stop_dist})
+    proj.anchored = True
+    proj.anchor_x, proj.anchor_y = ax, ay
+    proj.vx = proj.vy = 0.0
+    proj.x, proj.y = ax, ay
+    proj.linger = HOOK_LINGER
+
+
 def _tick_latched_hook(state: GameState, proj: HookProjectile, dt: float,
                        dead: list) -> None:
     """Keep a landed hook's head glued to its victim while the pull drags them,
     despawning once the pull is done (plus a short linger so even an instantly
     resolved hook is seen for at least one snapshot)."""
+    if proj.anchored:
+        # Grapple: head stays on the terrain anchor while the caster is reeled in.
+        owner = state.entities.get(proj.owner_id)
+        proj.x, proj.y = proj.anchor_x, proj.anchor_y
+        proj.linger = max(0.0, proj.linger - dt)
+        pull_active = owner is not None and owner.alive and any(
+            p.get("tgt") == proj.owner_id and "pt" in p for p in state.pulls)
+        if not pull_active and proj.linger <= 0:
+            dead.append(proj.entity_id)
+        return
     victim = state.entities.get(proj.latched_id)
     owner = state.entities.get(proj.owner_id)
     if victim is None or not victim.alive or owner is None or not owner.alive:
@@ -848,14 +944,25 @@ def system_displacements(state: GameState, dt: float) -> None:
     keep: list[dict] = []
     for pull in state.pulls:
         tgt = state.entities.get(pull["tgt"])
-        to = state.entities.get(pull["to"])
-        if (tgt is None or not tgt.alive or to is None or not to.alive):
+        if tgt is None or not tgt.alive:
             continue
-        dx, dy = to.x - tgt.x, to.y - tgt.y
+        # A pull drags `tgt` either toward a fixed point ("pt", e.g. Lastikman's
+        # grapple reeling the caster to a wall) or toward another entity ("to",
+        # e.g. Tiktik's hook reeling a victim to the caster).
+        if "pt" in pull:
+            ax, ay = pull["pt"]
+            margin = pull["stop"]
+        else:
+            to = state.entities.get(pull["to"])
+            if to is None or not to.alive:
+                continue
+            ax, ay = to.x, to.y
+            margin = pull["stop"] + to.radius
+        dx, dy = ax - tgt.x, ay - tgt.y
         dist = math.hypot(dx, dy)
-        if dist <= pull["stop"] + to.radius:
+        if dist <= margin:
             continue  # arrived
-        step = min(pull["speed"] * dt, dist - (pull["stop"] + to.radius))
+        step = min(pull["speed"] * dt, dist - margin)
         tgt.x += (dx / dist) * step
         tgt.y += (dy / dist) * step
         tgt.x = max(tgt.radius, min(MAP_WIDTH - tgt.radius, tgt.x))
@@ -950,6 +1057,16 @@ def _spawn_basic_projectile(state: GameState, attacker, target, dmg: int) -> Non
 
 def xp_to_next(level: int) -> int:
     return XP_BASE + (level - 1) * XP_PER_LEVEL
+
+
+def sandbox_set_level(hero: Hero, target_level: int) -> None:
+    """Sandbox helper: raise a hero to `target_level`, applying the same
+    per-level gains as normal leveling (never lowers a hero's level)."""
+    target_level = max(1, min(MAX_LEVEL, target_level))
+    if target_level <= hero.level:
+        return
+    needed = sum(xp_to_next(lvl) for lvl in range(hero.level, target_level))
+    _grant_xp(hero, needed - hero.xp)
 
 
 def _grant_xp(hero: Hero, xp: int) -> None:

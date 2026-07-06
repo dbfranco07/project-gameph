@@ -15,13 +15,13 @@ from shared.config import (
     MAP_HEIGHT,
 )
 from shared.game_types import MsgType, GamePhase, Team
-from shared.config import ITEM_SLOTS
+from shared.config import ITEM_SLOTS, MAX_LEVEL
 from server.heroes import validate_all
 from server.items import (
     validate_all as validate_items, get_item_def, item_catalog)
 from server.game_state import GameState
 from server.net_handler import ClientHandler
-from server.systems import step
+from server.systems import step, sandbox_set_level
 
 
 class GameServer:
@@ -43,16 +43,19 @@ class GameServer:
         clients: Connected clients keyed by their server-assigned client id.
     """
 
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+                 sandbox: bool = False) -> None:
         """Initializes the server without binding to the network yet.
 
         Args:
             host: Interface address to bind to. Defaults to ``DEFAULT_HOST``.
             port: TCP port to bind to. Defaults to ``DEFAULT_PORT``.
+            sandbox: Enable chat cheat-commands for hero testing (default off).
         """
         self.host = host
         self.port = port
         self.state = GameState()
+        self.state.sandbox = sandbox
         self.clients: dict[int, ClientHandler] = {}
         self._next_client_id = 1
 
@@ -255,6 +258,10 @@ class GameServer:
         text = (msg.get("text") or "").strip()[:200]
         if not text:
             return
+        # Sandbox cheat commands (e.g. "/gold 9999") never relay as chat.
+        if self.state.sandbox and text.startswith("/"):
+            self._handle_sandbox_command(client_id, text)
+            return
         all_chat = bool(msg.get("all"))
         hero = self.state.get_hero(client_id)
         if hero is not None:
@@ -275,6 +282,71 @@ class GameServer:
                 other = self.state.get_hero(cid)
                 if other is not None and other.team == team:
                     handler.send(out)
+
+    def _sandbox_reply(self, client_id: int, text: str) -> None:
+        """Echo a sandbox-command result back to just the caller."""
+        handler = self.clients.get(client_id)
+        if handler is not None:
+            handler.send({"t": int(MsgType.CHAT), "name": "[sandbox]",
+                          "text": text, "all": False})
+
+    def _handle_sandbox_command(self, client_id: int, text: str) -> None:
+        """Apply a sandbox cheat command to the caller's hero. Only reachable
+        when the server runs with --sandbox. Supported:
+          /gold N  /level N  /refresh  /heal  /kill  /item <item_id>
+        """
+        parts = text[1:].split()
+        if not parts:
+            return
+        cmd = parts[0].lower()
+
+        def int_arg(default: int) -> int:
+            try:
+                return int(parts[1])
+            except (IndexError, ValueError):
+                return default
+
+        hero = self.state.get_hero(client_id)
+        if hero is None:
+            self._sandbox_reply(client_id, "sandbox: join a match first")
+            return
+        if cmd == "gold":
+            hero.gold = max(0, int_arg(99999))
+            self._sandbox_reply(client_id, f"gold = {hero.gold}")
+        elif cmd == "level":
+            sandbox_set_level(hero, int_arg(MAX_LEVEL))
+            self._sandbox_reply(client_id, f"level = {hero.level}")
+        elif cmd == "refresh":
+            hero.cooldowns.clear()
+            hero.item_cooldowns.clear()
+            hero.tp_cooldown = 0.0
+            hero.mana = hero.max_mana
+            self._sandbox_reply(client_id, "cooldowns refreshed")
+        elif cmd == "heal":
+            hero.hp = hero.max_hp
+            hero.mana = hero.max_mana
+            self._sandbox_reply(client_id, "healed to full")
+        elif cmd == "kill":
+            # Route through the normal death path (respawn timer, bounties skip).
+            self.state.damage_events.append(
+                {"src": hero.entity_id, "tgt": hero.entity_id,
+                 "amt": hero.hp + 99999, "dtype": "true"})
+            self._sandbox_reply(client_id, "killed")
+        elif cmd == "item":
+            item = get_item_def(parts[1]) if len(parts) > 1 else None
+            if item is None:
+                self._sandbox_reply(client_id, "usage: /item <item_id>")
+            elif getattr(item, "is_charge", False):
+                hero.tp_charges += 1
+                self._sandbox_reply(client_id, f"granted {item.name}")
+            elif len(hero.inventory) >= ITEM_SLOTS:
+                self._sandbox_reply(client_id, "inventory full")
+            else:
+                hero.inventory.append(item.item_id)
+                item.apply(hero)
+                self._sandbox_reply(client_id, f"granted {item.name}")
+        else:
+            self._sandbox_reply(client_id, f"unknown command: /{cmd}")
 
     def _handle_select_team(self, client_id: int, msg: dict) -> None:
         if self.state.set_lobby_team(client_id, msg.get("team")):
@@ -406,6 +478,14 @@ class GameServer:
             return
         item = get_item_def(msg.get("item"))
         if item is None:
+            return
+        if getattr(item, "is_charge", False):
+            # Charge item (TP scroll): stack onto the dedicated slot. The shared
+            # cooldown is set on *use* and is deliberately NOT reset by rebuying.
+            if hero.gold < item.cost:
+                return
+            hero.gold -= item.cost
+            hero.tp_charges += 1
             return
         if len(hero.inventory) >= ITEM_SLOTS or hero.gold < item.cost:
             return
@@ -541,16 +621,22 @@ def run_server() -> None:
     """
     host = DEFAULT_HOST
     port = DEFAULT_PORT
+    sandbox = False
 
-    # Parse --host and --port from sys.argv
+    # Parse --host, --port and --sandbox from sys.argv
     args = sys.argv[1:]
     for i, arg in enumerate(args):
         if arg == "--host" and i + 1 < len(args):
             host = args[i + 1]
         elif arg == "--port" and i + 1 < len(args):
             port = int(args[i + 1])
+        elif arg == "--sandbox":
+            sandbox = True
 
-    server = GameServer(host=host, port=port)
+    if sandbox:
+        print("[SERVER] SANDBOX mode ON — chat cheats enabled "
+              "(/gold /level /refresh /heal /kill /item)")
+    server = GameServer(host=host, port=port, sandbox=sandbox)
     try:
         asyncio.run(server.start())
     except KeyboardInterrupt:

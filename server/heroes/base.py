@@ -46,7 +46,8 @@ class Ability:
     """A single ability: its gameplay metadata + the function that casts it."""
 
     def __init__(self, key: str, name: str, cd: float, mana: int,
-                 cast: CastType, fn, desc: str = "", max_rank: int = 4) -> None:
+                 cast: CastType, fn, desc: str = "", max_rank: int = 4,
+                 target: str = "ground", range: float = 0.0) -> None:
         self.key = key
         self.name = name
         self.cd = cd
@@ -55,10 +56,17 @@ class Ability:
         self.fn = fn  # plain function taking a single CastContext argument
         self.desc = desc          # tooltip text shown on the HUD
         self.max_rank = max_rank  # Q/W/E -> 4, ultimate (R) -> 3
+        # Client-side targeting hint (drives the predictive "invalid target"
+        # crosshair): "ground" = any point (skillshots, always valid),
+        # "enemy"/"ally" = a unit of that side under the cursor within `range`,
+        # "obstacle" = a wall/tree/structure along the aim line. `range` (world
+        # units, 0 = unbounded) bounds unit-target validity.
+        self.target = target
+        self.range = range
 
     def describe(self) -> dict:
         """UI-agnostic metadata sent to the client (no cast code)."""
-        return {
+        d = {
             "key": self.key,
             "name": self.name,
             "cd": self.cd,
@@ -66,24 +74,32 @@ class Ability:
             "cast": int(self.cast_type),
             "desc": self.desc,
             "max_rank": self.max_rank,
+            "target": self.target,
         }
+        if self.range:
+            d["range"] = self.range
+        return d
 
 
 def ability(key: str, name: str, cd: float, mana: int,
             cast: CastType = CastType.POINT, desc: str = "",
-            max_rank: int | None = None):
+            max_rank: int | None = None, target: str = "ground",
+            range: float = 0.0):
     """Decorator tagging a `HeroDef` method as an ability.
 
     The decorated method takes a single `CastContext` (`ctx`). It is collected
     into `cls.abilities` by `HeroDef.__init_subclass__` in definition order, so
     declare abilities Q, W, E, R top-to-bottom. ``desc`` is HUD tooltip text;
     ``max_rank`` defaults to 3 for the ultimate (key "R") and 4 otherwise.
+    ``target``/``range`` are client targeting hints (see ``Ability``); default
+    "ground" keeps a skillshot/point cast always-valid.
     """
     if max_rank is None:
         max_rank = 3 if key == "R" else 4
 
     def deco(fn):
-        fn._ability_meta = (key, name, cd, mana, cast, desc, max_rank)
+        fn._ability_meta = (key, name, cd, mana, cast, desc, max_rank,
+                            target, range)
         return fn
 
     return deco
@@ -148,9 +164,10 @@ class HeroDef:
             meta = getattr(value, "_ability_meta", None)
             if meta is None:
                 continue
-            key, name, cd, mana, cast, desc, max_rank = meta
+            key, name, cd, mana, cast, desc, max_rank, target, rng = meta
             collected.append(
-                Ability(key, name, cd, mana, cast, value, desc, max_rank))
+                Ability(key, name, cd, mana, cast, value, desc, max_rank,
+                        target, rng))
         cls.abilities = collected
         cls._validate()
 

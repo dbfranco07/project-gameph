@@ -28,6 +28,13 @@ damage_per_level: 6           # attack-damage gained per level
 item_slots: 6                 # inventory capacity per hero
 starting_gold: 600            # gold each hero starts a match with
 
+# TP scroll: a bought consumable in a dedicated slot (cast with Z). Teleports
+# to a point within tp_range of an alive allied structure. Stacks (buy multiple)
+# but shares a cooldown that persists across rebuys.
+tp_cost: 135                  # gold per TP scroll charge
+tp_range: 300                 # max distance from an alive allied structure
+tp_cooldown: 30.0             # seconds between teleports (persists across rebuy)
+
 # Defense / damage model. Physical & special damage are each reduced by the
 # matching defense via an armor curve: reduction = DEF / (DEF + defense_k).
 defense_k: 100

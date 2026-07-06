@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import time
 import pygame
-from shared.geometry import closest_point_on_segment
+from shared.geometry import closest_point_on_segment, segment_capsule_intersect
 from shared.config import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
@@ -35,13 +35,18 @@ from shared.config import (
     HERO_VISION_RADIUS,
     MINION_VISION_RADIUS,
     TOWER_VISION_RADIUS,
+    ATTACK_CLICK_PIXELS,
+    TP_RANGE,
 )
-from shared.game_types import Team, GamePhase, EntityType
+from shared.game_types import Team, GamePhase, EntityType, CastType
 
 # Fog-of-war overlay: ground outside your vision is darkened by this much
 # (0 = off, 255 = pitch black). Vision footprints are punched back to full
 # brightness, so seen areas read lighter than the fogged ones.
 FOG_ALPHA = 95
+# Minimap fog: how dark the unseen minimap area is (heavier than the world fog
+# so "seen vs unseen" reads clearly at a glance on the small minimap).
+FOG_ALPHA_MINIMAP = 165
 # The fog/vision mask is built at 1/FOG_SCALE resolution then smoothscaled up
 # once per frame -- it's a soft darkening overlay, not crisp art, so the
 # downsample is invisible while cutting circle/polygon fill cost by FOG_SCALE**2.
@@ -166,6 +171,8 @@ class Renderer:
         # or respawned) instead of redrawn from scratch every frame.
         self._minimap_bg: pygame.Surface | None = None
         self._minimap_bg_sig: tuple | None = None
+        # Minimap fog overlay (allocated once, sized to the minimap panel).
+        self._mm_fog: pygame.Surface | None = None
         # The current frame's entity list, stashed for owner/target lookups.
         self._frame_entities: list[dict] = []
 
@@ -228,6 +235,8 @@ class Renderer:
     def draw_frame(self, entities, my_entity_id, my_team, phase, tick,
                    score=None, ktarget=0, winner=0, clock=0.0) -> None:
         self._frame_entities = entities
+        self._my_team = my_team
+        self._my_entity_id = my_entity_id
         self.screen.fill(COLOR_BG)
         self._draw_grid()
         self._draw_river()
@@ -359,10 +368,16 @@ class Renderer:
         return ox, oy
 
     def _draw_targeting_cursor(self) -> None:
-        """Ring the cursor while awaiting a target: yellow for an ability cast,
-        red for an 'A' attack command."""
+        """Ring the cursor while awaiting a target. Yellow for a valid ability
+        cast, red for an 'A' attack command, and red with a "Not valid target"
+        message when the cursor is on an invalid target for the pending cast."""
         if self.pending_cast is not None:
-            color, text = (240, 220, 120), f"Cast {self.pending_cast}"
+            name = "Teleport" if self.pending_cast == "TP" else f"Cast {self.pending_cast}"
+            valid = self._pending_target_valid()
+            if valid is False:
+                color, text = (235, 80, 80), "Not valid target"
+            else:
+                color, text = (240, 220, 120), name
         elif self.attack_armed:
             color, text = (235, 90, 90), "Attack"
         else:
@@ -372,6 +387,106 @@ class Renderer:
         pygame.draw.circle(self.screen, color, (mx, my), 3)
         label = self.font.render(text, True, color)
         self.screen.blit(label, (mx + 18, my - 8))
+
+    def _pending_target_meta(self) -> tuple[str, float]:
+        """(target-kind, range) for the current pending cast. Unit-target casts
+        with no explicit kind default to requiring an enemy; the dedicated TP
+        slot requires a point near an alive allied structure."""
+        key = self.pending_cast
+        if key == "TP":
+            return ("ally_structure_area", TP_RANGE)
+        for ab in self.hero_abilities:
+            if ab.get("key") == key:
+                tgt = ab.get("target", "ground")
+                rng = ab.get("range", 0) or 0
+                if tgt == "ground" and ab.get("cast") == int(CastType.UNIT):
+                    tgt = "enemy"
+                return (tgt, rng)
+        return ("ground", 0)
+
+    def _pending_target_valid(self):
+        """True/False validity of the cursor for the pending cast, or None when
+        there is nothing to validate (always-valid 'ground' point casts)."""
+        kind, rng = self._pending_target_meta()
+        if kind == "ground":
+            return None
+        mx, my = pygame.mouse.get_pos()
+        wx, wy = self.camera.screen_to_world(mx, my)
+        ents = self._frame_entities
+        if kind in ("enemy", "ally"):
+            return self._unit_under_cursor(ents, wx, wy, kind, rng) is not None
+        if kind == "obstacle":
+            return self._terrain_along_aim(ents, wx, wy, rng)
+        if kind == "ally_structure_area":
+            return self._near_ally_structure(ents, wx, wy, TP_RANGE)
+        return None
+
+    def _my_hero(self, ents):
+        for e in ents:
+            if e.get("id") == getattr(self, "_my_entity_id", None):
+                return e
+        return None
+
+    def _unit_under_cursor(self, ents, wx, wy, kind, rng):
+        """Closest enemy/ally unit under the cursor (within its radius) and, when
+        `rng` is set, within cast range of my hero."""
+        me = self._my_hero(ents)
+        my_team = getattr(self, "_my_team", 0)
+        best, best_d = None, None
+        for e in ents:
+            if not e.get("a", True) or e.get("et") == EntityType.PROJECTILE:
+                continue
+            team = e.get("tm", 0)
+            is_enemy = team not in (my_team, 0)
+            if kind == "enemy" and not is_enemy:
+                continue
+            if kind == "ally" and (team != my_team or e.get("id") == self._my_entity_id):
+                continue
+            d = math.hypot(e["x"] - wx, e["y"] - wy)
+            if d > e.get("r", 20) + ATTACK_CLICK_PIXELS:
+                continue
+            if rng and me is not None:
+                if math.hypot(e["x"] - me["x"], e["y"] - me["y"]) > rng + e.get("r", 20):
+                    continue
+            if best_d is None or d < best_d:
+                best, best_d = e, d
+        return best
+
+    def _near_ally_structure(self, ents, wx, wy, rng) -> bool:
+        my_team = getattr(self, "_my_team", 0)
+        for e in ents:
+            if e.get("et") not in (EntityType.TOWER, EntityType.BASE):
+                continue
+            if e.get("tm", 0) != my_team or not e.get("a", True):
+                continue
+            if math.hypot(e["x"] - wx, e["y"] - wy) <= rng:
+                return True
+        return False
+
+    def _terrain_along_aim(self, ents, wx, wy, rng) -> bool:
+        """True if a wall / tree / structure lies along the aim line from my hero
+        (up to `rng`) — the grapple would strike it."""
+        me = self._my_hero(ents)
+        if me is None:
+            return False
+        dx, dy = wx - me["x"], wy - me["y"]
+        d = math.hypot(dx, dy) or 1.0
+        reach = rng or d
+        ax, ay = me["x"], me["y"]
+        bx, by = ax + dx / d * reach, ay + dy / d * reach
+        for e in ents:
+            if not e.get("a", True):
+                continue
+            et = e.get("et")
+            if et in (EntityType.WALL, EntityType.TREE) and e.get("x1") is not None:
+                if segment_capsule_intersect(ax, ay, bx, by, e["x1"], e["y1"],
+                                             e["x2"], e["y2"], e.get("th", 20) + 44):
+                    return True
+            elif et in (EntityType.TOWER, EntityType.BASE):
+                cx, cy = closest_point_on_segment(e["x"], e["y"], ax, ay, bx, by)
+                if math.hypot(e["x"] - cx, e["y"] - cy) <= e.get("r", 30) + 22:
+                    return True
+        return False
 
     # ----- world ------------------------------------------------------------
     def _draw_grid(self) -> None:
@@ -1013,8 +1128,10 @@ class Renderer:
         # My stats panel + skill/item grids.
         if me is not None:
             self._draw_stats_panel(me)
+            self._draw_effects(me)
             self._draw_ability_bar(me)
             self._draw_inventory(me)
+            self._draw_tp_slot(me)
             if not me.get("a", True):
                 self._draw_respawn(me)
             self._draw_hover_tooltip(me)
@@ -1032,7 +1149,7 @@ class Renderer:
             self._draw_game_over(winner, my_team)
         else:
             hint = self.font.render(
-                "RMB move | A+click attack | QWERTYU+I cast | Shift+key level | "
+                "RMB move | A+click attack | QWERTYU+I cast | Z TP | Shift+key level | "
                 "Cmd/Alt+QWE-ASD items | Enter chat | B shop",
                 True, (150, 150, 150))
             self.screen.blit(hint, (SCREEN_WIDTH - hint.get_width() - 10, 76))
@@ -1103,6 +1220,58 @@ class Renderer:
             if not alive and h.get("resp", 0) > 0:
                 t = self.font.render(f"{h['resp']:.0f}", True, (220, 180, 180))
                 self.screen.blit(t, (x - t.get_width() // 2, top + 14))
+
+    # Fallback fill colors for effect icons, keyed by icon id then category.
+    # (Swap these for loaded art surfaces keyed on the same icon id later.)
+    _EFFECT_COLORS = {
+        "stun": (230, 205, 90), "silence": (170, 110, 220),
+        "slow": (90, 150, 230), "disarm": (210, 130, 70),
+        "frenzy": (230, 90, 90), "shield": (120, 200, 230),
+        "invuln": (230, 220, 120), "haste": (110, 220, 140),
+    }
+    _EFFECT_CAT_COLOR = {"buff": (80, 190, 120), "debuff": (210, 80, 80)}
+
+    def _draw_effects(self, me: dict) -> None:
+        """Row of active buffs/debuffs above the bottom-right skill/item cluster.
+        Debuffs are circles, buffs are rounded squares; both carry a short label
+        and a timer arc sweeping down for the remaining fraction of duration.
+        Colored by type for now — art can later key off each effect's icon id."""
+        effs = me.get("eff", [])
+        if not effs:
+            return
+        # Debuffs first (more urgent), then buffs.
+        effs = sorted(effs, key=lambda e: 0 if e.get("cat") == "debuff" else 1)
+        size, gap = 30, 6
+        # Sit above the 2-row item grid + the TP slot, growing leftward.
+        y = SCREEN_HEIGHT - 2 * 46 - 8 - 46 - 6 - size - 8
+        x_right = SCREEN_WIDTH - 12
+        for i, e in enumerate(effs[:12]):
+            x = x_right - (i + 1) * (size + gap) + gap
+            cx, cy = x + size // 2, y + size // 2
+            cat = e.get("cat", "buff")
+            color = self._EFFECT_COLORS.get(
+                e.get("icon"), self._EFFECT_CAT_COLOR.get(cat, (150, 150, 160)))
+            if cat == "debuff":
+                pygame.draw.circle(self.screen, color, (cx, cy), size // 2)
+                pygame.draw.circle(self.screen, (20, 20, 24), (cx, cy), size // 2, 2)
+            else:
+                rect = pygame.Rect(x, y, size, size)
+                pygame.draw.rect(self.screen, color, rect, border_radius=6)
+                pygame.draw.rect(self.screen, (20, 20, 24), rect, 2, border_radius=6)
+            # Timer ring: a wedge from the top sweeping clockwise as time drains.
+            dur = e.get("dur", 0) or 0
+            rem = e.get("rem", 0) or 0
+            if dur > 0 and rem > 0:
+                frac = max(0.0, min(1.0, rem / dur))
+                arc_rect = pygame.Rect(cx - size // 2 - 2, cy - size // 2 - 2,
+                                       size + 4, size + 4)
+                start = math.pi / 2 - 2 * math.pi * frac
+                pygame.draw.arc(self.screen, (245, 245, 245), arc_rect,
+                                start, math.pi / 2, 3)
+            # Short label centered on the icon.
+            lbl = str(e.get("lbl", ""))[:4]
+            t = self.font.render(lbl, True, (20, 20, 24))
+            self.screen.blit(t, (cx - t.get_width() // 2, cy - t.get_height() // 2))
 
     def _draw_ability_bar(self, me: dict) -> None:
         """Skills as a grid at the bottom, left of the items. Standard 4-ability
@@ -1246,9 +1415,41 @@ class Renderer:
         self._minimap_bg_sig = sig
         return panel
 
+    def _draw_minimap_fog(self, entities, my_team) -> None:
+        """Darken minimap regions with no allied vision, revealing plain circles
+        around each alive friendly vision source. Simple circles (no line-of-
+        sight) are used deliberately: the minimap is tiny, so LOS detail would be
+        invisible, and circles are cheap to punch each frame."""
+        if my_team not in (Team.TEAM1, Team.TEAM2):
+            return  # spectators see the whole map
+        mm = self.minimap
+        if self._mm_fog is None:
+            self._mm_fog = pygame.Surface((mm.width, mm.height), pygame.SRCALPHA)
+        fog = self._mm_fog
+        fog.fill((8, 10, 14, FOG_ALPHA_MINIMAP))
+        sx = mm.width / MAP_WIDTH
+        for ent in entities:
+            if ent.get("tm", 0) != my_team or not ent.get("a", True):
+                continue
+            et = ent.get("et")
+            if et == EntityType.HERO:
+                r = HERO_VISION_RADIUS + ent.get("visb", 0)
+            elif et in (EntityType.TOWER, EntityType.BASE):
+                r = TOWER_VISION_RADIUS
+            elif et == EntityType.MINION:
+                r = MINION_VISION_RADIUS
+            else:
+                continue
+            cx = int(ent["x"] * mm.width / MAP_WIDTH)
+            cy = int(ent["y"] * mm.height / MAP_HEIGHT)
+            # Punch a transparent hole (draws overwrite RGBA on an alpha surface).
+            pygame.draw.circle(fog, (0, 0, 0, 0), (cx, cy), max(2, int(r * sx)))
+        self.screen.blit(fog, (mm.left, mm.top))
+
     def _draw_minimap(self, entities, my_entity_id, my_team) -> None:
         mm = self.minimap
         self.screen.blit(self._minimap_background(entities), (mm.left, mm.top))
+        self._draw_minimap_fog(entities, my_team)
         pygame.draw.rect(self.screen, (90, 90, 110), mm, 2)
 
         def to_mm(wx, wy):
@@ -1320,6 +1521,31 @@ class Renderer:
                     self.screen.blit(
                         self.font.render(f"{cd:.0f}", True, (240, 200, 120)),
                         (x + 3, y + 28))
+
+    def _draw_tp_slot(self, me: dict) -> None:
+        """Dedicated TP-scroll slot (cast with Z), above the item grid: shows the
+        charge count and the shared cooldown sweep."""
+        tp = me.get("tp", {})
+        charges = tp.get("n", 0)
+        cd = tp.get("cd", 0)
+        slot = 46
+        x = SCREEN_WIDTH - slot - 12
+        y = SCREEN_HEIGHT - 2 * 46 - 8 - slot - 6
+        rect = pygame.Rect(x, y, slot - 4, slot - 4)
+        has = charges > 0 and cd <= 0
+        fill = (40, 60, 70) if has else (40, 45, 55)
+        pygame.draw.rect(self.screen, fill, rect, border_radius=4)
+        pygame.draw.rect(self.screen, (110, 160, 190) if has else (80, 80, 95),
+                         rect, 1, border_radius=4)
+        self.screen.blit(self.font.render("Z", True, (150, 190, 210)), (x + 2, y + 1))
+        self.screen.blit(self.font.render("TP", True, COLOR_TEXT), (x + 15, y + 15))
+        # Charge count (bottom-right of the slot).
+        cnt = self.font.render(f"x{charges}", True,
+                               (230, 230, 230) if charges else (150, 150, 150))
+        self.screen.blit(cnt, (x + slot - 4 - cnt.get_width() - 2, y + slot - 4 - 15))
+        if cd > 0:
+            self.screen.blit(self.font_large.render(f"{cd:.0f}", True,
+                             (240, 200, 120)), (x + 12, y + 12))
 
     def _draw_hover_tooltip(self, me: dict) -> None:
         """Show a tooltip for the skill or item slot under the cursor."""

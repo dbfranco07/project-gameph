@@ -2,7 +2,7 @@
 import unittest
 
 from shared.game_types import Team, CastType
-from server.effects import make_effect
+from server.effects import make_effect, describe_effect
 from server.entity import Hero
 from server.game_state import GameState
 from server.heroes.base import HeroDef, ability, CastContext
@@ -29,6 +29,46 @@ class TestEffectBuilder(unittest.TestCase):
         self.assertNotIn("sp_def", eff)
         self.assertEqual(eff["remaining"], 3.0)
         self.assertEqual(eff["source"], "x")
+
+
+class TestDescribeEffect(unittest.TestCase):
+    def test_make_effect_stores_duration(self):
+        eff = make_effect(2.5, stun=True)
+        self.assertEqual(eff["dur"], 2.5)
+        self.assertEqual(eff["remaining"], 2.5)
+
+    def test_cc_is_debuff_with_icon_and_timer(self):
+        d = describe_effect(make_effect(1.5, stun=True))
+        self.assertEqual(d["cat"], "debuff")
+        self.assertEqual(d["icon"], "stun")
+        self.assertEqual(d["dur"], 1.5)
+        self.assertEqual(d["rem"], 1.5)
+
+    def test_slow_is_debuff(self):
+        self.assertEqual(describe_effect(make_effect(2.0, slow_pct=0.3))["cat"],
+                         "debuff")
+
+    def test_positive_stat_is_buff(self):
+        self.assertEqual(describe_effect(make_effect(3.0, dmg_bonus=20))["cat"],
+                         "buff")
+
+    def test_negative_stat_is_debuff(self):
+        self.assertEqual(describe_effect(make_effect(3.0, phys_def=-10))["cat"],
+                         "debuff")
+
+    def test_nohud_is_hidden(self):
+        self.assertIsNone(describe_effect(
+            make_effect(3.0, evasion=0.1, nohud=True)))
+
+    def test_expired_is_hidden(self):
+        eff = make_effect(1.0, stun=True)
+        eff["remaining"] = 0.0
+        self.assertIsNone(describe_effect(eff))
+
+    def test_source_tagged_custom_buff_named(self):
+        d = describe_effect(make_effect(9.0, source="tiktik:frenzy", frenzy=True))
+        self.assertEqual(d["cat"], "buff")
+        self.assertEqual(d["lbl"], "Frenzy")
 
 
 class TestCrowdControl(unittest.TestCase):

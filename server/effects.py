@@ -54,10 +54,118 @@ STAT_KEYS = {
 }
 
 
-def make_effect(duration: float, source: str | None = None, **mods) -> dict:
-    """Build an effect dict. Pass any recognized modifier keys as kwargs."""
+def make_effect(duration: float, source: str | None = None,
+                nohud: bool = False, **mods) -> dict:
+    """Build an effect dict. Pass any recognized modifier keys as kwargs.
+
+    ``duration`` is remembered as ``dur`` (alongside the ticking ``remaining``)
+    so the HUD can draw a timer ring as ``remaining / dur``. Pass ``nohud=True``
+    to keep an internal / passive-refresh effect (e.g. one re-applied every tick)
+    out of the HUD's buff/debuff row so it doesn't flicker.
+    """
     eff = {k: v for k, v in mods.items() if v}
     eff["remaining"] = duration
+    eff["dur"] = duration
     if source is not None:
         eff["source"] = source
+    if nohud:
+        eff["nohud"] = True
     return eff
+
+
+# --- HUD buff/debuff description -------------------------------------------
+# Ordered crowd-control / flag effects: (effect key, label, icon id, category).
+# These dominate the display when present (a stun matters more than its stats).
+_FLAG_EFFECTS = [
+    ("stun", "Stun", "stun", "debuff"),
+    ("silence", "Silence", "silence", "debuff"),
+    ("disarm", "Disarm", "disarm", "debuff"),
+    ("slow_pct", "Slow", "slow", "debuff"),
+    ("invuln", "Invuln", "invuln", "buff"),
+    ("shield", "Shield", "shield", "buff"),
+]
+
+# Stat keys that name a nondescript effect when no flag/source matched.
+_STAT_LABELS = {
+    "dmg_bonus": ("ATK", "dmg"),
+    "sp_atk": ("SP", "sp_atk"),
+    "phys_def": ("DEF", "def"),
+    "sp_def": ("SPDEF", "sp_def"),
+    "speed_bonus": ("MS", "speed"),
+    "atkspd_pct": ("AS", "atkspd"),
+    "range_bonus": ("RNG", "range"),
+    "crit_chance": ("Crit", "crit"),
+    "lifesteal": ("Life", "lifesteal"),
+    "evasion": ("Dodge", "evasion"),
+    "dmg_reduction": ("Armor", "reduce"),
+    "hp_regen_bonus": ("Regen", "regen"),
+}
+
+# Signed stat keys used to decide buff vs debuff.
+_SIGNED_KEYS = (
+    "dmg_bonus", "sp_atk", "phys_def", "sp_def", "range_bonus", "speed_bonus",
+    "atkspd_pct", "hp_regen_bonus", "mana_regen_bonus", "vision_bonus",
+    "crit_chance", "crit_mult", "lifesteal", "evasion", "dmg_reduction", "shield",
+)
+# Truthy buff flags with no numeric sign.
+_BUFF_FLAGS = ("invisible", "unobstructed_vision", "phase", "true_strike",
+               "guaranteed_crit")
+# Friendly names for known effect sources ("tag" -> label).
+_SOURCE_LABELS = {"frenzy": "Frenzy", "haste": "Haste", "elastic": "Elastic"}
+
+
+def _category(eff: dict) -> str | None:
+    """buff / debuff / None (nothing worth showing) from an effect's modifiers."""
+    if eff.get("slow_pct"):
+        return "debuff"
+    neg = any(eff.get(k, 0) < 0 for k in _SIGNED_KEYS)
+    pos = any(eff.get(k, 0) > 0 for k in _SIGNED_KEYS)
+    if pos:
+        return "buff"
+    if neg:
+        return "debuff"
+    if any(eff.get(k) for k in _BUFF_FLAGS):
+        return "buff"
+    return None
+
+
+def _named(eff: dict):
+    """(label, icon) for a source-tagged or stat-dominant effect."""
+    tag = eff.get("source", "").split(":")[-1]
+    if tag:
+        return (_SOURCE_LABELS.get(tag, tag[:6].title()), tag)
+    for key, (lbl, icon) in _STAT_LABELS.items():
+        if eff.get(key):
+            return (lbl, icon)
+    return ("Buff", "buff")
+
+
+def describe_effect(eff: dict) -> dict | None:
+    """Summarize an effect for the HUD, or None to hide it.
+
+    Returns ``{"lbl", "cat", "icon", "rem", "dur"}``: a short label, category
+    ("buff"/"debuff"), a stable icon id (so art can be swapped in later, keyed
+    off this string), and the remaining / original duration for the timer ring.
+    """
+    if eff.get("nohud"):
+        return None
+    rem = eff.get("remaining", 0.0)
+    if rem <= 0:
+        return None
+    dur = eff.get("dur") or rem
+    for key, lbl, icon, cat in _FLAG_EFFECTS:
+        if eff.get(key):
+            return {"lbl": lbl, "cat": cat, "icon": icon,
+                    "rem": round(rem, 1), "dur": round(dur, 1)}
+    cat = _category(eff)
+    if cat is None:
+        # A source-tagged effect with a custom mechanic key (e.g. frenzy=True):
+        # not a plain stat mod, but still a real named buff worth showing.
+        extra = [k for k in eff if k not in ("remaining", "dur", "source", "nohud")]
+        if eff.get("source") and extra:
+            cat = "buff"
+        else:
+            return None
+    lbl, icon = _named(eff)
+    return {"lbl": lbl, "cat": cat, "icon": icon,
+            "rem": round(rem, 1), "dur": round(dur, 1)}

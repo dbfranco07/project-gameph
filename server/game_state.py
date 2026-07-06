@@ -40,6 +40,10 @@ class GameState:
     def __init__(self) -> None:
         self.phase: GamePhase = GamePhase.WAITING
         self.tick: int = 0
+        # Sandbox / hero-testing mode: when True the server accepts chat
+        # slash-commands (/gold, /level, ...) that mutate the caller's hero.
+        # Enabled with the server's --sandbox flag; off by default.
+        self.sandbox: bool = False
         self.entities: dict[int, Entity] = {}  # entity_id -> Entity
         self.player_heroes: dict[int, int] = {}  # client_id -> entity_id
         self.player_hero_choice: dict[int, str] = {}  # client_id -> hero_id
