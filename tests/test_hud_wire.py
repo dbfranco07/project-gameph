@@ -3,7 +3,7 @@ import unittest
 
 from shared.game_types import Team
 from server.entity import Hero
-from server.effects import make_effect
+from server.status import make_status
 from server.heroes import get_hero_def
 
 
@@ -23,19 +23,19 @@ class TestHeroSnapshotFields(unittest.TestCase):
     def test_temp_deltas_only_when_nonzero(self):
         h = Hero(team=Team.TEAM1, phys_def=20)
         self.assertEqual(h.to_snapshot().get("dlt", {}), {})
-        h.buffs.append(make_effect(3.0, phys_def=15, dmg_bonus=-5))
+        h.statuses.add(make_status(3.0, phys_def=15, dmg_bonus=-5))
         dlt = h.to_snapshot()["dlt"]
         self.assertEqual(dlt["pdef"], 15)
         self.assertEqual(dlt["ad"], -5)
 
     def test_cc_flags_reported(self):
         h = Hero(team=Team.TEAM1)
-        h.buffs.append(make_effect(2.0, stun=True))
+        h.statuses.add(make_status(2.0, stun=True))
         self.assertIn("stun", h.to_snapshot().get("cc", []))
 
     def test_effect_list_for_hud(self):
         h = Hero(team=Team.TEAM1)
-        h.buffs.append(make_effect(2.0, stun=True))
+        h.statuses.add(make_status(2.0, stun=True))
         eff = h.to_snapshot().get("eff")
         self.assertTrue(eff)
         self.assertEqual(eff[0]["cat"], "debuff")

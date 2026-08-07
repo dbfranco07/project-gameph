@@ -2,6 +2,7 @@
 
 import unittest
 
+from server import bind
 from server.game_state import GameState
 from server.entity import HookProjectile, NeutralMinion, Wall
 from server.systems import (
@@ -134,8 +135,7 @@ class TestTiktik(unittest.TestCase):
     def test_wallrun_binds_stealths_and_disarms(self):
         self._add_wall(1000, 1400, 1400, 1400)
         self._cast("W", tx=1100, ty=1400)
-        self.assertEqual(self.hero.ability_state.get("bind", {}).get("kind"),
-                         "wall")
+        self.assertEqual(bind.current_bind(self.hero).kind, "wall")
         self.assertTrue(self.hero.is_invisible())
         self.assertTrue(self.hero.is_disarmed())
         self.assertTrue(self.hero.has_unobstructed_vision())
@@ -157,7 +157,7 @@ class TestTiktik(unittest.TestCase):
         self._cast("W", tx=1100, ty=1400)
         self.hero.cooldowns["W"] = 0.0
         self._cast("W", tx=5000, ty=5000)  # open ground: climb out
-        self.assertNotIn("bind", self.hero.ability_state)
+        self.assertFalse(bind.is_bound(self.hero))
         self.assertFalse(self.hero.is_invisible())
         self.assertFalse(self.hero.is_disarmed())
         self.assertEqual(self.hero.cooldowns["W"], W_REAL_CD)
@@ -186,8 +186,8 @@ class TestTiktik(unittest.TestCase):
         self._cast("W", tx=1100, ty=1400)
         self.hero.cooldowns["W"] = 0.0
         self._cast("W", tx=4100, ty=4000)  # hop to the far wall
-        self.assertIn("bind", self.hero.ability_state)
-        self.assertIn(far.entity_id, self.hero.ability_state["bind"]["ids"])
+        self.assertTrue(bind.is_bound(self.hero))
+        self.assertIn(far.entity_id, bind.current_bind(self.hero).cluster_ids)
         self.assertLess(abs(self.hero.y - 4000), far.thickness)  # snapped onto it
 
 

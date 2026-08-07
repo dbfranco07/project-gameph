@@ -17,7 +17,7 @@ import math
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server.entity import Hero
 from server import skills
 from shared.config import MAP_WIDTH, MAP_HEIGHT
@@ -34,6 +34,26 @@ E_CDR_PER_RANK = 0.04          # rank 1..4 -> 4%..16% cooldown reduction
 R_DUR = 8.0
 R_SPATK, R_SPEED, R_HEAL = 45, 70, 120
 _MAP_DIAG = math.hypot(MAP_WIDTH, MAP_HEIGHT)
+
+
+class Polymath(Aura):
+    """E passive: rank-scaled special attack and cooldown reduction."""
+
+    status_id = "rizal:polymath"
+    __slots__ = ()
+    dynamic = True
+
+    def condition(self, bearer, state) -> bool:
+        return bool(bearer.alive and bearer.ability_rank("E") > 0)
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        rank = hero.ability_rank("E") if hero else 0
+        if rank <= 0:
+            return {}
+        return {"sp_atk": E_SPATK_PER_RANK * rank,
+                "cd_mult": 1.0 - E_CDR_PER_RANK * rank}
 
 
 class Rizal(HeroDef):
@@ -101,20 +121,14 @@ class Rizal(HeroDef):
                                          ctx.caster.x, ctx.caster.y, _MAP_DIAG)
         for e in allies:
             if isinstance(e, Hero):
-                e.buffs.append(make_effect(R_DUR, source="rizal:adios",
-                                           sp_atk=R_SPATK, speed_bonus=R_SPEED))
+                e.statuses.add(make_status(R_DUR, source="rizal:adios",
+                                           sp_atk=R_SPATK,
+                                           speed_bonus=R_SPEED), ctx.state)
                 ctx.state.damage_events.append({"tgt": e.entity_id, "heal": R_HEAL})
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
     def on_tick(state, hero, dt):
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") != "rizal:polymath"]
-        if not hero.alive:
-            return
-        erank = hero.ability_rank("E")
-        if erank <= 0:
-            return
-        hero.buffs.append(make_effect(
-            0.5, source="rizal:polymath", sp_atk=E_SPATK_PER_RANK * erank,
-            cd_mult=1.0 - E_CDR_PER_RANK * erank))
+        # Attach the passive once; it tracks its own rank.
+        if hero.statuses.get("rizal:polymath") is None:
+            hero.statuses.add(Polymath(), state)

@@ -2,7 +2,7 @@
 import unittest
 
 from shared.game_types import Team, CastType
-from server.effects import make_effect, describe_effect
+from server.status import Frenzy, Stun, make_status
 from server.entity import Hero
 from server.game_state import GameState
 from server.heroes.base import HeroDef, ability, CastContext
@@ -22,51 +22,64 @@ class _Dummy(HeroDef):
             "zapped", 0) + 1
 
 
-class TestEffectBuilder(unittest.TestCase):
-    def test_make_effect_drops_zero_mods(self):
-        eff = make_effect(3.0, phys_def=10, sp_def=0, source="x")
-        self.assertEqual(eff["phys_def"], 10)
-        self.assertNotIn("sp_def", eff)
-        self.assertEqual(eff["remaining"], 3.0)
-        self.assertEqual(eff["source"], "x")
+class TestStatusBuilder(unittest.TestCase):
+    def test_keeps_zero_valued_mods(self):
+        # The dict constructor silently dropped falsy values, which made
+        # "a slow of zero" indistinguishable from "no slow at all".
+        status = make_status(3.0, phys_def=10, sp_def=0, source="x")
+        self.assertEqual(status.active_modifiers["phys_def"], 10)
+        self.assertEqual(status.active_modifiers["sp_def"], 0)
+        self.assertEqual(status.remaining, 3.0)
+        self.assertEqual(status.source, "x")
+
+    def test_unknown_property_is_rejected(self):
+        # Previously a silent no-op; now it fails where it is written.
+        with self.assertRaises(Exception):
+            make_status(3.0, phys_deff=10)
+
+    def test_flags_are_separated_from_stats(self):
+        status = make_status(2.0, stun=True, phys_def=5)
+        self.assertIn("stun", status.active_flags)
+        self.assertNotIn("stun", status.active_modifiers)
+        self.assertEqual(status.active_modifiers["phys_def"], 5)
 
 
-class TestDescribeEffect(unittest.TestCase):
-    def test_make_effect_stores_duration(self):
-        eff = make_effect(2.5, stun=True)
-        self.assertEqual(eff["dur"], 2.5)
-        self.assertEqual(eff["remaining"], 2.5)
+class TestDescribe(unittest.TestCase):
+    def test_stores_duration(self):
+        status = Stun(2.5)
+        self.assertEqual(status.duration, 2.5)
+        self.assertEqual(status.remaining, 2.5)
 
     def test_cc_is_debuff_with_icon_and_timer(self):
-        d = describe_effect(make_effect(1.5, stun=True))
+        d = Stun(1.5).describe()
         self.assertEqual(d["cat"], "debuff")
         self.assertEqual(d["icon"], "stun")
         self.assertEqual(d["dur"], 1.5)
         self.assertEqual(d["rem"], 1.5)
 
     def test_slow_is_debuff(self):
-        self.assertEqual(describe_effect(make_effect(2.0, slow_pct=0.3))["cat"],
-                         "debuff")
+        self.assertEqual(make_status(2.0, source="s", slow_pct=0.3)
+                         .describe()["cat"], "debuff")
 
     def test_positive_stat_is_buff(self):
-        self.assertEqual(describe_effect(make_effect(3.0, dmg_bonus=20))["cat"],
-                         "buff")
+        self.assertEqual(make_status(3.0, source="s", dmg_bonus=20)
+                         .describe()["cat"], "buff")
 
     def test_negative_stat_is_debuff(self):
-        self.assertEqual(describe_effect(make_effect(3.0, phys_def=-10))["cat"],
-                         "debuff")
+        self.assertEqual(make_status(3.0, source="s", phys_def=-10)
+                         .describe()["cat"], "debuff")
 
     def test_nohud_is_hidden(self):
-        self.assertIsNone(describe_effect(
-            make_effect(3.0, evasion=0.1, nohud=True)))
+        self.assertIsNone(
+            make_status(3.0, source="s", evasion=0.1, nohud=True).describe())
 
     def test_expired_is_hidden(self):
-        eff = make_effect(1.0, stun=True)
-        eff["remaining"] = 0.0
-        self.assertIsNone(describe_effect(eff))
+        status = Stun(1.0)
+        status.remaining = 0.0
+        self.assertIsNone(status.describe())
 
-    def test_source_tagged_custom_buff_named(self):
-        d = describe_effect(make_effect(9.0, source="tiktik:frenzy", frenzy=True))
+    def test_named_mechanic_status_describes_itself(self):
+        d = Frenzy(9.0, source="tiktik:frenzy").describe()
         self.assertEqual(d["cat"], "buff")
         self.assertEqual(d["lbl"], "Frenzy")
 
@@ -80,20 +93,20 @@ class TestCrowdControl(unittest.TestCase):
 
     def test_stun_blocks_movement(self):
         self.hero.target_x, self.hero.target_y = 1000, 100
-        self.hero.buffs.append(make_effect(2.0, stun=True))
+        self.hero.statuses.add(make_status(2.0, stun=True))
         system_movement(self.state, 0.1)
         self.assertEqual(self.hero.x, 100)  # didn't move
 
     def test_slow_reduces_speed_and_stacks_capped(self):
-        self.hero.buffs.append(make_effect(2.0, slow_pct=0.5))
-        self.hero.buffs.append(make_effect(2.0, slow_pct=0.5))
+        self.hero.statuses.add(make_status(2.0, slow_pct=0.5))
+        self.hero.statuses.add(make_status(2.0, slow_pct=0.5))
         # Stacks additively but is capped at 0.8.
         self.assertAlmostEqual(self.hero.slow_pct(), 0.8)
         self.assertAlmostEqual(self.hero.effective_move_speed(),
                                self.hero.move_speed * 0.2)
 
     def test_silence_blocks_cast_but_not_stun_movement(self):
-        self.hero.buffs.append(make_effect(2.0, silence=True))
+        self.hero.statuses.add(make_status(2.0, silence=True))
         self.state.ability_casts.append(
             {"caster": self.hero.entity_id, "key": "Q", "tx": 0, "ty": 0,
              "tid": None})
@@ -103,13 +116,13 @@ class TestCrowdControl(unittest.TestCase):
         self.assertFalse(self.hero.is_stunned())
 
     def test_stun_also_silences(self):
-        self.hero.buffs.append(make_effect(2.0, stun=True))
+        self.hero.statuses.add(make_status(2.0, stun=True))
         self.assertTrue(self.hero.is_silenced())
 
     def test_effects_expire(self):
-        self.hero.buffs.append(make_effect(0.05, stun=True))
+        self.hero.statuses.add(make_status(0.05, stun=True))
         system_status(self.state, 0.1)
-        self.assertEqual(self.hero.buffs, [])
+        self.assertEqual(len(self.hero.statuses), 0)
 
 
 class TestSkillHelpers(unittest.TestCase):

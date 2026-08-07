@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
@@ -32,9 +32,46 @@ CORD_SPEED = 160
 CORD_REAL_CD = 22.0
 
 
-def _anchor_snap(hero) -> None:
+class FeralHunger(Aura):
+    """E passive: rank-scaled crit chance and lifesteal, plus swiftness while no
+    enemy is near. Dynamic — its numbers follow the rank, and the swiftness
+    component toggles with proximity."""
+
+    status_id = "tiyanak:feral"
+    __slots__ = ("_swift",)
+    dynamic = True
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        # Enemy proximity needs the world, which `active_modifiers` cannot see;
+        # `condition` runs first each tick and stashes the answer here.
+        self._swift = False
+
+    def condition(self, bearer, state) -> bool:
+        if not (bearer.alive and bearer.ability_rank("E") > 0):
+            return False
+        self._swift = (state is not None and skills.nearest_enemy(
+            state, bearer.team, bearer.x, bearer.y, E_DANGER_RADIUS) is None)
+        return True
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        if hero is None:
+            return {}
+        rank = hero.ability_rank("E")
+        if rank <= 0:
+            return {}
+        mods = {"crit_chance": E_CRIT_PER_RANK * rank,
+                "lifesteal": E_LIFESTEAL_PER_RANK * rank}
+        if self._swift:
+            mods["speed_bonus"] = E_SWIFT_SPEED
+        return mods
+
+
+def _anchor_snap(hero, state=None) -> None:
     st = hero.ability_state.pop("cord", None)
-    hero.buffs[:] = [b for b in hero.buffs if b.get("source") != "tiyanak:cord"]
+    hero.statuses.remove_source("tiyanak:cord", state)
     if st is not None:
         hero.x, hero.y = st["x"], st["y"]
         hero.target_x = hero.target_y = None
@@ -84,9 +121,10 @@ class Tiyanak(HeroDef):
              desc="Fly into a frenzy: bonus attack speed and guaranteed critical "
                   "strikes for a few seconds.")
     def tantrum(ctx):
-        ctx.caster.buffs.append(
-            make_effect(TANTRUM_DUR, source="tiyanak:tantrum",
-                        atkspd_pct=TANTRUM_ATKSPD, guaranteed_crit=True))
+        ctx.caster.statuses.add(
+            make_status(TANTRUM_DUR, source="tiyanak:tantrum",
+                        atkspd_pct=TANTRUM_ATKSPD, guaranteed_crit=True),
+            ctx.state)
 
     @ability("E", "Feral Hunger", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive: gain crit chance and lifesteal; move faster while no "
@@ -101,31 +139,18 @@ class Tiyanak(HeroDef):
         hero = ctx.caster
         if hero.ability_state.get("cord") is None:
             hero.ability_state["cord"] = {"x": hero.x, "y": hero.y}
-            hero.buffs.append(make_effect(CORD_DUR, source="tiyanak:cord",
-                                          speed_bonus=CORD_SPEED))
+            hero.statuses.add(make_status(CORD_DUR, source="tiyanak:cord",
+                                          speed_bonus=CORD_SPEED), ctx.state)
         else:
-            _anchor_snap(hero)
+            _anchor_snap(hero, ctx.state)
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
     def on_tick(state, hero, dt):
         # Auto-snap when the cord buff has lapsed but the anchor still stands.
         if (hero.ability_state.get("cord") is not None
-                and not any(b.get("source") == "tiyanak:cord" for b in hero.buffs)):
-            _anchor_snap(hero)
-
-        # Refresh the Feral Hunger passive (rank-scaled crit + lifesteal, plus
-        # out-of-combat swiftness).
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") != "tiyanak:feral"]
-        if not hero.alive:
-            return
-        erank = hero.ability_rank("E")
-        if erank <= 0:
-            return
-        mods = {"crit_chance": E_CRIT_PER_RANK * erank,
-                "lifesteal": E_LIFESTEAL_PER_RANK * erank}
-        if skills.nearest_enemy(state, hero.team, hero.x, hero.y,
-                                E_DANGER_RADIUS) is None:
-            mods["speed_bonus"] = E_SWIFT_SPEED
-        hero.buffs.append(make_effect(0.5, source="tiyanak:feral", **mods))
+                and not hero.statuses.by_source("tiyanak:cord")):
+            _anchor_snap(hero, state)
+        # Attach the passive once; it tracks rank and proximity itself.
+        if hero.statuses.get("tiyanak:feral") is None:
+            hero.statuses.add(FeralHunger(), state)

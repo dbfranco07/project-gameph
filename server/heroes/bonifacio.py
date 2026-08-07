@@ -16,7 +16,7 @@ import math
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server.entity import Hero
 from server import skills
 
@@ -32,6 +32,37 @@ E_DMG_PER_ALLY, E_PDEF_PER_ALLY, E_MAX_ALLIES = 14, 6, 3
 R_RADIUS, R_DUR = 700, 7.0
 R_DMG, R_SPEED, R_PDEF, R_SDEF = 45, 70, 16, 16
 R_SOLO_DMG, R_SOLO_SPEED = 20, 35   # weaker buff when you rally alone
+
+
+class Katipunero(Aura):
+    """E passive: damage and defense scaling with the number of allied heroes
+    nearby. Dynamic — the ally count changes constantly in a teamfight."""
+
+    status_id = "bonifacio:kkk"
+    __slots__ = ("_allies",)
+    dynamic = True
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        # Ally count needs the world; `condition` runs first and caches it.
+        self._allies = 0
+
+    def condition(self, bearer, state) -> bool:
+        if not (bearer.alive and bearer.ability_rank("E") > 0 and state):
+            return False
+        others = [e for e in skills.allies_in_radius(
+            state, bearer.team, bearer.x, bearer.y, E_RADIUS)
+            if isinstance(e, Hero) and e is not bearer]
+        self._allies = min(len(others), E_MAX_ALLIES)
+        return self._allies > 0
+
+    @property
+    def active_modifiers(self) -> dict:
+        n = self._allies
+        if n <= 0:
+            return {}
+        return {"dmg_bonus": E_DMG_PER_ALLY * n,
+                "phys_def": E_PDEF_PER_ALLY * n}
 
 
 class Bonifacio(HeroDef):
@@ -66,9 +97,9 @@ class Bonifacio(HeroDef):
     @ability("W", "Rip the Cedula", cd=14, mana=55, cast=CastType.NONE,
              desc="Tear the cedula: gain bonus damage, lifesteal, and defenses.")
     def rip_the_cedula(ctx):
-        ctx.caster.buffs.append(make_effect(
+        ctx.caster.statuses.add(make_status(
             W_DUR, source="bonifacio:cedula", dmg_bonus=W_DMG,
-            lifesteal=W_LIFESTEAL, phys_def=W_PDEF, sp_def=W_SDEF))
+            lifesteal=W_LIFESTEAL, phys_def=W_PDEF, sp_def=W_SDEF), ctx.state)
 
     @ability("E", "Katipunero", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive: gain bonus damage and defense for each nearby allied "
@@ -88,27 +119,18 @@ class Bonifacio(HeroDef):
         skills._emit_fx(ctx, "warcry", caster.x, caster.y, R_RADIUS)
         if len(others) >= 2:
             for e in allies:
-                e.buffs.append(make_effect(
+                e.statuses.add(make_status(
                     R_DUR, source="bonifacio:warcry", dmg_bonus=R_DMG,
-                    speed_bonus=R_SPEED, phys_def=R_PDEF, sp_def=R_SDEF))
+                    speed_bonus=R_SPEED, phys_def=R_PDEF, sp_def=R_SDEF),
+                    ctx.state)
         else:
-            caster.buffs.append(make_effect(
+            caster.statuses.add(make_status(
                 R_DUR, source="bonifacio:warcry", dmg_bonus=R_SOLO_DMG,
-                speed_bonus=R_SOLO_SPEED))
+                speed_bonus=R_SOLO_SPEED), ctx.state)
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
     def on_tick(state, hero, dt):
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") != "bonifacio:kkk"]
-        if not hero.alive or hero.ability_rank("E") <= 0:
-            return
-        others = [e for e in skills.allies_in_radius(
-            state, hero.team, hero.x, hero.y, E_RADIUS)
-            if isinstance(e, Hero) and e is not hero]
-        n = min(len(others), E_MAX_ALLIES)
-        if n <= 0:
-            return
-        hero.buffs.append(make_effect(
-            0.5, source="bonifacio:kkk", dmg_bonus=E_DMG_PER_ALLY * n,
-            phys_def=E_PDEF_PER_ALLY * n))
+        # Attach the passive once; it counts nearby allies itself.
+        if hero.statuses.get("bonifacio:kkk") is None:
+            hero.statuses.add(Katipunero(), state)

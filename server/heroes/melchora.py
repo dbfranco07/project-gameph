@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server.entity import Hero
 from server import skills
 
@@ -24,6 +24,7 @@ W_RADIUS, W_DUR = 360, 5.0
 W_SPEED, W_PDEF, W_SDEF = 60, 18, 18
 
 E_RADIUS, E_REDUCE = 450, 0.12
+E_AURA_LINGER = 0.4         # how long the projected aura outlives leaving range
 
 R_RADIUS, R_DUR = 400, 5.0
 R_HEAL, R_REDUCE, R_INVULN = 160, 0.5, 0.8
@@ -57,8 +58,8 @@ class Melchora(HeroDef):
                 and target.team == caster.team
                 and caster.distance_to(target) <= Q_RANGE + target.radius):
             target = caster  # default to self if no valid ally was clicked
-        target.buffs.append(make_effect(Q_SHIELD_DUR, source="melchora:shield",
-                                        shield=Q_SHIELD))
+        target.statuses.add(make_status(Q_SHIELD_DUR, source="melchora:shield",
+                                        shield=Q_SHIELD), ctx.state)
 
     @ability("W", "Rallying Words", cd=12, mana=70, cast=CastType.POINT,
              desc="Embolden nearby allies with bonus move speed and defenses.")
@@ -67,9 +68,9 @@ class Melchora(HeroDef):
                                          ctx.caster.x, ctx.caster.y, W_RADIUS)
         for e in allies:
             if isinstance(e, Hero):
-                e.buffs.append(make_effect(W_DUR, source="melchora:rally",
+                e.statuses.add(make_status(W_DUR, source="melchora:rally",
                                            speed_bonus=W_SPEED, phys_def=W_PDEF,
-                                           sp_def=W_SDEF))
+                                           sp_def=W_SDEF), ctx.state)
 
     @ability("E", "Matriarch", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive aura: nearby allies take reduced damage.")
@@ -85,24 +86,29 @@ class Melchora(HeroDef):
         skills._emit_fx(ctx, "refuge", ctx.tx, ctx.ty, R_RADIUS)
         for e in allies:
             if isinstance(e, Hero):
-                e.buffs.append(make_effect(R_DUR, source="melchora:refuge",
-                                           dmg_reduction=R_REDUCE))
-                e.buffs.append(make_effect(R_INVULN, source="melchora:refuge",
-                                           invuln=True))
+                e.statuses.add(make_status(R_DUR, source="melchora:refuge",
+                                           dmg_reduction=R_REDUCE), ctx.state)
+                e.statuses.add(make_status(R_INVULN, source="melchora:refuge",
+                                           invuln=True), ctx.state)
                 ctx.state.damage_events.append({"tgt": e.entity_id, "heal": R_HEAL})
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
     def on_tick(state, hero, dt):
+        # A projected aura: it lives on each *ally* in range, not on Melchora,
+        # so it is refreshed outward rather than attached once. Allies who walk
+        # out keep it only until it lapses.
         if not hero.alive or hero.ability_rank("E") <= 0:
             return
-        allies = skills.allies_in_radius(state, hero.team, hero.x, hero.y,
-                                         E_RADIUS)
-        for e in allies:
+        for e in skills.allies_in_radius(state, hero.team, hero.x, hero.y,
+                                         E_RADIUS):
             if not isinstance(e, Hero):
                 continue
-            # Refresh (don't stack) the aura on each ally in range.
-            e.buffs[:] = [b for b in e.buffs
-                          if b.get("source") != "melchora:matriarch"]
-            e.buffs.append(make_effect(0.4, source="melchora:matriarch",
-                                       dmg_reduction=E_REDUCE))
+            held = e.statuses.get("statbuff:melchora:matriarch")
+            if held is not None:
+                held.remaining = E_AURA_LINGER   # refresh, don't stack
+            else:
+                e.statuses.add(make_status(E_AURA_LINGER,
+                                           source="melchora:matriarch",
+                                           nohud=True,
+                                           dmg_reduction=E_REDUCE), state)

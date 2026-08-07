@@ -6,7 +6,8 @@ import math
 from dataclasses import dataclass, field
 
 from shared.game_types import EntityType, Team
-from server.effects import describe_effect
+from server.stats import StatBlock
+from server.status import StatusContainer
 from shared.config import (
     MINION_HP,
     MINION_DAMAGE,
@@ -87,10 +88,16 @@ class Entity:
     attack_type: str = "melee"  # "melee" = instant hit, "ranged" = fires a projectile
     attack_proj_speed: float = 1000.0
 
-    # Temporary buffs/debuffs: list of effect dicts with a `remaining` ttl.
-    # Any unit can carry them (heroes from items/abilities, minions and
-    # neutrals from enemy CC); system_status ticks them down.
-    buffs: list[dict] = field(default_factory=list)
+    # The temporary layer. `stats` aggregates every active modifier under each
+    # stat's declared stacking rule; `statuses` owns the effects contributing
+    # them, along with their flags and lifecycle hooks. Any unit can carry them
+    # (heroes from items/abilities, minions and neutrals from enemy CC);
+    # system_status ticks them.
+    stats: StatBlock = field(default_factory=StatBlock, repr=False)
+    statuses: StatusContainer = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.statuses = StatusContainer(self.stats, self)
 
     def distance_to(self, other: Entity) -> float:
         """Euclidean distance to another entity."""
@@ -100,19 +107,31 @@ class Entity:
         """Attack range including any bonuses (base entities have none)."""
         return self.attack_range
 
+    # The accessors below keep their original names so the ~40 call sites in
+    # systems.py and skills.py are unchanged; each is now a cached lookup rather
+    # than a fresh scan of a buff list.
     def is_stunned(self) -> bool:
-        return any(b.get("stun") for b in self.buffs)
+        return self.statuses.has("stun")
 
     def slow_pct(self) -> float:
-        # Slows stack additively, capped so a unit is never fully rooted by them.
-        return min(0.8, sum(b.get("slow_pct", 0) for b in self.buffs))
+        # Additive, capped by STAT_SPECS so slows alone never fully root a unit.
+        return self.stats.total("slow_pct")
 
     # Defenses including temporary buff/debuff deltas (e.g. armor shreds).
     def effective_phys_def(self) -> float:
-        return self.phys_def + sum(b.get("phys_def", 0) for b in self.buffs)
+        return self.stats.total("phys_def", self.phys_def)
 
     def effective_sp_def(self) -> float:
-        return self.sp_def + sum(b.get("sp_def", 0) for b in self.buffs)
+        return self.stats.total("sp_def", self.sp_def)
+
+    def effective_max_hp(self) -> int:
+        """Maximum health including item/status pool bonuses.
+
+        `max_hp` stays the *base* (leveling writes it directly); anything
+        granted by an item or effect is a `max_hp_bonus` modifier, so selling
+        the item withdraws exactly what it added. Every clamp and the HUD read
+        this rather than the base field."""
+        return int(self.stats.total("max_hp_bonus", self.max_hp))
 
     def to_snapshot(self) -> dict:
         """Minimal data sent to clients each tick."""
@@ -123,7 +142,7 @@ class Entity:
             "x": round(self.x, 1),
             "y": round(self.y, 1),
             "hp": self.hp,
-            "mhp": self.max_hp,
+            "mhp": self.effective_max_hp(),
             "r": self.radius,
             "a": self.alive,
         }
@@ -232,121 +251,90 @@ class Hero(Entity):
 
     def is_silenced(self) -> bool:
         # A stun also silences (can't act at all).
-        return any(b.get("silence") or b.get("stun") for b in self.buffs)
+        return self.statuses.has("silence") or self.statuses.has("stun")
 
     def is_invulnerable(self) -> bool:
-        return any(b.get("invuln") for b in self.buffs)
+        return self.statuses.has("invuln")
 
     def is_disarmed(self) -> bool:
         # A stun also disarms (can't act at all).
-        return any(b.get("disarm") or b.get("stun") for b in self.buffs)
+        return self.statuses.has("disarm") or self.statuses.has("stun")
 
     def is_invisible(self) -> bool:
         """Carries an invisibility buff (hidden from enemies). Note this is true
         even while `reveal_timer` is counting down — callers that gate enemy
         sight/targeting also check `reveal_timer <= 0`."""
-        return any(b.get("invisible") for b in self.buffs)
+        return self.statuses.has("invisible")
 
     def has_unobstructed_vision(self) -> bool:
-        return any(b.get("unobstructed_vision") for b in self.buffs)
-
-    def attack_slow(self) -> tuple[float, float]:
-        """Best (pct, duration) movement slow this hero's auto-attacks apply on
-        hit, or (0, 0). Duration is carried alongside the pct on the effect."""
-        best_pct = 0.0
-        best_dur = 0.0
-        for b in self.buffs:
-            pct = b.get("attack_slow_pct", 0)
-            if pct > best_pct:
-                best_pct = pct
-                best_dur = b.get("attack_slow_dur", 1.0)
-        return best_pct, best_dur
+        return self.statuses.has("unobstructed_vision")
 
     def bonus_speed(self) -> float:
-        return sum(b.get("speed_bonus", 0) for b in self.buffs)
+        return self.stats.bonus("speed_bonus")
 
     def effective_move_speed(self) -> float:
         return (self.move_speed + self.bonus_speed()) * (1.0 - self.slow_pct())
 
     def bonus_damage(self) -> int:
-        return int(sum(b.get("dmg_bonus", 0) for b in self.buffs))
+        return int(self.stats.bonus("dmg_bonus"))
 
     def damage_mult(self) -> float:
         """Product of multiplicative damage buffs (e.g. the double-damage rune)."""
-        mult = 1.0
-        for b in self.buffs:
-            mult *= b.get("dmg_mult", 1.0)
-        return mult
+        return self.stats.bonus("dmg_mult")
 
     def effective_damage(self) -> int:
         return int((self.attack_damage + self.bonus_damage()) * self.damage_mult())
 
     def cooldown_mult(self) -> float:
         """Smallest cooldown multiplier among active CDR buffs (best one wins)."""
-        mult = 1.0
-        for b in self.buffs:
-            mult = min(mult, b.get("cd_mult", 1.0))
-        return mult
+        return self.stats.bonus("cd_mult")
 
     def bonus_range(self) -> float:
-        return sum(b.get("range_bonus", 0) for b in self.buffs)
+        return self.stats.bonus("range_bonus")
 
     def effective_attack_range(self) -> float:
         return self.attack_range + self.bonus_range()
 
     def bonus_vision(self) -> float:
         """Extra sight radius from temporary buffs (e.g. Manananggal split)."""
-        return sum(b.get("vision_bonus", 0) for b in self.buffs)
+        return self.stats.bonus("vision_bonus")
 
     # Special attack including temporary buff/debuff deltas.
     def bonus_sp_atk(self) -> float:
-        return sum(b.get("sp_atk", 0) for b in self.buffs)
+        return self.stats.bonus("sp_atk")
 
     def effective_sp_atk(self) -> int:
-        return int(self.sp_atk + self.bonus_sp_atk())
+        return int(self.stats.total("sp_atk", self.sp_atk))
 
     # ----- crit / lifesteal / evasion / mitigation --------------------------
     def effective_crit_chance(self) -> float:
-        if any(b.get("guaranteed_crit") for b in self.buffs):
+        if self.statuses.has("guaranteed_crit"):
             return 1.0
-        return min(1.0, self.crit_chance
-                   + sum(b.get("crit_chance", 0) for b in self.buffs))
+        return self.stats.total("crit_chance", self.crit_chance)
 
     def effective_crit_mult(self) -> float:
-        return self.crit_mult + sum(b.get("crit_mult", 0) for b in self.buffs)
+        return self.stats.total("crit_mult", self.crit_mult)
 
     def effective_lifesteal(self) -> float:
-        return self.lifesteal + sum(b.get("lifesteal", 0) for b in self.buffs)
+        return self.stats.total("lifesteal", self.lifesteal)
 
     def effective_evasion(self) -> float:
-        return min(0.95, self.evasion
-                   + sum(b.get("evasion", 0) for b in self.buffs))
+        return self.stats.total("evasion", self.evasion)
 
     def has_true_strike(self) -> bool:
-        return any(b.get("true_strike") for b in self.buffs)
+        return self.statuses.has("true_strike")
 
     def damage_reduction(self) -> float:
         """Flat incoming-damage mitigation fraction from buffs (capped)."""
-        return min(0.8, sum(b.get("dmg_reduction", 0) for b in self.buffs))
+        return self.stats.total("dmg_reduction")
 
-    def absorb_with_shield(self, amt: int) -> int:
-        """Spend shield buffs to soak `amt` damage; return the unabsorbed
-        remainder. Depleted shield buffs are dropped."""
-        for b in self.buffs:
-            pool = b.get("shield", 0)
-            if pool <= 0:
-                continue
-            used = min(pool, amt)
-            b["shield"] = pool - used
-            amt -= used
-            if amt <= 0:
-                break
-        self.buffs[:] = [b for b in self.buffs
-                         if "shield" not in b or b["shield"] > 0]
-        return amt
+    def effective_max_mana(self) -> int:
+        """Maximum mana including item/status pool bonuses (see
+        `effective_max_hp` for why the base field is left alone)."""
+        return int(self.stats.total("max_mana_bonus", self.max_mana))
 
     def attack_speed_bonus(self) -> float:
-        return sum(b.get("atkspd_pct", 0) for b in self.buffs)
+        return self.stats.bonus("atkspd_pct")
 
     def effective_attack_interval(self) -> float:
         return self.attack_interval / (1.0 + self.attack_speed_bonus())
@@ -368,14 +356,23 @@ class Hero(Entity):
         self.x += (dx / dist) * step
         self.y += (dy / dist) * step
 
-    def to_snapshot(self) -> dict:
+    def to_snapshot(self, private: bool = True) -> dict:
+        """Wire form of this hero.
+
+        With ``private=False`` the owner-only HUD payload is omitted: cooldowns,
+        ability ranks, inventory, gold, xp and the full stat panel. That block is
+        roughly three quarters of a hero's bytes and is useless to anyone but the
+        player controlling it, yet it used to be sent to every client that could
+        see the hero. The public half is everything the renderer draws *about*
+        another hero — position, bars, name, level, crowd control, effects and
+        the scoreboard.
+        """
         d = super().to_snapshot()
         d["name"] = self.name
         d["hid"] = self.hero_id
         d["lvl"] = self.level
-        d["gold"] = self.gold
         d["mana"] = self.mana
-        d["mmana"] = self.max_mana
+        d["mmana"] = self.effective_max_mana()
         d["resp"] = round(self.respawn_timer, 1)
         # Lightweight render hint: True while the upper half is detached (R Split)
         # so the client can swap to the flying-torso sprite. Cheap one-bit flag.
@@ -393,6 +390,24 @@ class Hero(Entity):
         # fog reveal draws a plain circle to match the server's vision.
         if self.has_unobstructed_vision():
             d["unobs"] = True
+        # Scoreboard and the ult-readiness column are drawn for every hero, so
+        # they stay public. `ultr`/`ultcd` are a two-field summary standing in
+        # for the full `alvl`/`cds` dicts that column used to need.
+        d["kills"] = self.kills
+        d["deaths"] = self.deaths
+        d["assists"] = self.assists
+        d["mk"] = self.minion_kills
+        d["nk"] = self.neutral_kills
+        ult_key = getattr(self.hero_def, "ult_key", "R")
+        if ult_key != "R":
+            d["ult"] = ult_key
+        d["ultr"] = self.ability_levels.get(ult_key, 0)
+        d["ultcd"] = round(self.cooldowns.get(ult_key, 0.0), 1)
+        if not private:
+            return d
+
+        # ----- owner-only from here -----------------------------------------
+        d["gold"] = self.gold
         # Extra stats for the HUD panel. Main fields carry the BASE (permanent)
         # value; the temporary buff/debuff portion is sent separately in `dlt`
         # so the HUD shows e.g. "55 +20" rather than double-counting the bonus.
@@ -418,8 +433,8 @@ class Hero(Entity):
             "ms": round(self.effective_move_speed() - self.move_speed, 1),
             "aspd": round(1.0 / self.effective_attack_interval()
                           - 1.0 / self.attack_interval, 2),
-            "hpr": round(sum(b.get("hp_regen_bonus", 0) for b in self.buffs), 1),
-            "mpr": round(sum(b.get("mana_regen_bonus", 0) for b in self.buffs), 1),
+            "hpr": round(self.stats.bonus("hp_regen_bonus"), 1),
+            "mpr": round(self.stats.bonus("mana_regen_bonus"), 1),
         }
         d["dlt"] = {k: v for k, v in deltas.items() if v}
         # Active crowd-control flags for HUD/feedback.
@@ -433,29 +448,19 @@ class Hero(Entity):
         if cc:
             d["cc"] = cc
         # Active buffs/debuffs for the HUD's effect row (icon + timer ring).
-        # Each carries a label, category, icon id and remaining/original duration.
-        effs = [desc for b in self.buffs if (desc := describe_effect(b))]
+        # Each status describes itself; hidden ones (auras, internal refreshes)
+        # return None and stay off the row.
+        effs = [desc for s in self.statuses if (desc := s.describe())]
         if effs:
             d["eff"] = effs
         # Ability cooldown state for the owning client's HUD.
         d["cds"] = {k: round(v, 1) for k, v in self.cooldowns.items()}
         d["alvl"] = dict(self.ability_levels)
         d["sp"] = self.skill_points
-        # Which key is this hero's ultimate (for the ult-readiness column). Most
-        # heroes ult on "R"; only emit when it differs (e.g. Pedro's White "I").
-        ult_key = getattr(self.hero_def, "ult_key", "R")
-        if ult_key != "R":
-            d["ult"] = ult_key
         d["inv"] = list(self.inventory)
         d["icds"] = {k: round(v, 1) for k, v in self.item_cooldowns.items()}
         # Dedicated TP-scroll slot: charge count + shared cooldown remaining.
         d["tp"] = {"n": self.tp_charges, "cd": round(self.tp_cooldown, 1)}
-        # Scoreboard.
-        d["kills"] = self.kills
-        d["deaths"] = self.deaths
-        d["assists"] = self.assists
-        d["mk"] = self.minion_kills
-        d["nk"] = self.neutral_kills
         return d
 
 
@@ -694,6 +699,7 @@ class Obstacle(Entity):
     blocks_vision: bool = True
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         self.x = (self.x1 + self.x2) / 2.0
         self.y = (self.y1 + self.y2) / 2.0
         half_len = math.hypot(self.x2 - self.x1, self.y2 - self.y1) / 2.0

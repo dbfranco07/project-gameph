@@ -59,7 +59,7 @@ Client flags:
 | Flag         | Default     | Description                                                        |
 |--------------|-------------|--------------------------------------------------------------------|
 | `--name`     | `Player`    | Display name shown above your hero.                                |
-| `--hero`     | `ranger`    | Hero to play: `ranger`, `brawler`, or `mender` (see `data/heroes.py`). |
+| `--hero`     | `ranger`    | Hero to play; any id in `server/heroes/` (or pick one in the lobby). |
 | `--host`     | `127.0.0.1` | Server address to connect to.                                      |
 | `--port`     | `7777`      | Server port.                                                       |
 | `--ktarget`  | server default (`20`) | Kill target to win. Only the **host who presses Space** sets the match's value. |
@@ -79,6 +79,36 @@ uv run python main.py --name Alice --hero mender --ktarget 30
 
 Once everyone has joined (you'll see each hero on the map), **any player presses
 `Space`** to begin. Teams are auto-assigned to keep sides balanced as players join.
+
+The two-terminal flow above is the primary supported way to play — server in one
+terminal, a client in each other — and is covered end-to-end by
+`tests/test_integration.py`, which drives a real server over real sockets.
+
+---
+
+## Playing with people over the internet
+
+The server is deliberately host-agnostic: it is the same process whether it is
+on your laptop or a VPS.
+
+- **Same machine / LAN** — nothing special: `--server` and connect to
+  `127.0.0.1` or your LAN IP.
+- **Friends elsewhere** — the easiest option that needs no router config and
+  does not expose your IP is **Tailscale**: everyone joins the same tailnet and
+  connects to your Tailscale address. Otherwise forward TCP 7777, or run the
+  server on a small VPS so it stays up without you hosting.
+
+What the netcode does for you:
+
+| | |
+|---|---|
+| **Bandwidth** | Snapshots are deltas — only entities that changed since your last one — and each hero's private HUD payload (cooldowns, inventory, gold, stat panel) is sent **only to its owner**. Together that is ~2.4x less traffic: roughly 45 KB/s per client, so a 5v5 host uploads ~3.7 Mbps. |
+| **Latency** | `TCP_NODELAY` on both ends (Nagle would add up to ~40 ms), and each connection is read by its own task so one laggy player cannot stall the tick for everyone. |
+| **Dropouts** | A disconnect during a match **parks your hero** instead of deleting it. Reconnect with the same `--name` and you get it back — level, gold, items and all. |
+| **Stale clients** | The client sends its protocol version on join; a mismatch is refused with a readable message telling the player to update, instead of desyncing. |
+
+Bump `PROTOCOL_VERSION` in `shared/protocol.py` whenever a wire change would
+make an older client misbehave.
 
 ---
 
@@ -168,7 +198,7 @@ base), and each team has a single **core** at its base.
   then structures). Press **A** and click an enemy to override this and focus a chosen
   target; press **S** to stop and hold.
 - Are **melee** (instant short-range hits) or **ranged** (fire a visible projectile). See
-  each hero's `atk_type` in `data/heroes.py`.
+  each hero's `atk_type` class attribute in `server/heroes/<hero>.py`.
 - Gain **gold** (from kills, minions, structures, and a small passive trickle) and **XP**
   (from kills and minions). Reaching an XP threshold **levels you up** (up to level 18),
   increasing max HP and attack damage.
@@ -210,25 +240,64 @@ uv run python -m unittest tests.test_abilities.TestAbilityCast.test_projectile_h
 
 What's covered: protocol round-trips, entities, game state, movement, combat &
 death/respawn, scoring & win conditions, structure invulnerability order, creep spawning &
-economy, the data-driven ability system, projectiles, and leveling.
+economy, the ability system, projectiles, leveling, the stat/status layer (stacking rules,
+lifecycle hooks, auras), the damage pipeline, items (recipes, passives, procs), and the
+hero-authoring contracts.
+
+`tests/herotest.py` provides `HeroTestCase`, a base class that spawns a hero and an enemy
+in a real `GameState` and gives you `cast()` / `cast_at()` / `tick()`. Per-hero test modules
+subclass it instead of repeating the same setup.
 
 ---
 
 ## Adding a hero
 
-Add an entry to `HERO_DEFS` in [data/heroes.py](data/heroes.py): base stats + up to four
-abilities. Abilities are composed from reusable kinds implemented in
-[server/abilities.py](server/abilities.py): `projectile`, `dash`, `area_dmg`, `area_heal`,
-`target_dmg`, `buff`. New hero = new data; a genuinely new mechanic = one new block. Hero
-definitions are validated at server startup.
+**Copy [server/heroes/_template.py](server/heroes/_template.py) to
+`server/heroes/<your_hero>.py` and edit it. That is the whole workflow** — there is no
+registry to update: the package auto-discovers every module in it, and the client learns the
+ability bar from metadata sent over the wire, so no client code changes either.
+
+Each hero is one class subclassing `HeroDef`. Stats are class attributes; each ability is a
+method tagged with `@ability(...)` whose body composes the building blocks in
+[server/skills.py](server/skills.py) — `projectile`, `dash`/`blink`, `hook`, `grapple`,
+`area_dmg`, `area_heal`, `target_dmg`, `cone`, `line_aoe`, `knockback`, `shield`,
+`stun_nearby`, `summon`, `pulse`, `toggle`. A hero's uniqueness is how it combines and
+tweaks them.
+
+Conditional passives should be an `Aura` (see [server/status/](server/status/)): attached
+once, it toggles itself against a `condition()` instead of being rebuilt every tick. Set
+`dynamic = True` when its numbers scale with rank or the battlefield.
+
+Optional lifecycle hooks — `on_tick`, `on_ability_cast`, `on_spawn`, `on_death`, `on_level`,
+`on_attack`, `on_hit_dealt`, `on_damage_taken`, `on_kill` — are dispatched generically, so a
+new mechanic never needs a branch in the core systems.
+
+Sprites go in `client/assets/heroes/<hero_id>/`; run
+`uv run python scripts/gen_all.py` for procedural placeholders. Hero definitions and their
+art references (`kind=` / `fx=`) are validated at server startup.
+
+## Adding an item
+
+Same shape: copy [server/items/_template.py](server/items/_template.py) into
+`server/items/`. Items grant any stat in `server/stats.py` as modifiers (not writes to base
+stats, so selling always reverses cleanly), and may declare `components` + `recipe_cost` to
+build out of cheaper items, a `passive` Status for unique passives and on-hit/on-kill procs,
+and any number of `@item_active` abilities.
 
 ---
 
 ## Architecture
 
-- `shared/` — protocol (length-prefixed msgpack), enums/config, hero schema (UI-agnostic).
+- `shared/` — protocol (length-prefixed msgpack), enums, and the YAML config loader.
 - `server/` — authoritative simulation. The whole tick is an ordered pipeline in
   [server/systems.py](server/systems.py) (`step()`), each mechanic a function over
   `GameState`. Adding a feature = add a system.
+  - [server/stats.py](server/stats.py) — every temporary stat modifier, aggregated under a
+    per-stat stacking rule behind a dirty-flag cache.
+  - [server/status/](server/status/) — buffs, debuffs and auras as classes with lifecycle
+    hooks, so effects carry their own behaviour instead of the systems special-casing them.
+  - [server/damage.py](server/damage.py) — one hit resolved through an ordered list of
+    stages (invuln, evade, crit, armor, reduction, absorb, apply, lifesteal, on-hit).
+  - `server/heroes/` and `server/items/` — auto-discovered, one file per hero/item.
 - `client/` — pygame: input -> intent messages, snapshot interpolation, a sprite-ready
   renderer (per-entity-type drawers), camera.

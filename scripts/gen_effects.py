@@ -1,7 +1,13 @@
-"""Procedural placeholder AoE/impact effect sprites (one-shot frame sequences):
-smash, earthshatter, arrowstorm, sanctuary, renewwave (ground decals) and
-hit_phys / hit_special (impact sparks). The client scales ground decals to the
-ability radius and cycles the frames over the effect's lifetime.
+"""Procedural placeholder AoE/impact effect sprites (one-shot frame sequences).
+
+Ground decals plus hit_phys / hit_special impact sparks. The client scales
+ground decals to the ability radius and cycles the frames over the effect's
+lifetime.
+
+Every `fx=` name a hero passes to `skills.area_dmg` / `area_heal` / `_emit_fx`
+must have a sequence here, or the effect silently draws nothing.
+`server.heroes.validation` checks that, and a test enforces it — ten names had
+already drifted before it existed.
 
     uv run python scripts/gen_effects.py
 """
@@ -78,6 +84,19 @@ def main() -> int:
     n += _decal_sequence("renewwave", (130, 230, 160), _bloom)
     n += _spark_seq("hit_phys", (255, 220, 150))
     n += _spark_seq("hit_special", (160, 200, 255))
+
+    # Hero-specific decals. Placeholder art: distinct colour + motion per
+    # ability so they read apart in play, ready to be overdrawn later.
+    n += _decal_sequence("bolocleave", (225, 190, 120), _cracks)     # Bonifacio Q
+    n += _decal_sequence("warcry", (235, 120, 90), _bloom)           # Bonifacio R
+    n += _decal_sequence("decalogue", (140, 190, 255), _shock)       # Mabini W
+    n += _decal_sequence("paralysis", (190, 220, 255), _cracks)      # Mabini R
+    n += _decal_sequence("hexaura", (185, 120, 235), _bloom)         # Mangkukulam W
+    n += _decal_sequence("hexheal", (130, 230, 170), _bloom)         # Mangkukulam W
+    n += _decal_sequence("pangkukulam", (140, 70, 190), _shock)      # Mangkukulam R
+    n += _decal_sequence("refuge", (250, 240, 200), _bloom)          # Melchora R
+    n += _decal_sequence("awit", (245, 225, 120), _rain)             # Pedro E
+    n += _decal_sequence("reform", (200, 225, 255), _bloom)          # Rizal W
     return n
 
 

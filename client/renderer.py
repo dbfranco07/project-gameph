@@ -109,6 +109,18 @@ def _capsule_corners(p1, p2, thpx):
             (p2[0] - nx, p2[1] - ny), (p1[0] - nx, p1[1] - ny)]
 
 
+# Tether colours per hook `kind`: (outline, body, highlight). Keyed off the
+# projectile's own art id so each hook hero reads as its own thing; "" is the
+# neutral fallback for a hook that ships no art.
+_TETHER_COLORS = {
+    "": ((70, 62, 54), (150, 132, 110), (205, 190, 165)),
+    "tiktik_q": ((120, 24, 48), (206, 70, 96), (236, 132, 150)),
+    "lastikman_q": ((40, 76, 150), (60, 110, 200), (140, 180, 240)),
+    "lastikman_w": ((70, 70, 80), (150, 150, 165), (210, 215, 225)),
+    "kapre_w": ((46, 74, 40), (96, 140, 78), (170, 205, 140)),
+}
+
+
 class Renderer:
     def __init__(self, screen: pygame.Surface, camera: Camera) -> None:
         self.screen = screen
@@ -1007,12 +1019,21 @@ class Renderer:
         else:
             ax = sx - int(math.cos(heading) * 46)
             ay = sy - int(math.sin(heading) * 46)
-        # Tapered tongue: dark outline, fleshy body, bright centerline, bulb tip.
-        pygame.draw.line(self.screen, (120, 24, 48), (ax, ay), (sx, sy), 11)
-        pygame.draw.line(self.screen, (206, 70, 96), (ax, ay), (sx, sy), 7)
-        pygame.draw.line(self.screen, (236, 132, 150), (ax, ay), (sx, sy), 3)
-        head = self.sprites.frame("projectiles", "tiktik_q", "tongue_head", "",
+        # Colour the tether from the projectile's own `kind`, so a second hook
+        # hero does not borrow Tiktik's fleshy tongue. Unknown kinds fall back
+        # to a neutral rope.
+        kind = ent.get("k") or ""
+        outline, body, shine = _TETHER_COLORS.get(kind, _TETHER_COLORS[""])
+        pygame.draw.line(self.screen, outline, (ax, ay), (sx, sy), 11)
+        pygame.draw.line(self.screen, body, (ax, ay), (sx, sy), 7)
+        pygame.draw.line(self.screen, shine, (ax, ay), (sx, sy), 3)
+        # The head sprite is looked up by the projectile's kind too; art lives at
+        # client/assets/projectiles/<kind>/ and is validated at server startup.
+        head = self.sprites.frame("projectiles", kind, "tongue_head", "",
                                   time.time())
+        if head is None:
+            head = self.sprites.frame("projectiles", kind, "fly", "",
+                                      time.time())
         if head is not None:
             self.screen.blit(head, (sx - head.get_width() // 2,
                                     sy - head.get_height() // 2))
@@ -1205,9 +1226,10 @@ class Renderer:
             alive = h.get("a", True)
             # Heroes ult on "R" unless the snapshot names a different ult key
             # (e.g. Pedro Penduko's White Mutya on "I").
-            ult = h.get("ult", "R")
-            r_rank = h.get("alvl", {}).get(ult, 0)
-            r_cd = h.get("cds", {}).get(ult, 0)
+            # `ultr`/`ultcd` are the compact public summary of this hero's
+            # ultimate; the full alvl/cds dicts are only sent to their owner.
+            r_rank = h.get("ultr", 0)
+            r_cd = h.get("ultcd", 0)
             if not alive:
                 color = (90, 90, 90)
             elif r_rank >= 1 and r_cd <= 0:

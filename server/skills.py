@@ -16,10 +16,11 @@ import math
 import random
 
 from shared.config import MAP_WIDTH, MAP_HEIGHT
+from shared.geometry import closest_point_on_segment
 from server.entity import (
     Hero, Projectile, HookProjectile, Structure, Minion, SummonedMinion,
 )
-from server.effects import make_effect
+from server.status import Slow, Silence, Stun, make_status
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +252,8 @@ def target_dmg(ctx, dmg, range, dtype="physical") -> object | None:
     return None
 
 
-def buff(ctx, duration, speed_bonus=0, dmg_bonus=0, radius=0) -> list:
+def buff(ctx, duration, speed_bonus=0, dmg_bonus=0, radius=0, source="buff") -> list:
     """Apply a temporary speed/damage buff to the caster (or allies in radius)."""
-    base = {"speed_bonus": speed_bonus, 
-            "dmg_bonus": dmg_bonus,
-            "remaining": duration}
     if radius and radius > 0:
         targets = [e for e in allies_in_radius(
             ctx.state, ctx.caster.team, ctx.caster.x, ctx.caster.y, radius
@@ -263,7 +261,12 @@ def buff(ctx, duration, speed_bonus=0, dmg_bonus=0, radius=0) -> list:
     else:
         targets = [ctx.caster]
     for e in targets:
-        e.buffs.append(dict(base))
+        # Built through the same constructor as every other effect, so it gets a
+        # source tag and an original duration — this used to hand-roll a bare
+        # dict, which left the HUD without a timer ring to draw.
+        e.statuses.add(make_status(duration, source=source,
+                                   speed_bonus=speed_bonus,
+                                   dmg_bonus=dmg_bonus), ctx.state)
     return targets
 
 
@@ -276,29 +279,38 @@ def dash_to_target(ctx, dist) -> Hero:
     return dash(ctx, dist)
 
 
-def apply_effect(target, duration, source=None, **mods) -> None:
-    """Apply a generic buff/debuff (any recognized effect key) to one unit.
+def apply_status(target, status, state=None):
+    """Attach an already-built `Status` to one unit.
 
-    Sign of each value decides buff vs debuff. Heroes, minions and neutrals all
-    carry effects; anything else (structures, projectiles) is ignored. Keys a
-    unit can't act on (e.g. silence on a minion) are harmless no-ops."""
+    Heroes, minions and neutrals all carry statuses; anything else (structures,
+    projectiles) is ignored. Effects a unit can't act on (a silence on a minion)
+    are harmless no-ops."""
     if isinstance(target, (Hero, Minion)):
-        target.buffs.append(make_effect(duration, source=source, **mods))
+        return target.statuses.add(status, state)
+    return None
+
+
+def apply_effect(target, duration, source=None, state=None, **mods) -> None:
+    """Apply a generic buff/debuff described by keyword properties.
+
+    Sign of each value decides buff vs debuff. Unknown property names raise
+    rather than being silently ignored — see `server.status.factory`."""
+    apply_status(target, make_status(duration, source=source, **mods), state)
 
 
 def slow(ctx, target, pct, duration) -> None:
     """Apply a movement slow to a single enemy unit."""
-    apply_effect(target, duration, slow_pct=pct)
+    apply_status(target, Slow(duration, pct), ctx.state if ctx else None)
 
 
 def silence(ctx, target, duration) -> None:
     """Silence a single enemy hero (cannot cast abilities) for `duration`."""
-    apply_effect(target, duration, silence=True)
+    apply_status(target, Silence(duration), ctx.state if ctx else None)
 
 
 def stun_target(ctx, target, duration) -> None:
     """Stun a single enemy hero (cannot move / attack / cast) for `duration`."""
-    apply_effect(target, duration, stun=True)
+    apply_status(target, Stun(duration), ctx.state if ctx else None)
 
 
 def stun_nearby(ctx, radius, duration) -> list:
@@ -307,7 +319,7 @@ def stun_nearby(ctx, radius, duration) -> list:
         ctx.state, ctx.caster.team, ctx.caster.x, ctx.caster.y, radius)
         if isinstance(e, (Hero, Minion))]
     for e in stunned:
-        apply_effect(e, duration, stun=True)
+        apply_status(e, Stun(duration), ctx.state)
     return stunned
 
 
@@ -320,6 +332,147 @@ def shred_armor(ctx, target, amount, duration) -> None:
 def shred_sp_def(ctx, target, amount, duration) -> None:
     """Reduce a single enemy's special defense for `duration`."""
     apply_effect(target, duration, sp_def=-abs(amount))
+
+
+def shield(ctx, amount, duration, target=None) -> object:
+    """Grant an absorb shield to the caster (or `target`). Returns the status."""
+    from server.status import Shield
+    bearer = target if target is not None else ctx.caster
+    return bearer.statuses.add(
+        Shield(duration, amount, source=f"{bearer.hero_id or 'skill'}:shield"),
+        ctx.state)
+
+
+def cone(ctx, dmg, radius, half_angle_deg=45.0, dtype="physical", fx=""):
+    """Damage enemies inside a cone from the caster toward (tx, ty).
+
+    `half_angle_deg` is measured from the aim line, so 45 is a 90-degree cone.
+    """
+    caster = ctx.caster
+    ax, ay = ctx.tx - caster.x, ctx.ty - caster.y
+    alen = math.hypot(ax, ay)
+    if alen < 1e-6:
+        ax, ay, alen = 1.0, 0.0, 1.0
+    ax, ay = ax / alen, ay / alen
+    _emit_fx(ctx, fx, caster.x + ax * radius / 2, caster.y + ay * radius / 2,
+             radius)
+    cos_limit = math.cos(math.radians(half_angle_deg))
+    hit = []
+    for e in enemies_in_radius(ctx.state, caster.team, caster.x, caster.y, radius):
+        dx, dy = e.x - caster.x, e.y - caster.y
+        d = math.hypot(dx, dy)
+        if d < 1e-6:
+            hit.append(e)  # standing on top of the caster is always inside
+            continue
+        if (dx / d) * ax + (dy / d) * ay >= cos_limit:
+            hit.append(e)
+    for e in hit:
+        ctx.state.damage_events.append(
+            {"src": caster.entity_id, "tgt": e.entity_id, "amt": dmg,
+             "dtype": dtype})
+    return hit
+
+
+def line_aoe(ctx, dmg, length, width, dtype="physical", fx=""):
+    """Damage enemies inside a rectangle from the caster toward (tx, ty)."""
+    caster = ctx.caster
+    ax, ay = ctx.tx - caster.x, ctx.ty - caster.y
+    alen = math.hypot(ax, ay)
+    if alen < 1e-6:
+        ax, ay, alen = 1.0, 0.0, 1.0
+    ax, ay = ax / alen, ay / alen
+    ex, ey = caster.x + ax * length, caster.y + ay * length
+    _emit_fx(ctx, fx, (caster.x + ex) / 2, (caster.y + ey) / 2, width)
+    half = width / 2.0
+    hit = []
+    for e in enemies_in_radius(ctx.state, caster.team, caster.x, caster.y,
+                               length + width):
+        px, py = closest_point_on_segment(e.x, e.y, caster.x, caster.y, ex, ey)
+        if math.hypot(e.x - px, e.y - py) <= half + e.radius:
+            hit.append(e)
+    for e in hit:
+        ctx.state.damage_events.append(
+            {"src": caster.entity_id, "tgt": e.entity_id, "amt": dmg,
+             "dtype": dtype})
+    return hit
+
+
+def knockback(ctx, target, distance, from_point=None) -> None:
+    """Shove `target` away from the caster (or `from_point`) by `distance`."""
+    ox, oy = from_point if from_point is not None else (ctx.caster.x, ctx.caster.y)
+    dx, dy = target.x - ox, target.y - oy
+    d = math.hypot(dx, dy)
+    if d < 1e-6:
+        dx, dy, d = 1.0, 0.0, 1.0
+    target.x = max(target.radius,
+                   min(MAP_WIDTH - target.radius, target.x + dx / d * distance))
+    target.y = max(target.radius,
+                   min(MAP_HEIGHT - target.radius, target.y + dy / d * distance))
+    # A shove overrides whatever the victim was walking toward.
+    if hasattr(target, "target_x"):
+        target.target_x = target.target_y = None
+
+
+def pulse(ctx, key, duration, interval, on_pulse) -> None:
+    """Start a repeating effect on the caster, ticked by the hero's `on_tick`.
+
+    Lastikman's Rubber Storm and Pedro's channels each hand-rolled this: a dict
+    in `ability_state` with a countdown and an accumulator, advanced by bespoke
+    arithmetic in `on_tick`. `pulse` + `tick_pulses` is that pattern once.
+
+    `on_pulse(state, hero)` fires every `interval` seconds for `duration`.
+    """
+    ctx.caster.ability_state.setdefault("_pulses", {})[key] = {
+        "t": duration, "acc": 0.0, "interval": interval, "fn": on_pulse}
+
+
+def tick_pulses(state, hero, dt) -> None:
+    """Advance every pulse on `hero`. Call from the hero's `on_tick`."""
+    pulses = hero.ability_state.get("_pulses")
+    if not pulses:
+        return
+    if not hero.alive:
+        pulses.clear()
+        return
+    for key, p in list(pulses.items()):
+        p["t"] -= dt
+        p["acc"] += dt
+        while p["acc"] >= p["interval"]:
+            p["acc"] -= p["interval"]
+            p["fn"](state, hero)
+        if p["t"] <= 0:
+            pulses.pop(key, None)
+
+
+def is_pulsing(hero, key) -> bool:
+    return key in hero.ability_state.get("_pulses", {})
+
+
+def toggle(ctx, key, on, off, active_cd=0.0, cancel_cd=0.0) -> bool:
+    """Run `off()` if the ability is currently on, else `on()`.
+
+    Returns True when it switched on. Handles the cooldown bookkeeping that
+    toggles otherwise write by hand — including the "nothing happened, so don't
+    charge a cooldown" refund that Kapre, Tiktik and Manananggal each spell out
+    with a bare `hero.cooldowns[K] = 0.0`.
+    """
+    hero = ctx.caster
+    toggles = hero.ability_state.setdefault("_toggles", set())
+    if key in toggles:
+        toggles.discard(key)
+        off()
+        hero.cooldowns[key] = cancel_cd
+        return False
+    if on() is False:          # the body reports it could not start
+        hero.cooldowns[key] = 0.0   # refund: nothing happened
+        return False
+    toggles.add(key)
+    hero.cooldowns[key] = active_cd
+    return True
+
+
+def is_toggled(hero, key) -> bool:
+    return key in hero.ability_state.get("_toggles", set())
 
 
 def summon(ctx, count, lifetime, target_id=None, spread=50.0,
@@ -344,7 +497,7 @@ def summon(ctx, count, lifetime, target_id=None, spread=50.0,
 
 
 def devour(ctx, range, buff_dur=0.0, hero_bite=0, dtype="physical",
-           **buff_mods) -> object | None:
+           source="devour", **buff_mods) -> object | None:
     """Consume the targeted enemy. A minion/neutral is instantly slain and the
     caster gains a timed buff (`buff_mods`); a hero instead takes `hero_bite`
     damage. Returns the target acted on, or None."""
@@ -361,7 +514,10 @@ def devour(ctx, range, buff_dur=0.0, hero_bite=0, dtype="physical",
             {"src": caster.entity_id, "tgt": target.entity_id,
              "amt": int(target.hp) + 1, "dtype": "true"})
         if buff_dur > 0 and buff_mods:
-            apply_effect(caster, buff_dur, source="aswang:devour", **buff_mods)
+            # `source` is a parameter rather than a literal: this is the shared
+            # skill library, so it must not name the one hero that uses it.
+            apply_effect(caster, buff_dur, source=source, state=ctx.state,
+                         **buff_mods)
     else:  # an enemy hero: a heavy bite instead of an instant kill
         ctx.state.damage_events.append(
             {"src": caster.entity_id, "tgt": target.entity_id,

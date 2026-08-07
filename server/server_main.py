@@ -15,10 +15,13 @@ from shared.config import (
     MAP_HEIGHT,
 )
 from shared.game_types import MsgType, GamePhase, Team
+from shared.protocol import PROTOCOL_VERSION
 from shared.config import ITEM_SLOTS, MAX_LEVEL
 from server.heroes import validate_all
 from server.items import (
-    validate_all as validate_items, get_item_def, item_catalog)
+    validate_all as validate_items, get_item_def, item_catalog,
+    purchase_plan, apply_inventory_change)
+from server.entity import Hero
 from server.game_state import GameState
 from server.net_handler import ClientHandler
 from server.systems import step, sandbox_set_level
@@ -58,6 +61,8 @@ class GameServer:
         self.state.sandbox = sandbox
         self.clients: dict[int, ClientHandler] = {}
         self._next_client_id = 1
+        self._loop_task: asyncio.Task | None = None
+        self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
         """Binds the listening socket and runs the server until cancelled.
@@ -81,9 +86,33 @@ class GameServer:
         print(f"[SERVER] Tick rate: {SERVER_TICK_RATE}/s | Map: {MAP_WIDTH}x{MAP_HEIGHT}")
         print("[SERVER] Waiting for players to connect...")
 
-        asyncio.create_task(self._game_loop())
+        self._server = server
+        # Keep a handle: the simulation loop used to be fire-and-forget, so
+        # there was no way to stop the server cleanly (or to tear it down in a
+        # test) and an exception inside it vanished silently.
+        self._loop_task = asyncio.create_task(self._game_loop())
         async with server:
             await server.serve_forever()
+
+    async def stop(self) -> None:
+        """Shut the server down: stop simulating, drop clients, close the port."""
+        if self._loop_task is not None:
+            self._loop_task.cancel()
+            try:
+                await self._loop_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._loop_task = None
+        for handler in list(self.clients.values()):
+            handler.close()
+        self.clients.clear()
+        if self._server is not None:
+            self._server.close()
+            try:
+                await self._server.wait_closed()
+            except Exception:
+                pass
+            self._server = None
 
     async def _on_connect(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -102,6 +131,7 @@ class GameServer:
         client_id = self._next_client_id
         self._next_client_id += 1
         handler = ClientHandler(client_id, reader, writer)
+        handler.start_reader()
         self.clients[client_id] = handler
         addr = writer.get_extra_info("peername")
         print(f"[SERVER] Client {client_id} connected from {addr}")
@@ -119,7 +149,7 @@ class GameServer:
             tick_start = time.monotonic()
 
             # Read inputs from all clients
-            await self._process_inputs()
+            self._process_inputs()
 
             # Remove disconnected clients
             self._cleanup_disconnected()
@@ -139,15 +169,14 @@ class GameServer:
             sleep_time = max(0, TICK_DURATION - elapsed)
             await asyncio.sleep(sleep_time)
 
-    async def _process_inputs(self) -> None:
-        """Reads and dispatches all pending messages from every client.
+    def _process_inputs(self) -> None:
+        """Dispatches all messages that arrived since the last tick.
 
-        Iterates over a snapshot of the client map (so handlers may safely
-        mutate it) and applies each decoded message to the game state.
+        Each connection has its own reader task filling a queue, so this only
+        drains what already arrived and never waits on a socket.
         """
         for client_id, handler in list(self.clients.items()):
-            messages = await handler.read_messages()
-            for msg in messages:
+            for msg in handler.take_messages():
                 self._handle_message(client_id, msg)
 
     def _handle_message(self, client_id: int, msg: dict) -> None:
@@ -197,17 +226,44 @@ class GameServer:
             msg: ``JOIN`` message; reads optional ``"name"`` and ``"hero"``.
         """
         name = msg.get("name") or f"Player{client_id}"
+        handler = self.clients.get(client_id)
+
+        # Version handshake: a stale client gets one clear sentence instead of
+        # desyncing or crashing on a field it does not understand.
+        client_version = msg.get("pv")
+        if client_version != PROTOCOL_VERSION:
+            reason = (
+                f"Version mismatch: this server speaks protocol "
+                f"v{PROTOCOL_VERSION}, your client speaks "
+                f"v{client_version if client_version is not None else '?'}. "
+                f"Please update the game.")
+            print(f"[SERVER] rejected client {client_id}: {reason}")
+            if handler is not None:
+                handler.send({"t": int(MsgType.REJECTED), "reason": reason,
+                              "server_pv": PROTOCOL_VERSION})
+                handler.connected = False
+            return
+
+        if handler is not None:
+            handler.player_name = name
+
         hero_choice = msg.get("hero")
         if hero_choice:
             self.state.set_hero_choice(client_id, hero_choice)
 
         if self.state.phase != GamePhase.WAITING:
-            # Late join: spawn immediately on the lighter team and bind.
-            team = self.state.assign_team()
-            hero = self.state.add_hero(client_id, name, team,
-                                       hero_id=hero_choice)
-            print(f"[SERVER] {name} late-joined Team {int(team)} as "
-                  f"{hero.hero_id}")
+            # An in-progress match: reclaim this player's hero if they are
+            # reconnecting, otherwise spawn them as a late joiner.
+            hero = self.state.reclaim_hero(client_id, name)
+            if hero is not None:
+                print(f"[SERVER] {name} reconnected as {hero.hero_id} "
+                      f"(level {hero.level}, {hero.gold}g)")
+            else:
+                team = self.state.assign_team()
+                hero = self.state.add_hero(client_id, name, team, 
+                                           hero_id=hero_choice)
+                print(f"[SERVER] {name} late-joined Team {int(team)} as "
+                      f"{hero.hero_id}")
             self._send_join_ack(client_id, hero)
             return
 
@@ -320,11 +376,11 @@ class GameServer:
             hero.cooldowns.clear()
             hero.item_cooldowns.clear()
             hero.tp_cooldown = 0.0
-            hero.mana = hero.max_mana
+            hero.mana = hero.effective_max_mana()
             self._sandbox_reply(client_id, "cooldowns refreshed")
         elif cmd == "heal":
-            hero.hp = hero.max_hp
-            hero.mana = hero.max_mana
+            hero.hp = hero.effective_max_hp()
+            hero.mana = hero.effective_max_mana()
             self._sandbox_reply(client_id, "healed to full")
         elif cmd == "kill":
             # Route through the normal death path (respawn timer, bounties skip).
@@ -342,8 +398,9 @@ class GameServer:
             elif len(hero.inventory) >= ITEM_SLOTS:
                 self._sandbox_reply(client_id, "inventory full")
             else:
-                hero.inventory.append(item.item_id)
-                item.apply(hero)
+                apply_inventory_change(
+                    hero, self.state,
+                    lambda: hero.inventory.append(item.item_id))
                 self._sandbox_reply(client_id, f"granted {item.name}")
         else:
             self._sandbox_reply(client_id, f"unknown command: /{cmd}")
@@ -467,7 +524,7 @@ class GameServer:
             self.state.level_ability(client_id, key)
 
     def _handle_buy_item(self, client_id: int, msg: dict) -> None:
-        """Buys an item: checks gold + inventory space, applies stat bonuses.
+        """Buys an item, consuming any components the hero already owns.
 
         Args:
             client_id: Server-assigned id of the buying client.
@@ -487,11 +544,23 @@ class GameServer:
             hero.gold -= item.cost
             hero.tp_charges += 1
             return
-        if len(hero.inventory) >= ITEM_SLOTS or hero.gold < item.cost:
+
+        plan = purchase_plan(hero, item)
+        if plan is None:
+            return  # no room for the result
+        price, component_slots = plan
+        if hero.gold < price:
             return
-        hero.gold -= item.cost
-        hero.inventory.append(item.item_id)
-        item.apply(hero)
+        hero.gold -= price
+
+        def buy():
+            # Consume the components (highest slot first so the earlier
+            # indices stay valid as we remove them), then add the result.
+            for slot in sorted(component_slots, reverse=True):
+                hero.inventory.pop(slot)
+            hero.inventory.append(item.item_id)
+
+        apply_inventory_change(hero, self.state, buy)
 
     def _handle_sell_item(self, client_id: int, msg: dict) -> None:
         """Sells the item in a given inventory slot for a partial refund.
@@ -509,10 +578,11 @@ class GameServer:
         item = get_item_def(hero.inventory[slot])
         if item is None:
             return
-        item.remove(hero)
         hero.gold += item.cost // 2  # 50% refund
-        hero.inventory.pop(slot)
-        hero.item_cooldowns.pop(item.item_id, None)
+        apply_inventory_change(hero, self.state, lambda: hero.inventory.pop(slot))
+        # Only forget the cooldown if no copy of the item remains.
+        if item.item_id not in hero.inventory:
+            hero.item_cooldowns.pop(item.item_id, None)
 
     def _handle_start_game(self, client_id: int, msg: dict) -> None:
         """Spawns lobby players and transitions to an active match.
@@ -550,8 +620,13 @@ class GameServer:
         """Removes clients that have dropped, freeing their hero and socket."""
         to_remove = [cid for cid, h in self.clients.items() if not h.connected]
         for cid in to_remove:
-            print(f"[SERVER] Client {cid} disconnected")
-            self.state.remove_hero(cid)
+            handler = self.clients[cid]
+            name = handler.player_name
+            print(f"[SERVER] Client {cid} disconnected"
+                  + (f" ({name}); hero parked for reconnect" if name else ""))
+            # During a match the hero is parked under the player's name so a
+            # brief drop does not cost them the game.
+            self.state.remove_hero(cid, keep_for_reconnect=name)
             self.state.remove_from_lobby(cid)
             handler = self.clients.pop(cid)
             handler.close()
@@ -595,22 +670,60 @@ class GameServer:
         events = self.state.combat_events
         per_team = {}
         for team in (Team.TEAM1, Team.TEAM2):
-            vis = self.state.visible_entity_ids_for(team)
-            ents = [e.to_snapshot() for e in self.state.entities.values()
-                    if e.entity_id in vis]
-            evs = [ev for ev in events
-                   if self._event_visible(ev, team, vis)]
+            # Reuse the line-of-sight already computed while stepping: it is
+            # the most expensive query in the game and was being run twice per
+            # frame per team (the cache is keyed on the simulation epoch, so it
+            # survives the tick counter incrementing before we get here).
+            vis = self.state.visible_ids_cached(team)
+            ents = {e.entity_id: e.to_snapshot(private=False)
+                    if isinstance(e, Hero) else e.to_snapshot()
+                    for e in self.state.entities.values()
+                    if e.entity_id in vis}
+            evs = [ev for ev in events if self._event_visible(ev, team, vis)]
             per_team[team] = (ents, evs)
+
         for client_id, handler in self.clients.items():
             hero = self.state.get_hero(client_id)
             if hero is not None and hero.team in per_team:
-                entities, evs = per_team[hero.team]
-            else:
-                entities, evs = self.state.build_snapshot(), events  # spectator
-            handler.send({**base, "entities": entities, "events": evs})
-        # Flush all writers
-        for handler in self.clients.values():
-            await handler.flush()
+                ents, evs = per_team[hero.team]
+                # Splice the owner's private HUD payload over its public entry.
+                ents = dict(ents)
+                ents[hero.entity_id] = hero.to_snapshot(private=True)
+            else:  # spectator: everything, no fog
+                ents = {e.entity_id: e.to_snapshot()
+                        for e in self.state.entities.values()}
+                evs = events
+            handler.send({**base, **self._delta_for(handler, ents),
+                          "events": evs})
+
+        # Flush every writer concurrently. Sequentially awaiting each drain
+        # meant the worst-connected player stalled the tick for everyone.
+        await asyncio.gather(*(h.flush() for h in self.clients.values()),
+                             return_exceptions=True)
+
+    def _delta_for(self, handler, ents: dict) -> dict:
+        """Reduce a full entity map to what actually changed for this client.
+
+        Most of a snapshot is unchanged frame to frame — static walls and trees
+        never move at all, and idle units repeat byte for byte. Sending only
+        entries that differ from what this client last received, plus the ids
+        that dropped out of view, is what makes a 5v5 fit a home uplink.
+
+        The first snapshot after connecting (or after a client reconnects) is a
+        full one, flagged so the client replaces its world rather than merging.
+        """
+        previous = handler.last_snapshot
+        if previous is None:
+            handler.last_snapshot = ents
+            return {"entities": list(ents.values()), "full": True}
+        changed = [snap for eid, snap in ents.items()
+                   if previous.get(eid) != snap]
+        gone = [eid for eid in previous if eid not in ents]
+        handler.last_snapshot = ents
+        out = {"entities": changed}
+        if gone:
+            out["gone"] = gone
+        return out
 
 
 def run_server() -> None:

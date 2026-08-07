@@ -2,6 +2,7 @@
 
 import unittest
 
+from server import bind
 from server.game_state import GameState
 from server.entity import Tree
 from server.systems import (
@@ -70,20 +71,18 @@ class TestKapre(unittest.TestCase):
         self._add_tree(5000, 5000, 5400, 5000)  # far away
         system_hero_hooks(self.state, 0.05)
         self.assertEqual(self.hero.effective_damage(), dmg0)
-        self.assertEqual(
-            sum(b.get("hp_regen_bonus", 0) for b in self.hero.buffs), 0)
+        self.assertEqual(self.hero.stats.bonus("hp_regen_bonus"), 0)
 
     def test_vigor_regen_near_tree(self):
         self._add_tree(900, 1000, 1300, 1000)
         system_hero_hooks(self.state, 0.05)
-        self.assertGreater(
-            sum(b.get("hp_regen_bonus", 0) for b in self.hero.buffs), 0)
+        self.assertGreater(self.hero.stats.bonus("hp_regen_bonus"), 0)
 
     # ----- R Dwell ----------------------------------------------------------
     def test_dwell_binds_stealths_and_grants_vision(self):
         tree = self._add_tree(1000, 1400, 1400, 1400)
         self._cast("R", tx=1100, ty=1400)  # click on the tree
-        self.assertIn("bind", self.hero.ability_state)
+        self.assertTrue(bind.is_bound(self.hero))
         self.assertTrue(self.hero.is_invisible())
         self.assertTrue(self.hero.has_unobstructed_vision())
         self.assertEqual(self.hero.bonus_vision(), R_VISION_BONUS)

@@ -4,6 +4,7 @@ import unittest
 from shared.config import DEFENSE_K
 from shared.game_types import Team
 from server.entity import Hero
+from server.status import make_status
 from server.game_state import GameState
 from server.systems import _apply_defense, _grant_xp, system_damage_death
 
@@ -58,13 +59,13 @@ class TestPerLevelGrowth(unittest.TestCase):
 class TestEffectiveStats(unittest.TestCase):
     def test_buffs_shift_defenses(self):
         hero = Hero(phys_def=20, sp_def=20)
-        hero.buffs.append({"phys_def": 15, "sp_def": -5, "remaining": 3})
+        hero.statuses.add(make_status(3.0, phys_def=15, sp_def=-5))
         self.assertEqual(hero.effective_phys_def(), 35)
         self.assertEqual(hero.effective_sp_def(), 15)
 
     def test_sp_atk_buff(self):
         hero = Hero(sp_atk=40)
-        hero.buffs.append({"sp_atk": 10, "remaining": 3})
+        hero.statuses.add(make_status(3.0, sp_atk=10))
         self.assertEqual(hero.effective_sp_atk(), 50)
 
 

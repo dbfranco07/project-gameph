@@ -19,7 +19,7 @@ from __future__ import annotations
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
 from server.entity import Wall
-from server.effects import make_effect
+from server.status import Frenzy
 from server import skills, terrain, bind
 
 # --- Tuning ----------------------------------------------------------------
@@ -49,7 +49,7 @@ W_VISION_BONUS = 400
 
 
 def _frenzied(hero) -> bool:
-    return any(b.get("frenzy") for b in hero.buffs)
+    return hero.statuses.has("frenzy")
 
 
 class Tiktik(HeroDef):
@@ -109,7 +109,7 @@ class Tiktik(HeroDef):
                                 extra={"disarm": True})
                 hero.cooldowns["W"] = W_JUMP_CD  # hopped to another wall
             else:
-                bind.release_bind(hero)          # open ground: climb out
+                bind.release_bind(hero, state)   # open ground: climb out
                 hero.cooldowns["W"] = W_REAL_CD
             return
         if wall is None:
@@ -127,8 +127,8 @@ class Tiktik(HeroDef):
              desc="For a few seconds the hook is spammable and hits harder and "
                   "farther.")
     def frenzy(ctx):
-        ctx.caster.buffs.append(
-            make_effect(FRENZY_DUR, source="tiktik:frenzy", frenzy=True))
+        ctx.caster.statuses.add(Frenzy(FRENZY_DUR, source="tiktik:frenzy"),
+                                ctx.state)
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod

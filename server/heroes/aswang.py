@@ -16,7 +16,7 @@ import random
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server.entity import Hero
 from server import skills
 
@@ -37,6 +37,42 @@ E_ALLY_RADIUS = 700
 
 R_DUR = 9.0
 R_DMG_BONUS, R_SPEED, R_LIFESTEAL = 55, 80, 0.25
+
+
+class Nightstalker(Aura):
+    """E passive: rank-scaled lifesteal, plus bonus damage while hunting alone.
+    Dynamic — the rank and the solitude check both move under it."""
+
+    status_id = "aswang:night"
+    __slots__ = ("_alone",)
+    dynamic = True
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        # Ally proximity needs the world; `condition` runs first and caches it.
+        self._alone = False
+
+    def condition(self, bearer, state) -> bool:
+        if not (bearer.alive and bearer.ability_rank("E") > 0):
+            return False
+        allies = [e for e in skills.allies_in_radius(
+            state, bearer.team, bearer.x, bearer.y, E_ALLY_RADIUS)
+            if isinstance(e, Hero) and e is not bearer] if state else []
+        self._alone = not allies
+        return True
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        if hero is None:
+            return {}
+        rank = hero.ability_rank("E")
+        if rank <= 0:
+            return {}
+        mods = {"lifesteal": E_LIFESTEAL_PER_RANK * rank}
+        if self._alone:
+            mods["dmg_bonus"] = E_LONE_DMG_PER_RANK * rank
+        return mods
 
 
 class Aswang(HeroDef):
@@ -62,6 +98,7 @@ class Aswang(HeroDef):
                   "take a heavy bite instead.")
     def devour(ctx):
         skills.devour(ctx, range=Q_RANGE, buff_dur=Q_BUFF_DUR,
+                      source="aswang:devour",
                       hero_bite=Q_HERO_BITE, dmg_bonus=Q_BUFF_DMG,
                       speed_bonus=Q_BUFF_SPEED)
 
@@ -70,8 +107,7 @@ class Aswang(HeroDef):
                   "(phase through terrain, slow on hit).")
     def shapeshift(ctx):
         hero = ctx.caster
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") != "aswang:form"]
+        hero.statuses.remove_source("aswang:form", ctx.state)
         form = random.choice(("dog", "pig", "snake"))
         if form == "dog":
             mods = {"speed_bonus": DOG_SPEED, "atkspd_pct": DOG_ATKSPD}
@@ -81,7 +117,8 @@ class Aswang(HeroDef):
         else:  # snake
             mods = {"phase": True, "attack_slow_pct": SNAKE_SLOW,
                     "attack_slow_dur": SNAKE_SLOW_DUR}
-        hero.buffs.append(make_effect(FORM_DUR, source="aswang:form", **mods))
+        hero.statuses.add(make_status(FORM_DUR, source="aswang:form", **mods),
+                          ctx.state)
         hero.ability_state["form"] = form
 
     @ability("E", "Nightstalker", cd=0, mana=0, cast=CastType.PASSIVE,
@@ -94,28 +131,17 @@ class Aswang(HeroDef):
              desc="Reveal your winged true form: fly over terrain with bonus "
                   "damage and heavy lifesteal.")
     def true_aswang(ctx):
-        ctx.caster.buffs.append(
-            make_effect(R_DUR, source="aswang:true", phase=True,
+        ctx.caster.statuses.add(
+            make_status(R_DUR, source="aswang:true", phase=True,
                         dmg_bonus=R_DMG_BONUS, speed_bonus=R_SPEED,
-                        lifesteal=R_LIFESTEAL))
+                        lifesteal=R_LIFESTEAL), ctx.state)
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
     def on_tick(state, hero, dt):
-        if hero.ability_state.get("form") and not any(
-                b.get("source") == "aswang:form" for b in hero.buffs):
+        if (hero.ability_state.get("form")
+                and not hero.statuses.by_source("aswang:form")):
             hero.ability_state.pop("form", None)
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") != "aswang:night"]
-        if not hero.alive:
-            return
-        erank = hero.ability_rank("E")
-        if erank <= 0:
-            return
-        mods = {"lifesteal": E_LIFESTEAL_PER_RANK * erank}
-        allies = [e for e in skills.allies_in_radius(
-            state, hero.team, hero.x, hero.y, E_ALLY_RADIUS)
-            if isinstance(e, Hero) and e is not hero]
-        if not allies:
-            mods["dmg_bonus"] = E_LONE_DMG_PER_RANK * erank
-        hero.buffs.append(make_effect(0.5, source="aswang:night", **mods))
+        # Attach the passive once; it tracks rank and solitude itself.
+        if hero.statuses.get("aswang:night") is None:
+            hero.statuses.add(Nightstalker(), state)

@@ -310,6 +310,15 @@ def _projectiles() -> int:
     pygame.draw.line(s, (90, 130, 180), (25, 16), (31, 16), 2)
     sl.save(s, "projectiles", "lastikman_q", "fly")
     n += 1
+    # Lastikman's Grapple (W): a hooked anchor on a taut band.
+    s = sl.surf(40)
+    pygame.draw.line(s, (150, 120, 100), (4, 24), (22, 18), 3)
+    pygame.draw.circle(s, (170, 175, 185), (26, 18), 7)
+    pygame.draw.circle(s, (110, 115, 125), (26, 18), 7, 2)
+    pygame.draw.line(s, (200, 205, 215), (26, 11), (33, 16), 3)
+    pygame.draw.line(s, (200, 205, 215), (26, 25), (33, 20), 3)
+    sl.save(s, "projectiles", "lastikman_w", "fly")
+    n += 1
     return n
 
 

@@ -37,7 +37,6 @@ from shared.config import (
     JUNGLE_CAMPS,
     NEUTRAL_RESPAWN,
     BASIC_PROJECTILE_RADIUS,
-    DEFENSE_K,
     RUNES,
     MEET_POINTS,
     SPAWN_ZONE_RADIUS,
@@ -54,7 +53,10 @@ from server.entity import (
     Structure, Projectile, HookProjectile, SplitBody, RuneCreature,
     SummonedMinion, Wall, Tree, Obstacle
 )
-from server.effects import make_effect
+from server.damage import DamageEvent, apply_defense, resolve
+from server.status import (
+    RuneCooldown, RuneDoubleDamage, RuneHaste, RuneRegen, Slow, Stun,
+)
 from server.bind import release_bind
 from server.game_state import GameState, enemy_team
 from server.heroes.base import CastContext
@@ -110,7 +112,12 @@ def find_attack_target(state: GameState, attacker):
            if isinstance(attacker, Hero) else None)
     best = None
     best_key = None
-    for e in state.entities.values():
+    # Only entities that could possibly be in range. The grid returns a
+    # superset; the exact distance test below is unchanged. This was a full
+    # scan of every entity, per attacker, per tick — the simulation's single
+    # largest cost by a wide margin.
+    reach = attacker.effective_attack_range()
+    for e in state.nearby(attacker.x, attacker.y, reach):
         if e is attacker or not e.alive:
             continue
         if e.team == attacker.team:
@@ -154,10 +161,7 @@ def system_status(state: GameState, dt: float) -> None:
                 hero.item_cooldowns[key] = max(0.0, hero.item_cooldowns[key] - dt)
         if hero.tp_cooldown > 0:
             hero.tp_cooldown = max(0.0, hero.tp_cooldown - dt)
-        if hero.buffs:
-            for b in hero.buffs:
-                b["remaining"] -= dt
-            hero.buffs[:] = [b for b in hero.buffs if b["remaining"] > 0]
+        hero.statuses.tick(dt, state)
         if hero.reveal_timer > 0:
             hero.reveal_timer = max(0.0, hero.reveal_timer - dt)
         if hero.cast_timer > 0:
@@ -167,29 +171,27 @@ def system_status(state: GameState, dt: float) -> None:
     # Non-hero units (minions, neutrals) can carry debuffs too (e.g. a hook's
     # stun-then-slow); tick those the same way.
     for e in state.entities.values():
-        if isinstance(e, Hero) or not e.buffs:
+        if isinstance(e, Hero) or not e.statuses:
             continue
-        for b in e.buffs:
-            b["remaining"] -= dt
-        e.buffs[:] = [b for b in e.buffs if b["remaining"] > 0]
+        e.statuses.tick(dt, state)
 
 
 def _regen(hero: Hero, dt: float) -> None:
     """Accrue slow hp/mana regen (plus temporary buff bonuses), applying whole
     points as the carry fills."""
-    hp_regen = hero.hp_regen + sum(b.get("hp_regen_bonus", 0) for b in hero.buffs)
-    mana_regen = hero.mana_regen + sum(b.get("mana_regen_bonus", 0) for b in hero.buffs)
-    if hero.hp < hero.max_hp and hp_regen > 0:
+    hp_regen = hero.stats.total("hp_regen_bonus", hero.hp_regen)
+    mana_regen = hero.stats.total("mana_regen_bonus", hero.mana_regen)
+    if hero.hp < hero.effective_max_hp() and hp_regen > 0:
         hero.regen_hp_acc += hp_regen * dt
         whole = int(hero.regen_hp_acc)
         if whole:
-            hero.hp = min(hero.max_hp, hero.hp + whole)
+            hero.hp = min(hero.effective_max_hp(), hero.hp + whole)
             hero.regen_hp_acc -= whole
-    if hero.mana < hero.max_mana and mana_regen > 0:
+    if hero.mana < hero.effective_max_mana() and mana_regen > 0:
         hero.regen_mana_acc += mana_regen * dt
         whole = int(hero.regen_mana_acc)
         if whole:
-            hero.mana = min(hero.max_mana, hero.mana + whole)
+            hero.mana = min(hero.effective_max_mana(), hero.mana + whole)
             hero.regen_mana_acc -= whole
 
 
@@ -319,28 +321,42 @@ RUNE_HASTE_SPEED = 220         # near-max move speed bonus
 RUNE_BUFF_TYPES = ("haste", "double_damage", "cdr_50", "regen_10x")
 
 
-def apply_rune_buff(hero: Hero, kind: str) -> None:
+def _rune_haste(hero):
+    return RuneHaste(RUNE_BUFF_DURATION, source="rune:haste",
+                     speed_bonus=RUNE_HASTE_SPEED)
+
+
+def _rune_double_damage(hero):
+    return RuneDoubleDamage(RUNE_BUFF_DURATION, source="rune:double_damage",
+                            dmg_mult=2.0)
+
+
+def _rune_cdr(hero):
+    return RuneCooldown(RUNE_BUFF_DURATION, source="rune:cdr_50", cd_mult=0.5)
+
+
+def _rune_regen(hero):
+    # 10x current regen. The status cancels itself when hit — see RuneRegen.
+    return RuneRegen(RUNE_REGEN_DURATION, source="rune:regen_10x",
+                     hp_regen_bonus=hero.hp_regen * 9.0,
+                     mana_regen_bonus=hero.mana_regen * 9.0)
+
+
+# Each rune names the status it drops. Adding a rune is a new entry here plus
+# its status class, rather than another branch in a hardcoded if/elif chain.
+RUNE_BUILDERS = {
+    "haste": _rune_haste,
+    "double_damage": _rune_double_damage,
+    "cdr_50": _rune_cdr,
+    "regen_10x": _rune_regen,
+}
+
+
+def apply_rune_buff(hero: Hero, kind: str, state=None) -> None:
     """Grant a hero the timed buff a slain rune drops."""
-    if kind == "haste":
-        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, 
-                                      source="rune:haste",
-                                      speed_bonus=RUNE_HASTE_SPEED))
-    elif kind == "double_damage":
-        hero.buffs.append(make_effect(RUNE_BUFF_DURATION,
-                                      source="rune:double_damage", 
-                                      dmg_mult=2.0))
-    elif kind == "cdr_50":
-        hero.buffs.append(make_effect(RUNE_BUFF_DURATION, 
-                                      source="rune:cdr_50",
-                                      cd_mult=0.5))
-    elif kind == "regen_10x":
-        # 10x current regen, but the buff fizzles the moment the hero is hit.
-        eff = make_effect(RUNE_REGEN_DURATION, 
-                          source="rune:regen_10x",
-                          hp_regen_bonus=hero.hp_regen * 9.0,
-                          mana_regen_bonus=hero.mana_regen * 9.0)
-        eff["cancel_on_hit"] = True
-        hero.buffs.append(eff)
+    build = RUNE_BUILDERS.get(kind)
+    if build is not None:
+        hero.statuses.add(build(hero), state)
 
 
 def system_runes(state: GameState, dt: float) -> None:
@@ -553,7 +569,7 @@ def _block_hero_against_units(state: GameState, hero: Hero) -> None:
     the component of motion into the blocker, so the hero stops at it but can
     still slide sideways/backwards and never gets permanently stuck — and because
     only the mover adjusts itself, it never pushes the blocker."""
-    if hero.ability_state.get("bind"):
+    if hero.statuses.has("bind"):
         return  # bound inside a tree/wall: not body-blocked by other units
     for other in state.entities.values():
         if other is hero or not other.alive:
@@ -579,11 +595,10 @@ def system_collision(state: GameState, dt: float) -> None:
     for u in units:
         for s in structs:
             _eject_circle(u, s.x, s.y, s.radius)
-        # A Manananggal's detached upper half flies over walls and trees; a hero
-        # bound inside a tree/wall (Kapre R / Tiktik W) likewise ignores it.
-        ignores_terrain = isinstance(u, Hero) and (
-            u.ability_state.get("split") or u.ability_state.get("bind")
-            or any(b.get("phase") for b in u.buffs))
+        # Anything asserting the `phase` flag ignores walls and trees. The split
+        # and bind statuses both declare it, so this system no longer needs to
+        # know which hero mechanics happen to grant terrain phasing.
+        ignores_terrain = u.statuses.has("phase")
         if not ignores_terrain:
             for cap in obstacles:
                 _push_out_of_capsule(u, cap)
@@ -637,16 +652,25 @@ def system_ability_cast(state: GameState, dt: float) -> None:
         caster = state.entities.get(cast["caster"])
         if not isinstance(caster, Hero) or not caster.alive:
             continue
-        if caster.is_silenced():
-            continue  # stun or silence: no abilities (covers is_stunned too)
         key = cast["key"]
         # Item actives use slot keys "I1".."I6"; hero abilities use "Q".."R".
-        if isinstance(key, str) and key.startswith("I") and key[1:].isdigit():
-            _cast_item_active(state, caster, cast, int(key[1:]) - 1)
-            continue
+        # An item with more than one active addresses the rest as "I3#1", "I3#2"
+        # — plain "I3" always means that slot's first active, so existing
+        # clients are unaffected.
+        if isinstance(key, str) and key.startswith("I"):
+            slot_part, _, idx_part = key[1:].partition("#")
+            if slot_part.isdigit() and (idx_part == "" or idx_part.isdigit()):
+                # Item actives do their own crowd-control gating: an item is
+                # not a spell, so a silence does not stop it.
+                _cast_item_active(state, caster, cast, int(slot_part) - 1,
+                                  int(idx_part) if idx_part else 0)
+                continue
         if key == "TP":  # dedicated TP-scroll slot (Z)
-            _cast_tp(state, caster, cast)
+            if not caster.is_silenced():
+                _cast_tp(state, caster, cast)
             continue
+        if caster.is_silenced():
+            continue  # stun or silence: no abilities (covers is_stunned too)
         ab = caster.ability_by_key(cast["key"])
         if ab is None or caster.hero_def is None:
             continue
@@ -676,21 +700,27 @@ def system_ability_cast(state: GameState, dt: float) -> None:
     state.ability_casts.clear()
 
 
-def _cast_item_active(state: GameState, caster: Hero, cast: dict, slot: int) -> None:
-    """Cast the active of the item in the given inventory slot, if any."""
+def _cast_item_active(state: GameState, caster: Hero, cast: dict, slot: int,
+                      active_index: int = 0) -> None:
+    """Cast one of the actives of the item in the given inventory slot."""
     from server.items import get_item_def
     if slot < 0 or slot >= len(caster.inventory):
         return
     item = get_item_def(caster.inventory[slot])
-    if item is None or item.active is None:
+    if item is None or active_index >= len(item.actives) or active_index < 0:
         return
-    active = item.active
-    if caster.item_cooldowns.get(item.item_id, 0.0) > 0:
+    active = item.actives[active_index]
+    if not active.usable_under_cc(caster):
+        return
+    # Each active has its own cooldown; the first keeps the bare item id so
+    # existing HUD cooldown lookups keep working.
+    cd_key = item.item_id if active_index == 0 else f"{item.item_id}#{active_index}"
+    if caster.item_cooldowns.get(cd_key, 0.0) > 0:
         return
     if caster.mana < active.mana:
         return
     caster.mana -= active.mana
-    caster.item_cooldowns[item.item_id] = active.cd * caster.cooldown_mult()
+    caster.item_cooldowns[cd_key] = active.cd * caster.cooldown_mult()
     ctx = CastContext(state, caster,
                       cast.get("tx", 0.0), cast.get("ty", 0.0), cast.get("tid"))
     active.fn(ctx)
@@ -925,12 +955,12 @@ def _resolve_hook(state: GameState, proj: HookProjectile, hit) -> None:
                             "speed": proj.pull_speed, "stop": proj.stop_dist})
     if isinstance(hit, (Hero, Minion)):
         if proj.stun_dur > 0:
-            hit.buffs.append(make_effect(proj.stun_dur, stun=True))
+            hit.statuses.add(Stun(proj.stun_dur), state)
         if proj.slow_dur > 0 and proj.slow_pct > 0:
             # Slow spans the stun + the after-window, so it lingers once the
             # stun ends ("stunned, then slowed").
-            hit.buffs.append(
-                make_effect(proj.stun_dur + proj.slow_dur, slow_pct=proj.slow_pct))
+            hit.statuses.add(
+                Slow(proj.stun_dur + proj.slow_dur, proj.slow_pct), state)
 
 
 # ---------------------------------------------------------------------------
@@ -1006,11 +1036,11 @@ def system_combat(state: GameState, dt: float) -> None:
                 {"src": e.entity_id, "tgt": target.entity_id, "amt": dmg,
                  "basic": True}
             )
-            # On-hit movement slow (e.g. Kapre attacking from the trees).
-            if isinstance(e, Hero) and isinstance(target, Hero):
-                pct, slow_dur = e.attack_slow()
-                if pct > 0:
-                    target.buffs.append(make_effect(slow_dur, slow_pct=pct))
+            # On-hit riders (e.g. Kapre's slow when attacking from the trees)
+            # fire from the damage pipeline's on-hit stage, so they land with
+            # the damage rather than at swing time.
+        if isinstance(e, Hero):
+            fire_hero_hook(e, "on_attack", state, e, target)
         # Attacking breaks stealth for a brief moment.
         if isinstance(e, Hero) and e.is_invisible():
             e.reveal_timer = REVEAL_TIME
@@ -1081,20 +1111,12 @@ def _grant_xp(hero: Hero, xp: int) -> None:
         hero.phys_def += hero.phys_def_per_level
         hero.sp_def += hero.sp_def_per_level
         hero.skill_points += 1  # one skill point per level
+        fire_hero_hook(hero, "on_level", None, hero, hero.level)
 
 
-def _apply_defense(target, raw: float, dtype: str) -> int:
-    """Reduce raw damage by the target's matching defense via an armor curve:
-    reduction = DEF / (DEF + DEFENSE_K). 'true' damage ignores defense."""
-    if dtype == "true":
-        return int(raw)
-    if dtype == "special":
-        defense = target.effective_sp_def()
-    else:  # physical (default)
-        defense = target.effective_phys_def()
-    if defense <= 0:
-        return int(raw)
-    return int(raw * DEFENSE_K / (defense + DEFENSE_K))
+# The armor curve now lives with the rest of the damage pipeline; re-exported
+# here because callers (and tests) have always reached for it through systems.
+_apply_defense = apply_defense
 
 
 def system_damage_death(state: GameState, dt: float) -> None:
@@ -1103,52 +1125,22 @@ def system_damage_death(state: GameState, dt: float) -> None:
         if tgt is None or not tgt.alive:
             continue
         if "heal" in ev:
-            tgt.hp = min(tgt.max_hp, tgt.hp + ev["heal"])
+            tgt.hp = min(tgt.effective_max_hp(), tgt.hp + ev["heal"])
             continue
         if isinstance(tgt, Wall):
             continue  # permanent terrain; no damage source can affect it
         if isinstance(tgt, Structure) and not state.is_structure_vulnerable(tgt):
             continue
-        if isinstance(tgt, Hero) and tgt.is_invulnerable():
-            continue  # invulnerable (e.g. split upper half) takes no damage
         src = state.entities.get(ev.get("src"))
         dtype = ev.get("dtype", "physical")
-        is_basic = ev.get("basic", False)
-        attacker = src if isinstance(src, Hero) else None
 
-        # Evasion: dodge incoming basic physical attacks, unless the attacker has
-        # true-strike. Abilities and non-physical damage can't be dodged.
-        if (isinstance(tgt, Hero) and is_basic and dtype == "physical"
-                and tgt.effective_evasion() > 0
-                and not (attacker is not None and attacker.has_true_strike())):
-            if random.random() < tgt.effective_evasion():
-                state.combat_events.append(
-                    {"k": "miss", "x": round(tgt.x, 1), "y": round(tgt.y, 1),
-                     "eid": tgt.entity_id})
-                continue
-
-        # Critical strike: basic attacks always roll; abilities only if they opt
-        # in with "crit_ok". Multiplies the pre-mitigation amount.
-        raw = ev["amt"]
-        crit = False
-        if attacker is not None and (is_basic or ev.get("crit_ok")):
-            if random.random() < attacker.effective_crit_chance():
-                crit = True
-                raw = int(raw * attacker.effective_crit_mult())
-
-        amt = _apply_defense(tgt, raw, dtype)
-        if isinstance(tgt, Hero):
-            amt = int(amt * (1.0 - tgt.damage_reduction()))  # flat mitigation
-            amt = tgt.absorb_with_shield(amt)                # soak with shields
-        if isinstance(tgt, SplitBody):
-            amt = int(amt * tgt.dmg_mult)  # the lower body takes amplified damage
-        tgt.hp -= amt
-
-        # Lifesteal: heal the attacker for a fraction of the damage dealt.
-        if attacker is not None and amt > 0 and attacker.alive:
-            ls = attacker.effective_lifesteal()
-            if ls > 0:
-                attacker.hp = min(attacker.max_hp, attacker.hp + int(amt * ls))
+        # Everything from evasion through on-hit procs lives in the pipeline.
+        resolved = resolve(DamageEvent(
+            state=state, target=tgt, source=src, amount=ev["amt"], dtype=dtype,
+            is_basic=ev.get("basic", False), crit_ok=bool(ev.get("crit_ok"))))
+        if resolved.cancelled:
+            continue
+        amt = resolved.amount
 
         # Render-only hit event: damage number + flash + lunge/recoil on the
         # client. Gated to hero-involved trades so creep fights don't flood the
@@ -1157,12 +1149,8 @@ def system_damage_death(state: GameState, dt: float) -> None:
                         or isinstance(src, Hero)):
             state.combat_events.append({
                 "k": "hit", "x": round(tgt.x, 1), "y": round(tgt.y, 1),
-                "amt": int(amt), "eid": tgt.entity_id, "crit": crit,
+                "amt": int(amt), "eid": tgt.entity_id, "crit": resolved.crit,
                 "src": ev.get("src"), "dt": dtype})
-        # Effects that fizzle the moment their bearer takes damage (e.g. the
-        # rune regen buff) are dropped here.
-        if isinstance(tgt, Hero) and amt > 0:
-            tgt.buffs[:] = [b for b in tgt.buffs if not b.get("cancel_on_hit")]
         if isinstance(tgt, Minion) and tgt.is_neutral:
             _provoke_camp(state, tgt.camp_id)  # whole camp aggros when one is hit
         if tgt.hp <= 0:
@@ -1244,29 +1232,37 @@ def _kill(state: GameState, victim, src_id) -> None:
     victim.hp = 0
     killer = state.entities.get(src_id) if src_id is not None else None
 
+    # On-kill hooks fire before the bounty/cleanup below, so a proc that keys
+    # off the victim (a stacking item, a hero passive) still sees it intact.
+    if killer is not None and killer is not victim:
+        statuses = getattr(killer, "statuses", None)
+        if statuses is not None:
+            statuses.on_kill(victim, state)
+        fire_hero_hook(killer, "on_kill", state, killer, victim)
+    fire_hero_hook(victim, "on_death", state, victim, killer)
+
     # Destroying a Manananggal's detached lower body kills the owning hero.
     if isinstance(victim, SplitBody):
         owner = state.entities.get(victim.owner_id)
         if isinstance(owner, Hero) and owner.alive:
-            owner.ability_state.pop("split", None)
+            # Drop the split without firing its teardown: the owner is dying,
+            # so it must not be handed a recombine regen burst on the way out.
+            for status in owner.statuses.all_of("split"):
+                status.body_id = 0
+            owner.statuses.remove_id("split", state)
             _kill(state, owner, src_id)
         return
 
     if isinstance(victim, Hero):
-        # Dying while split: clean up the detached body too.
-        st = victim.ability_state.pop("split", None)
-        if st is not None:
-            body = state.entities.get(st.get("body_id"))
-            if body is not None:
-                body.alive = False
-                state.entities.pop(body.entity_id, None)
-        release_bind(victim)  # dying inside a tree/wall drops the bind
+        # Dying while split: ending the status cleans up the detached body.
+        victim.statuses.remove_id("split", state)
+        release_bind(victim, state)  # dying inside a tree/wall drops the bind
         victim.reveal_timer = 0.0
         victim.respawn_timer = HERO_RESPAWN_BASE + victim.level * HERO_RESPAWN_PER_LEVEL
         victim.target_x = victim.target_y = None
         victim.attack_move = False
         victim.attack_move_x = victim.attack_move_y = None
-        victim.buffs.clear()
+        victim.statuses.clear(state)
         kteam = killer.team if killer is not None else None
         if kteam is not None and kteam != victim.team and kteam in state.team_kills:
             state.team_kills[kteam] += 1
@@ -1286,13 +1282,14 @@ def _kill(state: GameState, victim, src_id) -> None:
                 killer.minion_kills += 1
         # A slain rune also grants its killer a timed buff.
         if isinstance(victim, RuneCreature) and isinstance(killer, Hero):
-            apply_rune_buff(killer, victim.rune_buff)
+            apply_rune_buff(killer, victim.rune_buff, state)
     elif isinstance(victim, Structure):
         if isinstance(killer, Hero):
             killer.gold += STRUCTURE_GOLD
             _reward(state, killer, "gold", STRUCTURE_GOLD)
     elif isinstance(victim, Tree):
         victim.respawn_timer = TREE_RESPAWN
+        state.invalidate_terrain()   # a felled tree stops blocking
 
 
 # ---------------------------------------------------------------------------
@@ -1320,13 +1317,25 @@ def system_summons(state: GameState, dt: float) -> None:
         state.entities.pop(eid, None)
 
 
+def fire_hero_hook(hero, name: str, *args) -> None:
+    """Call a hero definition's optional lifecycle hook, if it defines one.
+
+    One dispatcher for every hook in `HeroDef.HERO_HOOKS`, so adding a hook is a
+    method on a hero rather than a new branch in whichever system fires it.
+    """
+    hd = getattr(hero, "hero_def", None)
+    if hd is None:
+        return
+    hook = getattr(hd, name, None)
+    if hook is not None:
+        hook(*args)
+
+
 def system_hero_hooks(state: GameState, dt: float) -> None:
     """Run each hero definition's optional on_tick hook (e.g. the Manananggal
     split leash + auto-recombine). Runs after movement so position clamps stick."""
     for hero in state.heroes():
-        hd = hero.hero_def
-        if hd is not None and getattr(hd, "on_tick", None) is not None:
-            hd.on_tick(state, hero, dt)
+        fire_hero_hook(hero, "on_tick", state, hero, dt)
 
 
 # ---------------------------------------------------------------------------
@@ -1354,8 +1363,8 @@ def system_spawn_zone(state: GameState, dt: float) -> None:
             if math.hypot(e.x - cx, e.y - cy) > SPAWN_ZONE_RADIUS:
                 continue
             if isinstance(e, Hero) and e.team == team:
-                e.hp = min(e.max_hp, e.hp + heal)
-                e.mana = min(e.max_mana, e.mana + mana)
+                e.hp = min(e.effective_max_hp(), e.hp + heal)
+                e.mana = min(e.effective_max_mana(), e.mana + mana)
             elif e.team != team and e.team != Team.NONE:
                 state.damage_events.append(
                     {"src": None, "tgt": e.entity_id, "amt": burn, "dtype": "true"})
@@ -1366,11 +1375,15 @@ def system_spawn_zone(state: GameState, dt: float) -> None:
 # ---------------------------------------------------------------------------
 
 def system_economy(state: GameState, dt: float) -> None:
+    """Passive gold gain for all heroes, plus any other per-tick economy
+    effects. This ensures that gold is earned every second, not every tick.
+    """
     state.econ_accum += dt
     while state.econ_accum >= 1.0:
         state.econ_accum -= 1.0
         for hero in state.heroes():
             if hero.alive:
+                # dead heroes do not earn passive gold
                 hero.gold += int(PASSIVE_GOLD_PER_SEC)
 
 
@@ -1386,13 +1399,14 @@ def system_respawn(state: GameState, dt: float) -> None:
         if hero.respawn_timer <= 0:
             spawn = SPAWN_POSITIONS[int(hero.team)]
             hero.x, hero.y = spawn[0], spawn[1]
-            hero.hp = hero.max_hp
-            hero.mana = hero.max_mana
+            hero.hp = hero.effective_max_hp()
+            hero.mana = hero.effective_max_mana()
             hero.alive = True
             hero.respawn_timer = 0.0
             hero.target_x = hero.target_y = None
             hero.attack_move = False
             hero.attack_move_x = hero.attack_move_y = None
+            fire_hero_hook(hero, "on_spawn", state, hero)
 
 
 def system_tree_respawn(state: GameState, dt: float) -> None:
@@ -1403,8 +1417,9 @@ def system_tree_respawn(state: GameState, dt: float) -> None:
         e.respawn_timer -= dt
         if e.respawn_timer <= 0:
             e.alive = True
-            e.hp = e.max_hp
+            e.hp = e.effective_max_hp()
             e.respawn_timer = 0.0
+            state.invalidate_terrain()   # it blocks walking and sight again
 
 
 # ---------------------------------------------------------------------------
@@ -1438,6 +1453,8 @@ def _finish(state: GameState, winner: Team) -> None:
 def step(state: GameState, dt: float) -> None:
     """Run one full simulation tick in dependency order."""
     state.combat_events.clear()  # one-shot reward popups for this tick
+    state.rebuild_spatial_index()  # cheap; makes every radius query bounded
+    state._vis_epoch += 1          # line-of-sight is recomputed once per tick
     system_clock(state, dt)
     system_status(state, dt)
     system_spawn_creeps(state, dt)

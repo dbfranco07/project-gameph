@@ -105,6 +105,22 @@ def ability(key: str, name: str, cd: float, mana: int,
     return deco
 
 
+#: Every optional lifecycle hook a hero may define, in dispatch order. The
+#: single source of truth: the systems that fire them and the art validator that
+#: scans them both read this rather than each keeping their own list.
+HERO_HOOKS = (
+    "on_tick",
+    "on_ability_cast",
+    "on_spawn",
+    "on_death",
+    "on_level",
+    "on_attack",
+    "on_hit_dealt",
+    "on_damage_taken",
+    "on_kill",
+)
+
+
 class HeroDef:
     """Base class for a hero definition. Subclass it, one file per hero."""
 
@@ -148,13 +164,29 @@ class HeroDef:
     # Populated by __init_subclass__ from decorated methods.
     abilities: list[Ability] = []
 
-    # Optional lifecycle hooks (override in a hero as @staticmethod):
-    #   on_ability_cast(ctx, key) -> called after any active ability this hero
-    #       casts (drives "on skill use" passives).
-    #   on_tick(state, hero, dt)  -> called every simulation tick for stateful
-    #       heroes (e.g. the Manananggal split: leash + auto-recombine).
-    on_ability_cast = None
+    # Optional lifecycle hooks. Override in a hero as a @staticmethod; any left
+    # as None are skipped, so a hero only pays for the ones it uses. All are
+    # dispatched generically (see `systems.system_hero_hooks` and the damage
+    # pipeline), so a new mechanic never needs a branch in the core.
+    #
+    #   on_tick(state, hero, dt)          every simulation tick
+    #   on_ability_cast(ctx, key)         after this hero casts an active
+    #   on_spawn(state, hero)             on first spawn and every respawn
+    #   on_death(state, hero, killer)     when this hero dies
+    #   on_level(state, hero, level)      after gaining a level
+    #   on_attack(state, hero, target)    when an auto-attack lands
+    #   on_hit_dealt(state, hero, victim, amount)     after dealing damage
+    #   on_damage_taken(state, hero, event)           before damage is applied
+    #   on_kill(state, hero, victim)      when this hero lands a killing blow
     on_tick = None
+    on_ability_cast = None
+    on_spawn = None
+    on_death = None
+    on_level = None
+    on_attack = None
+    on_hit_dealt = None
+    on_damage_taken = None
+    on_kill = None
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)

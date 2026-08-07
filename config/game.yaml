@@ -32,6 +32,10 @@ vision_radius: 700           # hero sight radius
 minion_vision_radius: 400
 tower_vision_radius: 600
 
+# Grid
+grid_cell: 512                # world units per grid cell
+grid_margin: 200.0              # extra radius to search for nearby entities
+
 # Colors (RGB) -> exposed as COLOR_<NAME> tuples
 colors:
   bg: [40, 60, 30]

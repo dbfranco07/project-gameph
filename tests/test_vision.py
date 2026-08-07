@@ -4,7 +4,7 @@ import unittest
 
 from server.game_state import GameState
 from server.entity import Hero, MeleeMinion, NeutralMinion, Wall
-from server.systems import find_attack_target, system_combat
+from server.systems import find_attack_target, step, system_combat
 from shared.game_types import Team, EntityType
 from shared.config import HERO_VISION_RADIUS
 
@@ -91,11 +91,25 @@ class TestFogGatesCombat(unittest.TestCase):
         self.state.entities[mob.entity_id] = mob
         self.assertIs(find_attack_target(self.state, mob), self.me)
 
-    def test_visible_ids_cached_per_tick(self):
+    def test_visible_ids_cached_per_simulation_step(self):
+        # The cache is keyed on a simulation epoch, not on `tick`. The server
+        # increments `tick` between running the systems and broadcasting, so a
+        # tick-keyed cache always missed in the broadcast and recomputed every
+        # team's line-of-sight a second time — the most expensive query there is.
         s1 = self.state.visible_ids_cached(Team.TEAM1)
         self.assertIs(self.state.visible_ids_cached(Team.TEAM1), s1)
         self.state.tick += 1
+        self.assertIs(self.state.visible_ids_cached(Team.TEAM1), s1,
+                      "bumping tick alone must not invalidate")
+        step(self.state, 0.05)   # a real step starts a new epoch
         self.assertIsNot(self.state.visible_ids_cached(Team.TEAM1), s1)
+
+    def test_broadcast_reuses_the_vision_computed_during_the_step(self):
+        # The whole point of the epoch key: after stepping, asking again is free.
+        step(self.state, 0.05)
+        during = self.state.visible_ids_cached(Team.TEAM1)
+        self.state.tick += 1          # what the server loop does before sending
+        self.assertIs(self.state.visible_ids_cached(Team.TEAM1), during)
 
 
 if __name__ == "__main__":

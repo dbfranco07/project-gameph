@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
@@ -108,8 +108,8 @@ class Pedro(HeroDef):
     def red(ctx):
         if not _gated(ctx, "Q"):
             return
-        ctx.caster.buffs.append(make_effect(RED_CD, source="pedro:red",
-                                            dmg_bonus=RED_DMG))
+        ctx.caster.statuses.add(make_status(RED_CD, source="pedro:red",
+                                            dmg_bonus=RED_DMG), ctx.state)
 
     @ability("W", "Orange Mutya: Tibay", cd=ORANGE_CD, mana=55,
              cast=CastType.NONE, max_rank=2,
@@ -118,9 +118,9 @@ class Pedro(HeroDef):
     def orange(ctx):
         if not _gated(ctx, "W"):
             return
-        ctx.caster.buffs.append(make_effect(ORANGE_CD, source="pedro:orange",
+        ctx.caster.statuses.add(make_status(ORANGE_CD, source="pedro:orange",
                                             phys_def=ORANGE_PDEF,
-                                            sp_def=ORANGE_SDEF))
+                                            sp_def=ORANGE_SDEF), ctx.state)
 
     @ability("E", "Yellow Mutya: Awit", cd=YELLOW_CD, mana=60,
              cast=CastType.NONE, max_rank=2,
@@ -143,8 +143,8 @@ class Pedro(HeroDef):
     def green(ctx):
         if not _gated(ctx, "R"):
             return
-        ctx.caster.buffs.append(make_effect(GREEN_CD, source="pedro:green",
-                                            speed_bonus=GREEN_SPEED))
+        ctx.caster.statuses.add(make_status(GREEN_CD, source="pedro:green",
+                                            speed_bonus=GREEN_SPEED), ctx.state)
         ctx.state.damage_events.append(
             {"tgt": ctx.caster.entity_id, "heal": GREEN_HEAL})
 
@@ -156,8 +156,8 @@ class Pedro(HeroDef):
         if not _gated(ctx, "T"):
             return
         # Phase briefly so the leap crosses terrain, then land.
-        ctx.caster.buffs.append(make_effect(BLUE_PHASE, source="pedro:blue",
-                                            phase=True))
+        ctx.caster.statuses.add(make_status(BLUE_PHASE, source="pedro:blue",
+                                            phase=True), ctx.state)
         skills.dash(ctx, dist=BLUE_DIST)
 
     @ability("Y", "Indigo Mutya: Mata", cd=INDIGO_CD, mana=45,
@@ -166,9 +166,9 @@ class Pedro(HeroDef):
     def indigo(ctx):
         if not _gated(ctx, "Y"):
             return
-        ctx.caster.buffs.append(make_effect(INDIGO_CD, source="pedro:indigo",
+        ctx.caster.statuses.add(make_status(INDIGO_CD, source="pedro:indigo",
                                             vision_bonus=INDIGO_VISION,
-                                            unobstructed_vision=True))
+                                            unobstructed_vision=True), ctx.state)
 
     @ability("U", "Violet Mutya: Ilag", cd=VIOLET_CD, mana=55,
              cast=CastType.NONE, max_rank=2,
@@ -177,8 +177,8 @@ class Pedro(HeroDef):
     def violet(ctx):
         if not _gated(ctx, "U"):
             return
-        ctx.caster.buffs.append(make_effect(VIOLET_CD, source="pedro:violet",
-                                            evasion=VIOLET_EVASION))
+        ctx.caster.statuses.add(make_status(VIOLET_CD, source="pedro:violet",
+                                            evasion=VIOLET_EVASION), ctx.state)
 
     # --- White Mutya: the ultimate (max rank 1, level 8) -------------------
     @ability("I", "White Mutya: Puti", cd=WHITE_CD, mana=150,

@@ -5,7 +5,7 @@ import unittest
 
 from server.game_state import GameState
 from server.entity import Hero
-from server.effects import make_effect
+from server.status import make_status
 from server.systems import find_attack_target
 from shared.config import HERO_VISION_RADIUS
 from shared.game_types import Team
@@ -21,7 +21,7 @@ class TestInvisibility(unittest.TestCase):
         self.foe.x, self.foe.y = 1000 + HERO_VISION_RADIUS - 50, 1000
 
     def _hide(self):
-        self.sneak.buffs.append(make_effect(10.0, invisible=True))
+        self.sneak.statuses.add(make_status(10.0, invisible=True))
 
     def test_visible_before_hiding(self):
         self.assertIn(self.sneak.entity_id,

@@ -24,12 +24,15 @@ from shared.config import (
     TREES,
     RIVER,
     PREGAME_COUNTDOWN,
+    GRID_CELL,
+    GRID_MARGIN
 )
 from shared.config import MAX_PLAYERS
 from shared.geometry import point_along, segment_capsule_intersect
 from shared.game_types import GamePhase, Team, EntityType
 from server.heroes import get_hero_def, DEFAULT_HERO, list_hero_ids, hero_catalog
-from server.entity import Entity, Hero, Minion, Structure, Wall, Tree, Obstacle
+from server.entity import (
+    Entity, Hero, Minion, Projectile, Structure, Wall, Tree, Obstacle)
 
 
 def enemy_team(team: Team) -> Team:
@@ -37,19 +40,47 @@ def enemy_team(team: Team) -> Team:
 
 
 class GameState:
+    """Holds information about the lobby, heroes, per-tick spatial index, match 
+    lifecycle, and snapshot/vision.
+
+    The game state also holds the phase of the game, the tick count, entities in
+    the game, mapping of the client ID to the hero ID.
+    
+    The server's single source of truth on the game world."""
+
     def __init__(self) -> None:
         self.phase: GamePhase = GamePhase.WAITING
         self.tick: int = 0
+
         # Sandbox / hero-testing mode: when True the server accepts chat
-        # slash-commands (/gold, /level, ...) that mutate the caller's hero.
+        # slash-commands (/gold, /level, ...) that mutate the caller's hero
         # Enabled with the server's --sandbox flag; off by default.
         self.sandbox: bool = False
-        self.entities: dict[int, Entity] = {}  # entity_id -> Entity
-        self.player_heroes: dict[int, int] = {}  # client_id -> entity_id
-        self.player_hero_choice: dict[int, str] = {}  # client_id -> hero_id
+
+        # Contains all entities in the game, keyed by entity_id. Includes 
+        # heroes, minions, etc. Structures are also entities, but they are not 
+        # mobile and do not have a client_id.  
+        # entity_id -> Entity
+        self.entities: dict[int, Entity] = {}
+
+        # Maps client IDs to the entity ID of the hero they control. This allows 
+        # the server to quickly look up player's hero based on their client ID.
+        # client_id -> entity_id
+        self.player_heroes: dict[int, int] = {}
+
+        # Heroes parked for a reconnecting player, by player name. See
+        # `remove_hero(keep_for_reconnect=...)`.
+        # player name -> entity_id
+        self.disconnected: dict[str, int] = {} 
+
+        # Maps client IDs to the hero ID they have chosen in the lobby. This is 
+        # used to determine which hero to spawn when the match starts.
+        # client_id -> hero_id
+        self.player_hero_choice: dict[int, str] = {} 
+
         # Pre-game lobby: client_id -> {"name", "team", "is_host"}. Heroes are
         # not spawned until the host starts the match.
-        self.lobby: dict[int, dict] = {}
+        self.lobby: dict[int, dict[str, str | int | bool]] = {}
 
         # Match / scoring
         self.kill_target: int = DEFAULT_KILL_TARGET
@@ -57,29 +88,52 @@ class GameState:
         self.winner: Team | None = None
 
         # Per-tick queues processed by the systems pipeline
-        self.damage_events: list[dict] = []   # {"src", "tgt", "amt"} or {"tgt","heal"}
-        self.ability_casts: list[dict] = []    # {"caster", "key", "tx", "ty", "tid"}
+        # src means source; tgt means target
+        # {"src", "tgt", "amt"} or {"tgt","heal"}
+        self.damage_events: list[dict] = []
+        # {"caster", "key", "tx", "ty", "tid"}
+        self.ability_casts: list[dict] = []
+
         # Active pulls/displacements: {"tgt", "to", "speed", "stop"}. A unit is
         # dragged toward another (e.g. Tiktik's hook) until within `stop`.
         self.pulls: list[dict] = []
+
         # One-shot reward popups for the client (gold/xp gained). Rebuilt each
         # tick; broadcast in the snapshot, filtered by team vision.
         self.combat_events: list[dict] = []   # {"k", "amt", "x", "y", "eid"}
 
         # Timers
         self.creep_timer: float = 0.0
+        # Accumulated gold for the next wave, which is distributed to all heroes
         self.econ_accum: float = 0.0
+        # Number of waves spawned so far. Used to scale creep stats and gold.
         self.wave_count: int = 0
 
         # Per-tick memoized team-visibility sets for in-tick targeting (see
         # visible_ids_cached). The snapshot broadcast computes fresh sets.
         self._vis_cache: dict[Team, set[int]] = {}
-        self._vis_cache_tick: int = -1
+
+        # The vision cache is keyed on a simulation epoch rather than `tick`,
+        # because the server increments `tick` between running the systems and
+        # broadcasting. Keyed on tick, the broadcast always missed and every
+        # team's line-of-sight was computed twice per frame — and it is the most
+        # expensive query in the game.
+        self._vis_epoch: int = 0
+        self._vis_cache_epoch: int = -1
+
+        # Per-tick spatial index (see rebuild_spatial_index). Empty until the
+        # first tick; `nearby()` then simply returns the structure list.
+        self._grid: dict[tuple[int, int], list] = {}
+        self._grid_structures: list = []
+        self._grid_tick: int = -1
+
 
         # Jungle camps: camp_id -> {"timer": seconds until respawn or 0.0 if up}.
-        self.neutral_camps: dict[int, dict] = {}
+        self.neutral_camps: dict[int, dict[str, float]] = {}
+
         # Runes: rune_index -> {"timer": seconds until respawn or 0.0 if up}.
-        self.rune_state: dict[int, dict] = {}
+        self.rune_state: dict[int, dict[str, float]] = {}
+
         # Match clock: starts at +PREGAME_COUNTDOWN counting DOWN to 0 (when the
         # first wave + neutrals + runes appear), then counts UP as elapsed time.
         self.match_clock: float = 0.0
@@ -87,7 +141,8 @@ class GameState:
     # --------------------------------------------------------------------------
     # Lobby
     # --------------------------------------------------------------------------
-    def add_to_lobby(self, client_id: int, name: str) -> dict:
+    def add_to_lobby(self, client_id: int, 
+                     name: str) -> dict[str, str | int | bool]:
         """Register a player in the pre-game lobby (no hero spawned yet).
 
         The first player to join becomes the host. New players land on whichever
@@ -102,20 +157,24 @@ class GameState:
         return self.lobby[client_id]
 
     def remove_from_lobby(self, client_id: int) -> None:
+        """Remove a player from the lobby. If they were the host, promote the
+        earliest remaining player to host."""
         was_host = self.lobby.get(client_id, {}).get("is_host", False)
         self.lobby.pop(client_id, None)
         # Promote the earliest remaining player if the host left.
         if was_host and self.lobby:
-            first = next(iter(self.lobby))
-            self.lobby[first]["is_host"] = True
+            next_first_player = next(iter(self.lobby))
+            self.lobby[next_first_player]["is_host"] = True
 
     def _balanced_lobby_team(self) -> Team:
+        """Gives the team that has fewer players."""
         t1 = sum(1 for p in self.lobby.values() if p["team"] == int(Team.TEAM1))
         t2 = sum(1 for p in self.lobby.values() if p["team"] == int(Team.TEAM2))
         return Team.TEAM1 if t1 <= t2 else Team.TEAM2
 
     def set_lobby_team(self, client_id: int, team: int) -> bool:
-        """Move a lobby player to team 1/2 unless that side is full."""
+        """Move a lobby player to team 1/2 unless that side is full.
+        Returns True if success, otherwise False."""
         if client_id not in self.lobby or team not in (1, 2):
             return False
         cap = max(1, MAX_PLAYERS // 2)
@@ -127,43 +186,53 @@ class GameState:
         return True
 
     def set_lobby_hero(self, client_id: int, hero_id: str) -> bool:
+        """Sets the hero choice for a lobby player.
+        Returns True if success, otherwise False."""
         if client_id not in self.lobby or hero_id not in list_hero_ids():
             return False
         self.player_hero_choice[client_id] = hero_id
         return True
 
     def is_host(self, client_id: int) -> bool:
+        """Returns True if the given client is the lobby host."""
         return self.lobby.get(client_id, {}).get("is_host", False)
 
-    def lobby_roster(self) -> list[dict]:
+    def lobby_roster(self) -> list[dict[str, str | int | bool]]:
         """Wire-friendly roster for the LOBBY_STATE broadcast."""
         return [
-            {"cid": cid, "name": p["name"], "team": p["team"],
+            {"cid": cid, # client id
+             "name": p["name"], 
+             "team": p["team"],
              "hero": self.player_hero_choice.get(cid, DEFAULT_HERO),
              "host": p["is_host"]}
             for cid, p in self.lobby.items()
         ]
 
-    def available_heroes(self) -> list[dict]:
+    def available_heroes(self) -> list[dict[str, str]]:
         """[{id, name}] for the lobby hero picker."""
         cat = hero_catalog()
-        return [{"id": hid, "name": meta.get("name", hid)}
+        return [{"id": hid, 
+                 "name": meta.get("name", hid)}
                 for hid, meta in cat.items()]
 
     def spawn_from_lobby(self) -> None:
         """Create a hero for every lobby player on their chosen team/hero."""
         for cid, p in self.lobby.items():
-            self.add_hero(cid, p["name"], Team(p["team"]),
+            self.add_hero(cid, 
+                          p["name"], 
+                          Team(p["team"]),
                           hero_id=self.player_hero_choice.get(cid))
 
     # --------------------------------------------------------------------------
     # Heroes
     # --------------------------------------------------------------------------
     def set_hero_choice(self, client_id: int, hero_id: str) -> None:
+        """Sets the hero for the given client."""
         self.player_hero_choice[client_id] = hero_id
 
     def add_hero(self, client_id: int, name: str, team: Team,
                  hero_id: str | None = None) -> Hero:
+        """Defines the hero"""
         hero_id = hero_id or self.player_hero_choice.get(client_id)
         hdef = get_hero_def(hero_id)
         spawn = SPAWN_POSITIONS[int(team)]
@@ -208,11 +277,43 @@ class GameState:
         self.player_heroes[client_id] = hero.entity_id
         return hero
 
-    def remove_hero(self, client_id: int) -> None:
+    def remove_hero(self, client_id: int, keep_for_reconnect: str = "") -> None:
+        """Detach a player's hero.
+
+        With `keep_for_reconnect` set to the player's name during a live match,
+        the hero entity stays in the world and is parked so the same player can
+        reclaim it. Previously a dropped connection deleted the hero outright,
+        so a few seconds of bad wifi cost you your level, gold and items and
+        handed you a fresh level-1 hero on rejoin.
+        """
         eid = self.player_heroes.pop(client_id, None)
-        if eid is not None:
-            self.entities.pop(eid, None)
+        if eid is None:
+            self.player_hero_choice.pop(client_id, None)
+            return
+        if keep_for_reconnect and self.phase == GamePhase.PLAYING:
+            hero = self.entities.get(eid)
+            if hero is not None:
+                self.disconnected[keep_for_reconnect] = eid
+                # Park it: no lingering move order to walk it into a tower.
+                hero.target_x = hero.target_y = None
+                hero.attack_move = False
+                hero.attack_move_x = hero.attack_move_y = None
+                hero.forced_target_id = None
+                return
+        self.entities.pop(eid, None)
         self.player_hero_choice.pop(client_id, None)
+
+    def reclaim_hero(self, client_id: int, name: str) -> Hero | None:
+        """Rebind a parked hero to a reconnecting player, or None if there is
+        no hero waiting under that name."""
+        eid = self.disconnected.pop(name, None)
+        if eid is None:
+            return None
+        hero = self.entities.get(eid)
+        if hero is None:
+            return None
+        self.player_heroes[client_id] = eid
+        return hero
 
     def level_ability(self, client_id: int, key: str) -> bool:
         """Spend a skill point to raise an ability's rank, honoring caps and the
@@ -224,27 +325,34 @@ class GameState:
         4/8/12), while e.g. Pedro Penduko ults on "I" and his "R" is an ordinary
         skill."""
         hero = self.get_hero(client_id)
+
         if hero is None or key not in hero.ability_levels:
             return False
+        
         if hero.skill_points <= 0:
             return False
+        
         hdef = hero.hero_def
         adef = hdef.ability(key) if hdef is not None else None
         if adef is None:
             return False
+        
         cur = hero.ability_levels[key]
         if cur >= adef.max_rank:
             return False
+        
         ult_key = getattr(hdef, "ult_key", "R")
         if key == ult_key:
             gates = getattr(hdef, "ult_level_gates", (4, 8, 12))
             if cur < len(gates) and hero.level < gates[cur]:
                 return False  # not high enough level for the next ultimate rank
+            
         hero.ability_levels[key] = cur + 1
         hero.skill_points -= 1
         return True
 
     def get_hero(self, client_id: int) -> Hero | None:
+        """Return the Hero entity for the given client, or None if not found."""
         eid = self.player_heroes.get(client_id)
         if eid is None:
             return None
@@ -252,7 +360,82 @@ class GameState:
         return ent if isinstance(ent, Hero) else None
 
     def heroes(self) -> list[Hero]:
+        """Return a list of all Hero entities in the game."""
         return [e for e in self.entities.values() if isinstance(e, Hero)]
+
+    # --------------------------------------------------------------------------
+    # Per-tick spatial index
+    # --------------------------------------------------------------------------
+    #: Grid cell size. Comfortably larger than any attack range, so a query
+    #: touches a small, bounded number of cells.
+    # GRID_CELL = 512
+    #: Slack added to every query radius. The index is built once at the top of
+    #: the tick, but units keep moving through it, and an entity's own radius
+    #: counts toward "in range". Generous enough that the grid can only ever
+    #: return a superset — callers still do the exact distance test.
+    # GRID_MARGIN = 200.0
+    # NOTE: values for GRID_CELL and GRID_MARGIN are now in config/game.yaml
+
+    def rebuild_spatial_index(self) -> None:
+        """Bucket mobile entities by grid cell for the coming tick.
+
+        `find_attack_target` was the single most expensive thing in the
+        simulation — roughly a third of all time — because every attacker
+        scanned every entity, every tick. Structures are kept in a separate flat
+        list rather than the grid: there are only a couple of dozen, they never
+        move, and their radii are large enough that gridding them would just
+        spread each one over many cells.
+        """
+        grid: dict[tuple[int, int], list] = {}
+        structures: list = []
+        cell = GRID_CELL
+        self._grid_tick = self.tick
+        for e in self.entities.values():
+            if not e.alive:
+                continue
+            if isinstance(e, Structure):
+                structures.append(e)
+                continue
+            if isinstance(e, (Projectile, Obstacle)):
+                # never auto-attack targets
+                continue 
+            grid.setdefault((int(e.x // cell), int(e.y // cell)), []).append(e)
+        self._grid = grid
+        self._grid_structures = structures
+
+    def nearby(self, x: float, y: float, radius: float,
+               include_structures: bool = True) -> list:
+        """Candidate entities near a point: a superset of what is truly in
+        range, cheap to produce. Callers apply their own exact test.
+
+        Builds the index on demand if this tick has not built one yet, so the
+        query never depends on a caller having remembered to rebuild first —
+        `step()` does it explicitly at the top of each tick, but tests (and any
+        future caller) that drive a single system in isolation still work.
+        """
+        if self._grid_tick != self.tick:
+            self.rebuild_spatial_index()
+        reach = radius + GRID_MARGIN
+        cell = GRID_CELL
+        cx0, cx1 = int((x - reach) // cell), int((x + reach) // cell)
+        cy0, cy1 = int((y - reach) // cell), int((y + reach) // cell)
+        out: list = []
+        grid = self._grid
+        for gx in range(cx0, cx1 + 1):
+            for gy in range(cy0, cy1 + 1):
+                bucket = grid.get((gx, gy))
+                if bucket:
+                    out.extend(bucket)
+        if include_structures:
+            # Structures are few and static but large, so they are distance-
+            # filtered here rather than bucketed (a core would span several
+            # cells and need de-duplicating). Squared compare: no sqrt.
+            for st in self._grid_structures:
+                dx, dy = st.x - x, st.y - y
+                limit = reach + st.radius
+                if dx * dx + dy * dy <= limit * limit:
+                    out.append(st)
+        return out
 
     # --------------------------------------------------------------------------
     # Match lifecycle
@@ -323,6 +506,13 @@ class GameState:
             tree = Tree(x1=p1[0], y1=p1[1], x2=p2[0], y2=p2[1],
                         thickness=cap["thickness"])
             self.entities[tree.entity_id] = tree
+
+    def invalidate_terrain(self) -> None:
+        """Hook for when the walkable/sight-blocking geometry changes (a tree
+        dying or regrowing). Currently a no-op: the capsule lists are rebuilt on
+        demand, which profiling showed is not a hot path. Kept as the single
+        place to hang a cache if that ever changes, so callers already announce
+        the invalidation."""
 
     def obstacle_capsules(self) -> list[tuple[float, float, float, float, float]]:
         """Capsules that block walking (walls + alive trees)."""
@@ -426,9 +616,9 @@ class GameState:
         """Per-tick memoized `visible_entity_ids_for`, used by combat targeting
         (heroes can't acquire fogged targets) without recomputing line-of-sight
         for every targeting call in the same tick."""
-        if self._vis_cache_tick != self.tick:
+        if self._vis_cache_epoch != self._vis_epoch:
             self._vis_cache = {}
-            self._vis_cache_tick = self.tick
+            self._vis_cache_epoch = self._vis_epoch
         s = self._vis_cache.get(team)
         if s is None:
             s = self._vis_cache[team] = self.visible_entity_ids_for(team)

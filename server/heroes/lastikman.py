@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
@@ -32,6 +32,26 @@ E_REDUCE_PER_RANK = 0.03       # rank 1..4 -> 3%..12% mitigation
 
 R_DUR, R_INTERVAL = 6.0, 0.5
 R_TICK_DMG, R_RADIUS = 45, 280
+
+
+class ElasticBody(Aura):
+    """E passive: rank-scaled evasion and flat damage reduction."""
+
+    status_id = "lastik:elastic"
+    __slots__ = ()
+    dynamic = True
+
+    def condition(self, bearer, state) -> bool:
+        return bool(bearer.alive and bearer.ability_rank("E") > 0)
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        rank = hero.ability_rank("E") if hero else 0
+        if rank <= 0:
+            return {}
+        return {"evasion": E_EVASION_PER_RANK * rank,
+                "dmg_reduction": E_REDUCE_PER_RANK * rank}
 
 
 class Lastikman(HeroDef):
@@ -83,16 +103,9 @@ class Lastikman(HeroDef):
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
     def on_tick(state, hero, dt):
-        # Elastic Body passive.
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") != "lastik:elastic"]
-        if hero.alive:
-            erank = hero.ability_rank("E")
-            if erank > 0:
-                hero.buffs.append(make_effect(
-                    0.5, source="lastik:elastic", nohud=True,
-                    evasion=E_EVASION_PER_RANK * erank,
-                    dmg_reduction=E_REDUCE_PER_RANK * erank))
+        # Attach the Elastic Body passive once; it tracks its own rank.
+        if hero.statuses.get("lastik:elastic") is None:
+            hero.statuses.add(ElasticBody(), state)
 
         # Rubber Storm: tick AoE on an interval while active.
         storm = hero.ability_state.get("storm")

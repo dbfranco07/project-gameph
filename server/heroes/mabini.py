@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
@@ -29,6 +29,35 @@ E_STILL_SPATK_PER_RANK = 6     # extra sp_atk while stationary
 E_STILL_REDUCE = 0.12          # damage reduction while holding position
 
 R_DMG, R_RADIUS, R_STUN = 180, 380, 1.6
+
+
+class SereneWits(Aura):
+    """E passive: special attack that scales with rank, plus extra power and
+    mitigation while holding position. Dynamic because both the rank and the
+    stationary check move while it stays attached."""
+
+    status_id = "mabini:wits"
+    __slots__ = ()
+    dynamic = True
+
+    def condition(self, bearer, state) -> bool:
+        return bool(bearer.alive and bearer.ability_rank("E") > 0)
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        if hero is None:
+            return {}
+        rank = hero.ability_rank("E")
+        if rank <= 0:
+            return {}
+        mods = {"sp_atk": E_SPATK_PER_RANK * rank}
+        stationary = (hero.target_x is None and hero.target_y is None
+                      and not hero.attack_move)
+        if stationary:
+            mods["sp_atk"] += E_STILL_SPATK_PER_RANK * rank
+            mods["dmg_reduction"] = E_STILL_REDUCE
+        return mods
 
 
 class Mabini(HeroDef):
@@ -91,16 +120,6 @@ class Mabini(HeroDef):
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
     def on_tick(state, hero, dt):
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") != "mabini:wits"]
-        if not hero.alive:
-            return
-        erank = hero.ability_rank("E")
-        if erank <= 0:
-            return
-        mods = {"sp_atk": E_SPATK_PER_RANK * erank}
-        stationary = hero.target_x is None and hero.target_y is None and not hero.attack_move
-        if stationary:
-            mods["sp_atk"] += E_STILL_SPATK_PER_RANK * erank
-            mods["dmg_reduction"] = E_STILL_REDUCE
-        hero.buffs.append(make_effect(0.5, source="mabini:wits", **mods))
+        # Attach the passive once; it then tracks rank and stillness itself.
+        if hero.statuses.get("mabini:wits") is None:
+            hero.statuses.add(SereneWits(), state)

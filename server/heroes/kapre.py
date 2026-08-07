@@ -20,7 +20,7 @@ from __future__ import annotations
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
 from server.entity import Tree
-from server.effects import make_effect
+from server.status import Aura, make_status
 from server import skills, terrain, bind
 
 # --- Tuning ----------------------------------------------------------------
@@ -41,14 +41,67 @@ R_GRAB = 150               # click this close to a tree to enter it
 R_VISION_BONUS = 400
 R_ATK_SLOW, R_ATK_SLOW_DUR = 0.5, 1.5
 
-_AURA_SOURCES = ("kapre:vigor", "kapre:ironbark")
+def _bound_to_tree(hero) -> bool:
+    status = bind.current_bind(hero)
+    return status is not None and status.kind == "tree"
 
 
 def _in_tree(state, hero) -> bool:
     """True while Kapre is living in / standing inside a tree."""
-    if hero.ability_state.get("bind", {}).get("kind") == "tree":
+    if _bound_to_tree(hero):
         return True
     return terrain.inside_obstacle(state, hero.x, hero.y, Tree)
+
+
+def _near_or_in_tree(state, hero) -> bool:
+    return _bound_to_tree(hero) or terrain.near_trees(state, hero.x, hero.y,
+                                                      NEAR_PAD)
+
+
+# --- Passives -------------------------------------------------------------
+# Both of Kapre's passives are conditional on tree proximity. As auras they are
+# attached once and toggle with the condition, replacing the old idiom of
+# rebuilding the buff list and allocating two fresh effect dicts every tick.
+
+class _TreeAura(Aura):
+    """Active while Kapre is near or inside a tree."""
+
+    __slots__ = ()
+
+    def condition(self, bearer, state) -> bool:
+        return bool(bearer.alive and state is not None
+                    and _near_or_in_tree(state, bearer))
+
+
+class GroveVigor(_TreeAura):
+    """W passive: faster health regeneration near trees."""
+
+    status_id = "kapre:vigor"
+    __slots__ = ()
+    modifiers = {"hp_regen_bonus": W_REGEN}
+
+
+class Ironbark(_TreeAura):
+    """E passive: bonus attack damage near trees, scaling with the ability's
+    rank, plus extra range when not bound inside one. Its numbers move as Kapre
+    levels the skill and as he enters/leaves a tree, so it is a dynamic aura."""
+
+    status_id = "kapre:ironbark"
+    __slots__ = ()
+    dynamic = True
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        if hero is None:
+            return {}
+        rank = hero.ability_rank("E")
+        if rank <= 0:
+            return {}
+        mods = {"dmg_bonus": E_DMG_PER_RANK * rank}
+        if not _bound_to_tree(hero):  # while bound he attacks at regular range
+            mods["range_bonus"] = E_RANGE_BONUS
+        return mods
 
 
 class Kapre(HeroDef):
@@ -88,9 +141,9 @@ class Kapre(HeroDef):
         skills.hook(ctx, dmg=W_BOLT_DMG, speed=W_BOLT_SPEED, range=W_BOLT_RANGE,
                     pull=False, stun_dur=W_BOLT_STUN, kind="kapre_w")
         # Stacks a second regen aura → doubled while it lasts.
-        hero.buffs.append(make_effect(W_ACTIVE_REGEN_DUR,
+        hero.statuses.add(make_status(W_ACTIVE_REGEN_DUR,
                                       source="kapre:vigor_active",
-                                      hp_regen_bonus=W_REGEN))
+                                      hp_regen_bonus=W_REGEN), ctx.state)
 
     @ability("E", "Ironbark", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive: more attack damage near/inside trees (and bonus range "
@@ -104,7 +157,7 @@ class Kapre(HeroDef):
     def dwell(ctx):
         hero, state = ctx.caster, ctx.state
         if bind.is_bound(hero):
-            bind.release_bind(hero)
+            bind.release_bind(hero, state)
             hero.cooldowns["R"] = R_REAL_CD
             return
         tree = terrain.obstacle_at(state, ctx.tx, ctx.ty, Tree, grab=R_GRAB)
@@ -120,19 +173,8 @@ class Kapre(HeroDef):
     @staticmethod
     def on_tick(state, hero, dt):
         bind.tick_bind(state, hero)  # clamp to the tree cluster while bound
-        # Refresh the tree-proximity auras (W passive regen, E damage/range).
-        hero.buffs[:] = [b for b in hero.buffs
-                         if b.get("source") not in _AURA_SOURCES]
-        if not hero.alive:
-            return
-        bound_tree = hero.ability_state.get("bind", {}).get("kind") == "tree"
-        if not (bound_tree or terrain.near_trees(state, hero.x, hero.y, NEAR_PAD)):
-            return
-        hero.buffs.append(make_effect(0.5, source="kapre:vigor",
-                                      hp_regen_bonus=W_REGEN))
-        erank = hero.ability_rank("E")
-        if erank > 0:
-            mods = {"dmg_bonus": E_DMG_PER_RANK * erank}
-            if not bound_tree:  # while bound he attacks at his regular range
-                mods["range_bonus"] = E_RANGE_BONUS
-            hero.buffs.append(make_effect(0.5, source="kapre:ironbark", **mods))
+        # Attach the passives once; from then on they toggle themselves against
+        # tree proximity without any per-tick allocation.
+        if hero.statuses.get("kapre:vigor") is None:
+            hero.statuses.add(GroveVigor(), state)
+            hero.statuses.add(Ironbark(), state)

@@ -30,36 +30,21 @@ def _load(name: str) -> dict:
         return yaml.safe_load(fh) or {}
 
 
-def _inject_flat(data: dict) -> None:
-    """Expose every scalar key as an UPPER_CASE module constant."""
-    for key, value in data.items():
-        globals()[key.upper()] = value
-        # print(f'  {key.upper()} = {value}')
-    # print('-'*40)
+from shared._config_gen import ensure_fresh
 
+ensure_fresh()
+from shared._config_constants import *  # noqa: F401,F403
 
-# Flat scalar config files
-_game = _load("game")
-_colors = _game.pop("colors", {})
-_inject_flat(_game)
-_inject_flat(_load("combat"))
-_inject_flat(_load("economy"))
-_inject_flat(_load("minions"))
-_inject_flat(_load("neutrals"))
-_inject_flat(_load("structures"))
 _map = _load("map")
-
-for _name, _rgb in _colors.items():
-    globals()[f"COLOR_{_name.upper()}"] = tuple(_rgb)
 
 #Map: authored for Team 1, mirrored through the center
 def _mirror(p) -> tuple[float, float]:
-    return mirror_point((p[0], p[1]), MAP_WIDTH, MAP_HEIGHT)  # type: ignore # type: ignore # noqa: F821
+    return mirror_point((p[0], p[1]), MAP_WIDTH, MAP_HEIGHT)
 
 # Derived scalars
-TICK_DURATION = 1.0 / SERVER_TICK_RATE  # seconds per tick  # type: ignore # noqa: F821
-MAP_CENTER = (MAP_WIDTH / 2, MAP_HEIGHT / 2)  # type: ignore # noqa: F821
-HERO_VISION_RADIUS = VISION_RADIUS  # type: ignore # noqa: F821
+TICK_DURATION = 1.0 / SERVER_TICK_RATE  # seconds per tick
+MAP_CENTER = (MAP_WIDTH / 2, MAP_HEIGHT / 2)
+HERO_VISION_RADIUS = VISION_RADIUS
 
 # Spawn / structure positions. The FOUNTAIN (well) is where heroes spawn and
 # fast-heal; the CORE is a distinct inland win structure (see _spawn_structures).

@@ -7,7 +7,7 @@ from server.entity import Hero, Wall, Tree, RuneCreature, MeleeMinion
 from server.game_state import GameState
 from server.systems import (
     system_collision, system_movement, system_damage_death, system_runes,
-    system_spawn_zone, apply_rune_buff, _kill, _advance_minion,
+    system_spawn_zone, system_status, apply_rune_buff, _kill, _advance_minion,
 )
 
 
@@ -109,12 +109,13 @@ class TestRunes(unittest.TestCase):
         state = GameState()
         hero = Hero(team=Team.TEAM1, hp=100, max_hp=600, hp_regen=3.0)
         state.entities[hero.entity_id] = hero
-        apply_rune_buff(hero, "regen_10x")
-        self.assertTrue(any(b.get("cancel_on_hit") for b in hero.buffs))
+        apply_rune_buff(hero, "regen_10x", state)
+        self.assertGreater(hero.stats.bonus("hp_regen_bonus"), 0)
         state.damage_events.append(
             {"src": None, "tgt": hero.entity_id, "amt": 10, "dtype": "true"})
         system_damage_death(state, 0.05)
-        self.assertFalse(any(b.get("cancel_on_hit") for b in hero.buffs))
+        system_status(state, 0.05)   # the fizzled status is swept here
+        self.assertEqual(hero.stats.bonus("hp_regen_bonus"), 0)
 
 
 class TestSpawnZone(unittest.TestCase):

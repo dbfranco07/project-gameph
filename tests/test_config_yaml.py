@@ -12,37 +12,70 @@ from shared.geometry import (
 
 
 class TestConfigLoad(unittest.TestCase):
+    """The loader's job is derivation and mirroring, not tuning.
+
+    These assert *invariants* rather than the numbers in `config/*.yaml`, so
+    rebalancing the game does not break the suite. Anything pinned to a literal
+    below is a structural contract other code depends on, not a tuning knob.
+    """
+
     def test_scalars_loaded(self):
-        self.assertEqual(c.MAP_WIDTH, 6000)
-        self.assertEqual(c.SERVER_TICK_RATE, 20)
-        self.assertAlmostEqual(c.TICK_DURATION, 0.05)
-        self.assertEqual(c.MINION_HP, 130)
-        self.assertEqual(c.TOWER_HP, 1600)
-        self.assertEqual(c.CORE_HP, 3200)
-        self.assertEqual(c.DEFENSE_K, 100)
+        # Every scalar the flat-injection path is meant to expose exists and is
+        # sanely typed/signed (a missing YAML key would surface as AttributeError).
+        for name in ("MAP_WIDTH", "MAP_HEIGHT", "SERVER_TICK_RATE", "MINION_HP",
+                     "TOWER_HP", "CORE_HP", "DEFENSE_K", "VISION_RADIUS"):
+            with self.subTest(const=name):
+                self.assertIsInstance(getattr(c, name), (int, float))
+                self.assertGreater(getattr(c, name), 0)
+        # Derived, not authored: tick duration is the inverse of the tick rate.
+        self.assertAlmostEqual(c.TICK_DURATION, 1.0 / c.SERVER_TICK_RATE)
+        # Aliased for readability at call sites; must stay in lockstep.
         self.assertEqual(c.HERO_VISION_RADIUS, c.VISION_RADIUS)
+        # Structural ordering the combat/objective code relies on.
+        self.assertGreater(c.CORE_HP, c.TOWER_HP)
+        self.assertGreater(c.TOWER_HP, c.MINION_HP)
 
     def test_colors_are_tuples(self):
-        self.assertEqual(c.COLOR_BG, (40, 60, 30))
-        self.assertIsInstance(c.COLOR_TEAM1, tuple)
+        # Colors are popped out of the `game` block into COLOR_* RGB triples.
+        for name in ("COLOR_BG", "COLOR_TEAM1", "COLOR_TEAM2"):
+            with self.subTest(const=name):
+                col = getattr(c, name)
+                self.assertIsInstance(col, tuple)
+                self.assertEqual(len(col), 3)
+                self.assertTrue(all(0 <= ch <= 255 for ch in col))
 
     def test_map_constants(self):
-        # The fountain (spawn/well) is the base corner; heroes spawn here.
-        self.assertEqual(c.T1_FOUNTAIN, (800, 5200))
-        self.assertEqual(c.SPAWN_POSITIONS, {1: (800, 5200), 2: (5200, 800)})
+        w, h = c.MAP_WIDTH, c.MAP_HEIGHT
+        # Team 1 is authored; team 2 is derived by mirroring through the center.
+        self.assertEqual(c.SPAWN_POSITIONS[1], c.T1_FOUNTAIN)
+        self.assertEqual(c.SPAWN_POSITIONS[2], mirror_point(c.T1_FOUNTAIN, w, h))
         # The core is a distinct inland point (not the fountain), mirrored cleanly.
         self.assertNotEqual(c.T1_CORE, c.T1_FOUNTAIN)
-        self.assertEqual(c.T2_CORE, mirror_point(c.T1_CORE, 6000, 6000))
+        self.assertEqual(c.T2_CORE, mirror_point(c.T1_CORE, w, h))
         self.assertEqual(c.LANES, ("top", "mid", "bot"))
-        self.assertEqual(c.LANE_PATHS["top"], [(800, 5200), (800, 800), (5200, 800)])
-        # Lane waypoints must be tuples (minion pathing compares them by ==).
-        self.assertTrue(all(isinstance(p, tuple) for p in c.LANE_PATHS["mid"]))
+        # Every lane is a non-trivial polyline of tuples (minion pathing compares
+        # waypoints by ==, so lists would silently never match).
+        for lane in c.LANES:
+            with self.subTest(lane=lane):
+                path = c.LANE_PATHS[lane]
+                self.assertGreaterEqual(len(path), 2)
+                self.assertTrue(all(isinstance(p, tuple) for p in path))
+                self.assertTrue(all(0 <= x <= w and 0 <= y <= h for x, y in path))
 
     def test_tower_mirror(self):
-        self.assertEqual(c.LANE_TOWERS[1],
-                         [(2, 0.18, "base"), (1, 0.30, "inner"), (0, 0.42, "outer")])
-        self.assertEqual(c.LANE_TOWERS[2],
-                         [(0, 0.58, "outer"), (1, 0.70, "inner"), (2, 0.82, "base")])
+        # Towers are authored once for team 1 as (index, t, label) along the lane
+        # and mirrored to team 2 as t -> 1 - t in reverse order. That derivation
+        # is the loader's job; the specific t values are tuning.
+        t1, t2 = c.LANE_TOWERS[1], c.LANE_TOWERS[2]
+        self.assertEqual(len(t1), len(t2))
+        self.assertEqual(t2, [(idx, round(1.0 - t, 10), label)
+                              for (idx, t, label) in reversed(t1)])
+        # Team 1 runs outward from its own base, so t is strictly increasing.
+        self.assertEqual([t for _, t, _ in t1], sorted(t for _, t, _ in t1))
+        self.assertTrue(all(0.0 <= t <= 1.0 for _, t, _ in t1))
+        # Labels are the identifiers the tower-vulnerability rules key off.
+        self.assertEqual({label for _, _, label in t1},
+                         {"base", "inner", "outer"})
 
     def test_jungle_camps_mirrored(self):
         # Camps are authored for one side then center-mirrored: every camp has

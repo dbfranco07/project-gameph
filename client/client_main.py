@@ -18,7 +18,8 @@ from shared.config import (
     CAMERA_PAN_SPEED,
 )
 from shared.game_types import MsgType, GamePhase
-from shared.protocol import pack_message, unpack_from_buffer
+from shared.protocol import (
+    PROTOCOL_VERSION, pack_message, unpack_from_buffer)
 from client.camera import Camera
 from client.interpolation import Interpolator
 from client.input_handler import InputHandler
@@ -81,6 +82,9 @@ class GameClient:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(3.0)  # don't freeze the menu on a bad address
             self.sock.connect((self.host, self.port))
+            # Small, latency-sensitive messages: Nagle coalescing would add up
+            # to ~40ms of input delay on a real link.
+            self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.sock.setblocking(False)  # clears the timeout for in-game use
             print(f"[CLIENT] Connected to {self.host}:{self.port}")
 
@@ -89,6 +93,9 @@ class GameClient:
                 "t": int(MsgType.JOIN),
                 "name": self.player_name,
                 "hero": self.hero,
+                # The server rejects a mismatch with a readable reason rather
+                # than letting a stale build fail in confusing ways later.
+                "pv": PROTOCOL_VERSION,
             })
             self.sock.sendall(join_msg)
             return True
@@ -349,9 +356,23 @@ class GameClient:
             self.ktarget = msg.get("ktarget", self.ktarget)
             self.winner = msg.get("winner", self.winner)
             self.match_clock = msg.get("clock", self.match_clock)
-            self.interpolator.push_snapshot(msg.get("entities", []))
+            self.interpolator.push_snapshot(
+                msg.get("entities", []),
+                gone=msg.get("gone", ()),
+                full=bool(msg.get("full")))
             if self.renderer is not None:
                 self.renderer.add_combat_events(msg.get("events", []))
+
+        elif msg_type == MsgType.REJECTED:
+            # The server refused us (e.g. a version mismatch). Drop back to the
+            # menu with the reason shown, rather than quitting or silently
+            # sitting on a connection that will never produce a match.
+            reason = msg.get("reason", "The server refused the connection.")
+            print(f"[CLIENT] {reason}")
+            self._disconnect()
+            self.screen_state = SCREEN_MENU
+            if self.menu is not None:
+                self.menu.error = reason
 
         elif msg_type == MsgType.CHAT:
             self.chat.add_message(msg.get("name", "?"), msg.get("text", ""),

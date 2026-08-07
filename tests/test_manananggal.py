@@ -89,9 +89,9 @@ class TestManananggal(unittest.TestCase):
         self.assertGreater(self.hero.effective_move_speed(), speed0)
 
     def test_passive_key_is_not_castable(self):
-        before = len(self.hero.buffs)
+        before = len(self.hero.statuses)
         self._cast("E")  # passive: server skips it entirely
-        self.assertEqual(len(self.hero.buffs), before)
+        self.assertEqual(len(self.hero.statuses), before)
 
     # ----- R Split ----------------------------------------------------------
     def test_split_spawns_body_with_invuln_and_bonuses(self):
@@ -127,14 +127,14 @@ class TestManananggal(unittest.TestCase):
         system_damage_death(self.state, 0.05)
         self.assertFalse(self.hero.alive)                       # body gone -> die
         self.assertNotIn(body.entity_id, self.state.entities)   # body cleaned up
-        self.assertNotIn("split", self.hero.ability_state)
+        self.assertFalse(self.hero.statuses.has("split"))
 
     def test_recombine_near_body_reforms_and_sets_cooldown(self):
         self._cast("R")
         body = self._body()
         self.hero.cooldowns["R"] = 0.0  # toggle gate elapsed; hero is at the body
         self._cast("R")
-        self.assertNotIn("split", self.hero.ability_state)
+        self.assertFalse(self.hero.statuses.has("split"))
         self.assertFalse(self.hero.is_invulnerable())
         self.assertNotIn(body.entity_id, self.state.entities)
         self.assertGreater(self.hero.cooldowns["R"], 1.0)       # real cooldown set
@@ -145,7 +145,7 @@ class TestManananggal(unittest.TestCase):
         self.hero.cooldowns["R"] = 0.0
         self.hero.x = body.x + 5000  # too far
         self._cast("R")
-        self.assertIn("split", self.hero.ability_state)         # still split
+        self.assertTrue(self.hero.statuses.has("split"))         # still split
 
     def test_leash_clamps_upper_half_to_body(self):
         self._cast("R")
@@ -159,7 +159,7 @@ class TestManananggal(unittest.TestCase):
         for _ in range(int(SPLIT_DURATION / 0.05) + 3):
             system_status(self.state, 0.05)
             system_hero_hooks(self.state, 0.05)
-        self.assertNotIn("split", self.hero.ability_state)
+        self.assertFalse(self.hero.statuses.has("split"))
         self.assertFalse(self.hero.is_invulnerable())
         self.assertIsNone(self._body())
 

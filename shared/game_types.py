@@ -59,3 +59,4 @@ class MsgType(IntEnum):
     GAME_OVER = 13
     PLAYER_LIST = 14    # lobby roster broadcast (teams/heroes/host)
     LOBBY_WELCOME = 17  # sent once on join: your client id, host flag, catalogs
+    REJECTED = 19       # the server refused the connection, with a reason

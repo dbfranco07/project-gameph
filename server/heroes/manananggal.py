@@ -19,6 +19,7 @@ import math
 from shared.game_types import CastType
 from server.heroes.base import HeroDef, ability
 from server.entity import Hero, SplitBody
+from server.status import DamageAmplify, Split, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
@@ -43,6 +44,30 @@ BODY_DMG_MULT = 2.0        # body takes double damage
 REGEN_HP, REGEN_MP, REGEN_DUR = 35, 12, 6.0
 
 
+class _Split(Split):
+    """The detached state, which owns its own teardown.
+
+    Recombining is just this status ending — whether the player presses R near
+    the body or the timer lapses — so the body cleanup and the reunion regen
+    live in `on_expire` instead of being duplicated across a manual path and a
+    timed path that had to notice the buff had silently vanished.
+    """
+
+    __slots__ = ()
+
+    def on_expire(self, bearer, state) -> None:
+        if state is None:
+            return
+        body = state.entities.get(self.body_id)
+        if body is not None:
+            body.alive = False
+            state.entities.pop(body.entity_id, None)
+        bearer.statuses.add(make_status(REGEN_DUR, source="manananggal:reform",
+                                        hp_regen_bonus=REGEN_HP,
+                                        mana_regen_bonus=REGEN_MP), state)
+        bearer.cooldowns["R"] = SPLIT_REAL_CD
+
+
 def _begin_split(ctx) -> None:
     hero, state = ctx.caster, ctx.state
     if hero.mana < SPLIT_MANA:
@@ -52,28 +77,21 @@ def _begin_split(ctx) -> None:
                      owner_id=hero.entity_id, dmg_mult=BODY_DMG_MULT)
     body.hp = body.max_hp = max(1, int(hero.max_hp * BODY_HP_FRAC))
     state.entities[body.entity_id] = body
-    hero.buffs.append({
-        "split": True,
-        "invuln": True,
-        "dmg_bonus": SPLIT_DMG_BONUS,
-        "range_bonus": SPLIT_RANGE_BONUS,
-        "vision_bonus": SPLIT_VISION_BONUS,
-        "remaining": SPLIT_DURATION,
-    })
-    hero.ability_state["split"] = {"body_id": body.entity_id}
+    # The body is deliberately fragile; the amplification rides on it as a
+    # status instead of being a field the damage pipeline checks for by type.
+    body.statuses.add(DamageAmplify(multiplier=BODY_DMG_MULT), state)
+    hero.statuses.add(_Split(
+        SPLIT_DURATION, body_id=body.entity_id,
+        flags=Split.flags | frozenset({"invuln"}),
+        modifiers={"dmg_bonus": SPLIT_DMG_BONUS,
+                   "range_bonus": SPLIT_RANGE_BONUS,
+                   "vision_bonus": SPLIT_VISION_BONUS}), state)
 
 
 def _recombine(state, hero: Hero, body) -> None:
-    hero.buffs[:] = [b for b in hero.buffs if not b.get("split")]
-    hero.ability_state.pop("split", None)
-    if body is not None:
-        body.alive = False
-        state.entities.pop(body.entity_id, None)
-    # Reuniting grants a short surge of regeneration (and the bonus dmg/range
-    # from the split buff is now gone).
-    hero.buffs.append({"hp_regen_bonus": REGEN_HP, "mana_regen_bonus": REGEN_MP,
-                       "remaining": REGEN_DUR})
-    hero.cooldowns["R"] = SPLIT_REAL_CD
+    """Reunite the halves. Removing the status fires its on_expire, which does
+    the body cleanup, the regen burst and the real cooldown."""
+    hero.statuses.remove_id("split", state)
 
 
 class Manananggal(HeroDef):
@@ -125,11 +143,11 @@ class Manananggal(HeroDef):
              desc="Detach your invulnerable upper half; recombine near the body to heal.")
     def split(ctx):
         hero = ctx.caster
-        st = hero.ability_state.get("split")
-        if st is None:
+        split = hero.statuses.get("split")
+        if split is None:
             _begin_split(ctx)
         else:
-            body = ctx.state.entities.get(st["body_id"])
+            body = ctx.state.entities.get(split.body_id)
             if (body is not None and body.alive
                     and hero.distance_to(body) <= RECOMBINE_RANGE):
                 _recombine(ctx.state, hero, body)
@@ -139,25 +157,19 @@ class Manananggal(HeroDef):
     @staticmethod
     def on_ability_cast(ctx, key):
         # Bloodlust: every skill cast adds a short, stacking haste.
-        ctx.caster.buffs.append({
-            "speed_bonus": BLOODLUST_SPEED, 
-            "atkspd_pct": BLOODLUST_ATKSPD,
-            "remaining": BLOODLUST_DUR,
-        })
+        ctx.caster.statuses.add(make_status(
+            BLOODLUST_DUR, source="manananggal:bloodlust",
+            speed_bonus=BLOODLUST_SPEED,
+            atkspd_pct=BLOODLUST_ATKSPD), ctx.state)
 
     @staticmethod
     def on_tick(state, hero, dt):
-        st = hero.ability_state.get("split")
-        if not st:
+        split = hero.statuses.get("split")
+        if split is None:
             return
-        body = state.entities.get(st["body_id"])
+        body = state.entities.get(split.body_id)
         if body is None or not body.alive:
-            hero.ability_state.pop("split", None)
-            hero.buffs[:] = [b for b in hero.buffs if not b.get("split")]
-            return
-        # Timed auto-recombine once the split buff expires.
-        if not any(b.get("split") for b in hero.buffs):
-            _recombine(state, hero, body)
+            hero.statuses.remove_id("split", state)
             return
         # Leash the flying upper half to within range of the lower body.
         dx, dy = hero.x - body.x, hero.y - body.y
