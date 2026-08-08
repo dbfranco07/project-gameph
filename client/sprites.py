@@ -17,7 +17,7 @@ the least (directional+frame -> directional -> bare action -> idle), so a sparse
 folder still renders something for every action/facing.
 
 Categories the renderer uses: ``heroes``, ``projectiles``, ``effects``,
-``entities``, ``terrain``.
+``entities``, ``terrain``, ``items``.
 """
 
 from __future__ import annotations
@@ -125,6 +125,10 @@ class SpriteManager:
                      anim_t: float, fps: float = 6.0) -> pygame.Surface | None:
         return self.frame("entities", type_key, sub or "idle", facing,
                           anim_t, fps)
+
+    def item_icon(self, item_id: str) -> pygame.Surface | None:
+        """A single (non-directional, non-animated) item icon, or None."""
+        return self.frame("items", item_id, "icon", "", 0)
 
     def terrain_tile(self, name: str) -> pygame.Surface | None:
         """A single (non-animated) terrain tile, cached. None if missing."""

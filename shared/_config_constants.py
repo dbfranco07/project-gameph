@@ -189,7 +189,7 @@ FIRST_WAVE_SPEED_MULTIPLIER = 1.8
 # config/neutrals.yaml: neutral_hp
 NEUTRAL_HP = 200
 # config/neutrals.yaml: neutral_damage
-NEUTRAL_DAMAGE = 25
+NEUTRAL_DAMAGE = 40
 # config/neutrals.yaml: neutral_range
 NEUTRAL_RANGE = 160
 # config/neutrals.yaml: neutral_interval
@@ -197,13 +197,13 @@ NEUTRAL_INTERVAL = 1.0
 # config/neutrals.yaml: neutral_radius
 NEUTRAL_RADIUS = 14
 # config/neutrals.yaml: neutral_gold
-NEUTRAL_GOLD = 40
+NEUTRAL_GOLD = 60
 # config/neutrals.yaml: neutral_xp
-NEUTRAL_XP = 45
+NEUTRAL_XP = 75
 # config/neutrals.yaml: neutral_respawn
 NEUTRAL_RESPAWN = 60.0
 # config/neutrals.yaml: rune_patrol
-RUNE_PATROL = 250
+RUNE_PATROL = 240
 
 # --- config/structures.yaml ---
 # config/structures.yaml: tower_hp

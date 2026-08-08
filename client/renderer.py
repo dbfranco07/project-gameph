@@ -10,10 +10,13 @@ from __future__ import annotations
 import math
 import time
 import pygame
-from shared.geometry import closest_point_on_segment, segment_capsule_intersect
+from shared.geometry import closest_point_on_segment
 from shared.config import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
+    VIEWPORT_WIDTH,
+    VIEWPORT_HEIGHT,
+    HUD_HEIGHT,
     MAP_WIDTH,
     MAP_HEIGHT,
     LANE_PATHS,
@@ -35,10 +38,8 @@ from shared.config import (
     HERO_VISION_RADIUS,
     MINION_VISION_RADIUS,
     TOWER_VISION_RADIUS,
-    ATTACK_CLICK_PIXELS,
-    TP_RANGE,
 )
-from shared.game_types import Team, GamePhase, EntityType, CastType
+from shared.game_types import Team, GamePhase, EntityType
 
 # Fog-of-war overlay: ground outside your vision is darkened by this much
 # (0 = off, 255 = pitch black). Vision footprints are punched back to full
@@ -53,6 +54,7 @@ FOG_ALPHA_MINIMAP = 165
 FOG_SCALE = 2
 from client.camera import Camera
 from client.sprites import SpriteManager, facing_from_delta
+from client import targeting
 
 # Combat-feedback timing (seconds).
 CAST_DUR = 0.4      # how long a one-shot skill-cast pose plays
@@ -131,6 +133,7 @@ class Renderer:
         # id -> {"x", "y", "facing"}.
         self._unit_pose: dict[int, dict] = {}
         self.font = pygame.font.SysFont("monospace", 14)
+        self.font_small = pygame.font.SysFont("monospace", 11)
         self.font_large = pygame.font.SysFont("monospace", 24)
         self.font_huge = pygame.font.SysFont("monospace", 48, bold=True)
         # Ability metadata for the local hero (key/name/cd/mana/cast), delivered
@@ -143,10 +146,18 @@ class Renderer:
         # Shop catalog + open state.
         self.item_catalog: list[dict] = []
         self.shop_open = False
-        # Minimap panel (bottom-left), map aspect ratio preserved.
-        mm_w = 240
-        mm_h = int(mm_w * MAP_HEIGHT / MAP_WIDTH)
-        self.minimap = pygame.Rect(8, SCREEN_HEIGHT - 8 - mm_h, mm_w, mm_h)
+        # Clickable shop rows (rect, item_id) + the panel's own bounds,
+        # rebuilt each time the shop is drawn; read by the input handler for
+        # click-to-buy hit-testing (row = buy, panel-but-no-row = swallow the
+        # click, outside the panel = normal hero control still applies).
+        self._shop_rects: list[tuple[pygame.Rect, str]] = []
+        self._shop_panel_rect: pygame.Rect | None = None
+        # Minimap panel: left end of the horizontal HUD strip below the world
+        # viewport, sized to the strip's height (map aspect ratio preserved).
+        hud_pad = 8
+        mm_h = HUD_HEIGHT - 2 * hud_pad
+        mm_w = int(mm_h * MAP_WIDTH / MAP_HEIGHT)
+        self.minimap = pygame.Rect(hud_pad, VIEWPORT_HEIGHT + hud_pad, mm_w, mm_h)
         # In-game chat box (set by the client); drawn just above the minimap.
         self.chat = None
         # Floating combat text (gold/xp/damage popups): {wx,wy,text,color,born,dur}.
@@ -250,6 +261,11 @@ class Renderer:
         self._my_team = my_team
         self._my_entity_id = my_entity_id
         self.screen.fill(COLOR_BG)
+        # World content is confined to the viewport (top of the window); the
+        # horizontal HUD strip below it is a separate region nothing world-side
+        # should bleed into, so the base/lane can never be hidden behind it.
+        viewport = pygame.Rect(0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
+        self.screen.set_clip(viewport)
         self._draw_grid()
         self._draw_river()
         self._draw_lane()
@@ -266,9 +282,10 @@ class Renderer:
         self._draw_spark_fx()   # impact sparks over the units
         self._draw_fog(entities, my_team)
         self._draw_floaters()
+        self._draw_targeting_cursor()
+        self.screen.set_clip(None)
         self._draw_hud(entities, my_entity_id, my_team, phase, tick,
                        score or {}, ktarget, winner, clock)
-        self._draw_targeting_cursor()
         if self.chat is not None:
             self.chat.draw(self.screen, self.font, self.minimap.top - 12)
         self._prune_feedback()
@@ -382,9 +399,14 @@ class Renderer:
     def _draw_targeting_cursor(self) -> None:
         """Ring the cursor while awaiting a target. Yellow for a valid ability
         cast, red for an 'A' attack command, and red with a "Not valid target"
-        message when the cursor is on an invalid target for the pending cast."""
+        message when the cursor is on an invalid target for the pending cast.
+        AoE abilities (nonzero `radius` metadata) also draw a circle at the
+        cursor's world position showing the actual area of effect, instead of
+        leaving the player to guess it from just the 16px aim ring."""
         if self.pending_cast is not None:
             name = "Teleport" if self.pending_cast == "TP" else f"Cast {self.pending_cast}"
+            kind, _rng, radius = targeting.pending_target_meta(
+                self.pending_cast, self.hero_abilities)
             valid = self._pending_target_valid()
             if valid is False:
                 color, text = (235, 80, 80), "Not valid target"
@@ -392,113 +414,30 @@ class Renderer:
                 color, text = (240, 220, 120), name
         elif self.attack_armed:
             color, text = (235, 90, 90), "Attack"
+            radius = 0.0
         else:
             return
         mx, my = pygame.mouse.get_pos()
+        if radius:
+            ring = pygame.Surface((radius * 2 + 4, radius * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.circle(ring, (*color, 70), (radius + 2, radius + 2), radius)
+            pygame.draw.circle(ring, (*color, 200), (radius + 2, radius + 2),
+                               radius, 2)
+            self.screen.blit(ring, (mx - radius - 2, my - radius - 2))
         pygame.draw.circle(self.screen, color, (mx, my), 16, 2)
         pygame.draw.circle(self.screen, color, (mx, my), 3)
         label = self.font.render(text, True, color)
         self.screen.blit(label, (mx + 18, my - 8))
 
-    def _pending_target_meta(self) -> tuple[str, float]:
-        """(target-kind, range) for the current pending cast. Unit-target casts
-        with no explicit kind default to requiring an enemy; the dedicated TP
-        slot requires a point near an alive allied structure."""
-        key = self.pending_cast
-        if key == "TP":
-            return ("ally_structure_area", TP_RANGE)
-        for ab in self.hero_abilities:
-            if ab.get("key") == key:
-                tgt = ab.get("target", "ground")
-                rng = ab.get("range", 0) or 0
-                if tgt == "ground" and ab.get("cast") == int(CastType.UNIT):
-                    tgt = "enemy"
-                return (tgt, rng)
-        return ("ground", 0)
-
     def _pending_target_valid(self):
         """True/False validity of the cursor for the pending cast, or None when
         there is nothing to validate (always-valid 'ground' point casts)."""
-        kind, rng = self._pending_target_meta()
-        if kind == "ground":
-            return None
         mx, my = pygame.mouse.get_pos()
         wx, wy = self.camera.screen_to_world(mx, my)
-        ents = self._frame_entities
-        if kind in ("enemy", "ally"):
-            return self._unit_under_cursor(ents, wx, wy, kind, rng) is not None
-        if kind == "obstacle":
-            return self._terrain_along_aim(ents, wx, wy, rng)
-        if kind == "ally_structure_area":
-            return self._near_ally_structure(ents, wx, wy, TP_RANGE)
-        return None
-
-    def _my_hero(self, ents):
-        for e in ents:
-            if e.get("id") == getattr(self, "_my_entity_id", None):
-                return e
-        return None
-
-    def _unit_under_cursor(self, ents, wx, wy, kind, rng):
-        """Closest enemy/ally unit under the cursor (within its radius) and, when
-        `rng` is set, within cast range of my hero."""
-        me = self._my_hero(ents)
-        my_team = getattr(self, "_my_team", 0)
-        best, best_d = None, None
-        for e in ents:
-            if not e.get("a", True) or e.get("et") == EntityType.PROJECTILE:
-                continue
-            team = e.get("tm", 0)
-            is_enemy = team not in (my_team, 0)
-            if kind == "enemy" and not is_enemy:
-                continue
-            if kind == "ally" and (team != my_team or e.get("id") == self._my_entity_id):
-                continue
-            d = math.hypot(e["x"] - wx, e["y"] - wy)
-            if d > e.get("r", 20) + ATTACK_CLICK_PIXELS:
-                continue
-            if rng and me is not None:
-                if math.hypot(e["x"] - me["x"], e["y"] - me["y"]) > rng + e.get("r", 20):
-                    continue
-            if best_d is None or d < best_d:
-                best, best_d = e, d
-        return best
-
-    def _near_ally_structure(self, ents, wx, wy, rng) -> bool:
-        my_team = getattr(self, "_my_team", 0)
-        for e in ents:
-            if e.get("et") not in (EntityType.TOWER, EntityType.BASE):
-                continue
-            if e.get("tm", 0) != my_team or not e.get("a", True):
-                continue
-            if math.hypot(e["x"] - wx, e["y"] - wy) <= rng:
-                return True
-        return False
-
-    def _terrain_along_aim(self, ents, wx, wy, rng) -> bool:
-        """True if a wall / tree / structure lies along the aim line from my hero
-        (up to `rng`) — the grapple would strike it."""
-        me = self._my_hero(ents)
-        if me is None:
-            return False
-        dx, dy = wx - me["x"], wy - me["y"]
-        d = math.hypot(dx, dy) or 1.0
-        reach = rng or d
-        ax, ay = me["x"], me["y"]
-        bx, by = ax + dx / d * reach, ay + dy / d * reach
-        for e in ents:
-            if not e.get("a", True):
-                continue
-            et = e.get("et")
-            if et in (EntityType.WALL, EntityType.TREE) and e.get("x1") is not None:
-                if segment_capsule_intersect(ax, ay, bx, by, e["x1"], e["y1"],
-                                             e["x2"], e["y2"], e.get("th", 20) + 44):
-                    return True
-            elif et in (EntityType.TOWER, EntityType.BASE):
-                cx, cy = closest_point_on_segment(e["x"], e["y"], ax, ay, bx, by)
-                if math.hypot(e["x"] - cx, e["y"] - cy) <= e.get("r", 30) + 22:
-                    return True
-        return False
+        return targeting.pending_target_valid(
+            self._frame_entities, getattr(self, "_my_entity_id", None),
+            getattr(self, "_my_team", 0), self.hero_abilities,
+            self.pending_cast, wx, wy)
 
     # ----- world ------------------------------------------------------------
     def _draw_grid(self) -> None:
@@ -1143,29 +1082,50 @@ class Renderer:
         # Side columns: per-hero ultimate availability + respawn timers.
         self._draw_ult_columns(entities, my_team)
 
-        # Minimap (bottom-left). Server already culled fogged enemies.
+        # Horizontal HUD strip along the bottom, clearly separated from the
+        # world viewport above it (a solid backing + border line) so nothing
+        # in the strip is ever mistaken for part of the map.
+        strip = pygame.Rect(0, VIEWPORT_HEIGHT, SCREEN_WIDTH, HUD_HEIGHT)
+        pygame.draw.rect(self.screen, (14, 15, 19), strip)
+        pygame.draw.line(self.screen, (70, 70, 85),
+                         (0, VIEWPORT_HEIGHT), (SCREEN_WIDTH, VIEWPORT_HEIGHT), 2)
+
+        # Minimap: left end of the strip. Server already culled fogged enemies.
         self._draw_minimap(entities, my_entity_id, my_team)
 
-        # My stats panel + skill/item grids.
+        # Stats panel, ability bar, inventory + TP slot chain left-to-right
+        # across the rest of the strip.
+        pad = 8
         if me is not None:
-            self._draw_stats_panel(me)
-            self._draw_effects(me)
-            self._draw_ability_bar(me)
-            self._draw_inventory(me)
-            self._draw_tp_slot(me)
+            x = self.minimap.right + pad
+            self._draw_stats_panel(me, x, VIEWPORT_HEIGHT + pad)
+            x = self._stats_rect.right + pad
+            self._draw_effects(me, x, VIEWPORT_HEIGHT + 4)
+            self._draw_ability_bar(me, x, VIEWPORT_HEIGHT + 44)
+            x = self._ability_rect.right + pad
+            self._draw_inventory(
+                me, x, VIEWPORT_HEIGHT + (HUD_HEIGHT - 2 * 46) // 2)
+            x = self._inventory_rect.right + pad
+            self._draw_tp_slot(
+                me, x, VIEWPORT_HEIGHT + (HUD_HEIGHT - 46) // 2)
             if not me.get("a", True):
                 self._draw_respawn(me)
             self._draw_hover_tooltip(me)
 
         if self.shop_open:
             self._draw_shop(me)
+        else:
+            # Stale rows from the last time the shop was open must not keep
+            # matching hover/click checks once it's closed.
+            self._shop_rects = []
+            self._shop_panel_rect = None
 
         # Hints / banners
         if phase == GamePhase.WAITING:
             hint = self.font_large.render(
                 "Press SPACE to start", True, (200, 200, 100))
             self.screen.blit(hint, (SCREEN_WIDTH // 2 - hint.get_width() // 2,
-                                    SCREEN_HEIGHT // 2))
+                                    VIEWPORT_HEIGHT // 2))
         elif phase == GamePhase.FINISHED and winner:
             self._draw_game_over(winner, my_team)
         else:
@@ -1253,22 +1213,20 @@ class Renderer:
     }
     _EFFECT_CAT_COLOR = {"buff": (80, 190, 120), "debuff": (210, 80, 80)}
 
-    def _draw_effects(self, me: dict) -> None:
-        """Row of active buffs/debuffs above the bottom-right skill/item cluster.
-        Debuffs are circles, buffs are rounded squares; both carry a short label
-        and a timer arc sweeping down for the remaining fraction of duration.
-        Colored by type for now — art can later key off each effect's icon id."""
+    def _draw_effects(self, me: dict, x0: int, y: int) -> None:
+        """Row of active buffs/debuffs above the ability bar, growing rightward
+        from `x0`. Debuffs are circles, buffs are rounded squares; both carry a
+        short label and a timer arc sweeping down for the remaining fraction of
+        duration. Colored by type for now — art can later key off each
+        effect's icon id."""
         effs = me.get("eff", [])
         if not effs:
             return
         # Debuffs first (more urgent), then buffs.
         effs = sorted(effs, key=lambda e: 0 if e.get("cat") == "debuff" else 1)
-        size, gap = 30, 6
-        # Sit above the 2-row item grid + the TP slot, growing leftward.
-        y = SCREEN_HEIGHT - 2 * 46 - 8 - 46 - 6 - size - 8
-        x_right = SCREEN_WIDTH - 12
+        size, gap = 32, 8
         for i, e in enumerate(effs[:12]):
-            x = x_right - (i + 1) * (size + gap) + gap
+            x = x0 + i * (size + gap)
             cx, cy = x + size // 2, y + size // 2
             cat = e.get("cat", "buff")
             color = self._EFFECT_COLORS.get(
@@ -1292,25 +1250,21 @@ class Renderer:
                                 start, math.pi / 2, 3)
             # Short label centered on the icon.
             lbl = str(e.get("lbl", ""))[:4]
-            t = self.font.render(lbl, True, (20, 20, 24))
+            t = self.font_small.render(lbl, True, (20, 20, 24))
             self.screen.blit(t, (cx - t.get_width() // 2, cy - t.get_height() // 2))
 
-    def _draw_ability_bar(self, me: dict) -> None:
-        """Skills as a grid at the bottom, left of the items. Standard 4-ability
-        heroes use a 2x2 (Q W / E R); wider kits (e.g. Pedro Penduko's 8 skills)
-        spill into a 4-wide grid (Q W E R / T Y U I). Shows cooldown, rank pips,
-        and a '+' badge when a point can be spent."""
+    def _draw_ability_bar(self, me: dict, x0: int, y0: int) -> None:
+        """Skills as a grid inside the HUD strip. Standard 4-ability heroes lay
+        out inline in a single row (Q W E R); wider kits (e.g. Pedro Penduko's
+        8 skills) spill into a 4-wide, 2-row grid (Q W E R / T Y U I). Shows
+        cooldown, rank pips, and a '+' badge when a point can be spent."""
         abilities = self.hero_abilities
         cds = me.get("cds", {})
         alvl = me.get("alvl", {})
         points = me.get("sp", 0)
         slot, gap = 54, 6
         n = min(len(abilities), 8)
-        cols = 2 if n <= 4 else 4
-        rows = max(1, (n + cols - 1) // cols)
-        grid_w = cols * slot + (cols - 1) * gap
-        x0 = SCREEN_WIDTH - 3 * 46 - 12 - grid_w - 24  # left of the 3-wide item grid
-        y0 = SCREEN_HEIGHT - rows * slot - (rows - 1) * gap - 8
+        cols = 4
         self._skill_rects = []
         for i, ab in enumerate(abilities[:n]):
             col, row = i % cols, i // cols
@@ -1345,15 +1299,19 @@ class Renderer:
                 pygame.draw.circle(self.screen, (60, 200, 90), (x + slot - 8, y + 8), 7)
                 plus = self.font.render("+", True, (10, 30, 10))
                 self.screen.blit(plus, (x + slot - 12, y + 1))
+        rows = max(1, (n + cols - 1) // cols)
+        grid_w = cols * slot + (cols - 1) * gap
+        self._ability_rect = pygame.Rect(
+            x0, y0, grid_w, rows * slot + (rows - 1) * gap)
 
-    def _draw_stats_panel(self, me: dict) -> None:
-        """Dedicated panel (right of the minimap): full stat list. Values are
-        white; temporary buff/debuff deltas show green (+) / red (-)."""
-        rows_n = 13
-        x0 = self.minimap.right + 10
-        w, line = 220, 18
-        h = 10 + rows_n * line
-        y0 = SCREEN_HEIGHT - 8 - h
+    def _draw_stats_panel(self, me: dict, x0: int, y0: int) -> None:
+        """Two-column stat panel (right of the minimap, inside the HUD strip).
+        Values are white; temporary buff/debuff deltas show green (+) / red
+        (-). Two columns of six rows keep the panel short enough to fit the
+        strip's height instead of the tall single column it used to be."""
+        col_w, line, rows_per_col = 175, 15, 6
+        w, h = col_w * 2, 10 + rows_per_col * line
+        self._stats_rect = pygame.Rect(x0, y0, w, h)
         panel = pygame.Surface((w, h))
         panel.set_alpha(225)
         panel.fill((22, 26, 32))
@@ -1365,38 +1323,43 @@ class Renderer:
         lvl = me.get("lvl", 1)
         xp, xpn = me.get("xp", 0), me.get("xpn", 0)
         xp_str = f"{xp}/{xpn}" if xpn else "MAX"
+        cc = me.get("cc")
+        cc_text = " ".join(c.upper() for c in cc) if cc else ""
         # (label, value-text, delta-key) — delta None means no temp delta line.
-        rows = [
-            ("LVL", f"{lvl}   XP {xp_str}", None),
-            ("HP", f"{me.get('hp', 0)}/{me.get('mhp', 0)}  +{me.get('hpr', 0)}", "hpr"),
-            ("MP", f"{me.get('mana', 0)}/{me.get('mmana', 0)}  +{me.get('mpr', 0)}", "mpr"),
-            ("GLD", f"{me.get('gold', 0)}  +{int(PASSIVE_GOLD_PER_SEC)}/s", None),
+        col1 = [
+            ("LVL", f"{lvl}  XP {xp_str}", None),
+            ("HP", f"{me.get('hp', 0)}/{me.get('mhp', 0)} +{me.get('hpr', 0)}", "hpr"),
+            ("MP", f"{me.get('mana', 0)}/{me.get('mmana', 0)} +{me.get('mpr', 0)}", "mpr"),
+            ("GLD", f"{me.get('gold', 0)} +{int(PASSIVE_GOLD_PER_SEC)}/s", None),
             ("ATK", f"{me.get('ad', 0)}", "ad"),
             ("SP.ATK", f"{me.get('spa', 0)}", "spa"),
+        ]
+        col2 = [
             ("DEF", f"{me.get('pdef', 0)}", "pdef"),
             ("SP.DEF", f"{me.get('sdef', 0)}", "sdef"),
             ("ATK.SPD", f"{me.get('aspd', 0)}", "aspd"),
             ("MV.SPD", f"{me.get('ms', 0)}", "ms"),
             ("RNG", f"{me.get('rng', 0)}", "rng"),
+            ("CC", cc_text, None),
         ]
-        for i, (label, value, dkey) in enumerate(rows):
-            y = y0 + 6 + i * line
-            self.screen.blit(self.font.render(label, True, (150, 160, 175)),
-                             (x0 + 8, y))
-            vlabel = self.font.render(value, True, white)
-            self.screen.blit(vlabel, (x0 + 86, y))
-            if dkey and dlt.get(dkey):
-                d = dlt[dkey]
-                sign = "+" if d > 0 else ""
-                color = (90, 220, 110) if d > 0 else (230, 90, 90)
-                dl = self.font.render(f"{sign}{d}", True, color)
-                self.screen.blit(dl, (x0 + 86 + vlabel.get_width() + 6, y))
-        # Crowd-control flags row.
-        cc = me.get("cc")
-        if cc:
-            txt = self.font.render(" ".join(c.upper() for c in cc), True,
-                                   (255, 140, 140))
-            self.screen.blit(txt, (x0 + 8, y0 + 6 + 11 * line))
+        for col_i, rows in enumerate((col1, col2)):
+            cx0 = x0 + col_i * col_w
+            for i, (label, value, dkey) in enumerate(rows):
+                y = y0 + 6 + i * line
+                self.screen.blit(
+                    self.font_small.render(label, True, (150, 160, 175)),
+                    (cx0 + 8, y))
+                color = white if label != "CC" or not value else (255, 140, 140)
+                vlabel = self.font_small.render(value, True, color)
+                self.screen.blit(vlabel, (cx0 + 68, y))
+                if dkey and dlt.get(dkey):
+                    d = dlt[dkey]
+                    sign = "+" if d > 0 else ""
+                    dcolor = (90, 220, 110) if d > 0 else (230, 90, 90)
+                    dl = self.font_small.render(f"{sign}{d}", True, dcolor)
+                    # Right-aligned to the column's own edge so it can never
+                    # spill past the box, regardless of value text length.
+                    self.screen.blit(dl, (cx0 + col_w - 6 - dl.get_width(), y))
 
     def _minimap_background(self, entities) -> pygame.Surface:
         """Panel fill + river/lane/wall/tree lines, none of which move at
@@ -1512,15 +1475,14 @@ class Renderer:
     # the keyboard: Q/W/E on top, A/S/D on the bottom.
     _ITEM_SLOT_LABELS = ("Q", "W", "E", "A", "S", "D")
 
-    def _draw_inventory(self, me: dict) -> None:
-        """Inventory as a 2x3 grid (bottom-right); Cmd/Alt+QWE/ASD activate."""
+    def _draw_inventory(self, me: dict, x0: int, y0: int) -> None:
+        """Inventory as a 3x2 grid inside the HUD strip; Cmd/Alt+QWE/ASD
+        activate."""
         inv = me.get("inv", [])
         icds = me.get("icds", {})
         names = {it["item_id"]: it["name"] for it in self.item_catalog}
-        slot, gap = 46, 0
-        cols, rows = 3, 2
-        x0 = SCREEN_WIDTH - cols * slot - 12
-        y0 = SCREEN_HEIGHT - rows * slot - 8
+        slot = 46
+        cols = 3
         self._item_rects = []
         for i in range(6):
             col, row = i % cols, i // cols
@@ -1535,24 +1497,28 @@ class Renderer:
             if i < len(inv):
                 item_id = inv[i]
                 self._item_rects.append((rect, item_id))
-                short = names.get(item_id, item_id)[:6]
-                self.screen.blit(self.font.render(short, True, COLOR_TEXT),
-                                 (x + 3, y + 16))
+                icon_img = self.sprites.item_icon(item_id)
+                if icon_img is not None:
+                    scaled = pygame.transform.smoothscale(icon_img, (28, 28))
+                    self.screen.blit(scaled, (x + 9, y + 12))
+                else:
+                    short = names.get(item_id, item_id)[:6]
+                    self.screen.blit(self.font.render(short, True, COLOR_TEXT),
+                                     (x + 3, y + 16))
                 cd = icds.get(item_id, 0)
                 if cd > 0:
                     self.screen.blit(
                         self.font.render(f"{cd:.0f}", True, (240, 200, 120)),
                         (x + 3, y + 28))
+        self._inventory_rect = pygame.Rect(x0, y0, cols * slot, 2 * slot)
 
-    def _draw_tp_slot(self, me: dict) -> None:
-        """Dedicated TP-scroll slot (cast with Z), above the item grid: shows the
-        charge count and the shared cooldown sweep."""
+    def _draw_tp_slot(self, me: dict, x: int, y: int) -> None:
+        """Dedicated TP-scroll slot (cast with Z), right of the item grid:
+        shows the charge count and the shared cooldown sweep."""
         tp = me.get("tp", {})
         charges = tp.get("n", 0)
         cd = tp.get("cd", 0)
         slot = 46
-        x = SCREEN_WIDTH - slot - 12
-        y = SCREEN_HEIGHT - 2 * 46 - 8 - slot - 6
         rect = pygame.Rect(x, y, slot - 4, slot - 4)
         has = charges > 0 and cd <= 0
         fill = (40, 60, 70) if has else (40, 45, 55)
@@ -1593,6 +1559,21 @@ class Renderer:
                     lines.append("Active (F-key to use)")
                 self._tooltip_box(mx, my, lines)
                 return
+        for rect, item_id in getattr(self, "_shop_rects", []):
+            if rect.collidepoint(mx, my):
+                it = next((c for c in self.item_catalog
+                           if c["item_id"] == item_id), None)
+                if it is None:
+                    return
+                lines = [f"{it['name']} ({it['cost']}g)"]
+                act = it.get("active")
+                if act:
+                    lines.append(f"Active: {act['name']}  "
+                                 f"CD {act.get('cd', 0)}s  Mana {act.get('mana', 0)}")
+                if it.get("passive"):
+                    lines.append(f"Passive: {it['passive']}")
+                self._tooltip_box(mx, my, lines)
+                return
 
     def _tooltip_box(self, mx: int, my: int, lines: list) -> None:
         lines = [ln for ln in lines if ln]
@@ -1610,12 +1591,16 @@ class Renderer:
             self.screen.blit(r, (bx + 8, by + 6 + i * 16))
 
     def _draw_shop(self, me: dict) -> None:
-        """Simple shop panel: catalog rows bought with number keys."""
+        """Shop panel: an icon + name/cost row per catalog item, click (or the
+        matching number key) to buy. Rows are recorded in `_shop_rects` for
+        the input handler's click-to-buy hit-testing and for hover tooltips."""
         gold = me.get("gold", 0) if me else 0
         pad = 12
-        w, line = 320, 26
-        h = pad * 2 + line * (len(self.item_catalog) + 2)
+        icon = 28
+        w, line = 320, 32
+        h = pad * 2 + line * (len(self.item_catalog) + 1)
         x0, y0 = 20, 80
+        self._shop_panel_rect = pygame.Rect(x0, y0, w, h)
         panel = pygame.Surface((w, h))
         panel.set_alpha(235)
         panel.fill((25, 28, 36))
@@ -1625,23 +1610,36 @@ class Renderer:
                          (x0 + pad, y0 + pad))
         self.screen.blit(self.font.render(f"Gold: {gold}", True, (240, 220, 120)),
                          (x0 + pad + 90, y0 + pad + 6))
+        self._shop_rects = []
+        mx, my = pygame.mouse.get_pos()
         for i, it in enumerate(self.item_catalog):
-            y = y0 + pad + line * (i + 1) + 6
+            y = y0 + pad + line * (i + 1) + 4
+            row_rect = pygame.Rect(x0 + 4, y - 2, w - 8, line - 2)
+            self._shop_rects.append((row_rect, it["item_id"]))
             affordable = gold >= it["cost"]
             color = COLOR_TEXT if affordable else (130, 130, 130)
+            if row_rect.collidepoint(mx, my):
+                pygame.draw.rect(self.screen, (55, 60, 72), row_rect,
+                                 border_radius=4)
+            icon_img = self.sprites.item_icon(it["item_id"])
+            if icon_img is not None:
+                scaled = pygame.transform.smoothscale(icon_img, (icon, icon))
+                self.screen.blit(scaled, (x0 + pad, y - 3))
             bonus = ", ".join(f"+{v} {k}" for k, v in it.get("bonuses", {}).items())
             act = "  [active]" if it.get("active") else ""
             row = f"{i+1}. {it['name']} ({it['cost']}g)  {bonus}{act}"
-            self.screen.blit(self.font.render(row, True, color), (x0 + pad, y))
+            self.screen.blit(self.font.render(row, True, color),
+                             (x0 + pad + icon + 6, y))
         self.screen.blit(
-            self.font.render("num=buy  F1-F6=sell  B=close", True, (150, 150, 150)),
-            (x0 + pad, y0 + h - line))
+            self.font.render("click/num=buy  F1-F6=sell  B=close",
+                             True, (150, 150, 150)),
+            (x0 + pad, y0 + h - 20))
 
     def _draw_respawn(self, me: dict) -> None:
         t = me.get("resp", 0)
         msg = self.font_huge.render(f"Respawning {t:.0f}", True, (220, 120, 120))
         self.screen.blit(msg, (SCREEN_WIDTH // 2 - msg.get_width() // 2,
-                               SCREEN_HEIGHT // 2 - 40))
+                               VIEWPORT_HEIGHT // 2 - 40))
 
     def _draw_game_over(self, winner: int, my_team) -> None:
         won = (my_team == winner)
@@ -1649,10 +1647,10 @@ class Renderer:
         color = (120, 220, 120) if won else (220, 120, 120)
         banner = self.font_huge.render(text, True, color)
         self.screen.blit(banner, (SCREEN_WIDTH // 2 - banner.get_width() // 2,
-                                  SCREEN_HEIGHT // 2 - 60))
+                                  VIEWPORT_HEIGHT // 2 - 60))
         sub = self.font_large.render(f"Team {winner} wins", True, COLOR_TEXT)
         self.screen.blit(sub, (SCREEN_WIDTH // 2 - sub.get_width() // 2,
-                               SCREEN_HEIGHT // 2))
+                               VIEWPORT_HEIGHT // 2))
 
     @staticmethod
     def _find(entities, eid):

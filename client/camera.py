@@ -1,6 +1,6 @@
 """Camera / viewport that follows the player's hero."""
 
-from shared.config import SCREEN_WIDTH, SCREEN_HEIGHT, MAP_WIDTH, MAP_HEIGHT
+from shared.config import VIEWPORT_WIDTH, VIEWPORT_HEIGHT, MAP_WIDTH, MAP_HEIGHT
 
 
 class Camera:
@@ -10,8 +10,8 @@ class Camera:
 
     def follow(self, world_x: float, world_y: float) -> None:
         """Center the camera on a world position, clamped to map edges."""
-        self.x = world_x - SCREEN_WIDTH / 2
-        self.y = world_y - SCREEN_HEIGHT / 2
+        self.x = world_x - VIEWPORT_WIDTH / 2
+        self.y = world_y - VIEWPORT_HEIGHT / 2
         self._clamp()
 
     def pan(self, dx: float, dy: float) -> None:
@@ -22,9 +22,9 @@ class Camera:
 
     def _clamp(self) -> None:
         # Clamp so we don't show beyond the map. If the map is smaller than the
-        # screen on an axis, pin to 0.
-        self.x = max(0, min(max(0, MAP_WIDTH - SCREEN_WIDTH), self.x))
-        self.y = max(0, min(max(0, MAP_HEIGHT - SCREEN_HEIGHT), self.y))
+        # viewport on an axis, pin to 0.
+        self.x = max(0, min(max(0, MAP_WIDTH - VIEWPORT_WIDTH), self.x))
+        self.y = max(0, min(max(0, MAP_HEIGHT - VIEWPORT_HEIGHT), self.y))
 
     def world_to_screen(self, wx: float, wy: float) -> tuple[int, int]:
         """Convert world coordinates to screen pixel coordinates."""

@@ -92,6 +92,7 @@ class Mabini(HeroDef):
             skills.shred_sp_def(ctx, t, Q_SHRED, Q_SHRED_DUR)
 
     @ability("W", "Decalogue", cd=12, mana=75, cast=CastType.POINT,
+             radius=W_RADIUS,
              desc="Bind an area with an edict: special damage and a heavy slow "
                   "(a brief root at higher ranks).")
     def decalogue(ctx):
@@ -110,6 +111,7 @@ class Mabini(HeroDef):
         pass  # passive — refreshed in on_tick
 
     @ability("R", "Paralysis", cd=85, mana=130, cast=CastType.POINT,
+             radius=R_RADIUS,
              desc="Paralyze all enemies in a large area, stunning them.")
     def paralysis(ctx):
         hit = skills.area_dmg(ctx, dmg=R_DMG, radius=R_RADIUS, dtype="special",

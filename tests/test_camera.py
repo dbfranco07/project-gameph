@@ -2,7 +2,7 @@
 
 import unittest
 from client.camera import Camera
-from shared.config import SCREEN_WIDTH, SCREEN_HEIGHT, MAP_WIDTH, MAP_HEIGHT
+from shared.config import VIEWPORT_WIDTH, VIEWPORT_HEIGHT, MAP_WIDTH, MAP_HEIGHT
 
 
 class TestCamera(unittest.TestCase):
@@ -12,8 +12,8 @@ class TestCamera(unittest.TestCase):
     def test_follow_centers_on_position(self):
         self.cam.follow(1000, 1000)
         # Camera top-left should be offset by half screen
-        self.assertAlmostEqual(self.cam.x, 1000 - SCREEN_WIDTH / 2)
-        self.assertAlmostEqual(self.cam.y, 1000 - SCREEN_HEIGHT / 2)
+        self.assertAlmostEqual(self.cam.x, 1000 - VIEWPORT_WIDTH / 2)
+        self.assertAlmostEqual(self.cam.y, 1000 - VIEWPORT_HEIGHT / 2)
 
     def test_follow_clamps_to_top_left(self):
         self.cam.follow(0, 0)
@@ -22,8 +22,8 @@ class TestCamera(unittest.TestCase):
 
     def test_follow_clamps_to_bottom_right(self):
         self.cam.follow(MAP_WIDTH, MAP_HEIGHT)
-        self.assertEqual(self.cam.x, MAP_WIDTH - SCREEN_WIDTH)
-        self.assertEqual(self.cam.y, MAP_HEIGHT - SCREEN_HEIGHT)
+        self.assertEqual(self.cam.x, MAP_WIDTH - VIEWPORT_WIDTH)
+        self.assertEqual(self.cam.y, MAP_HEIGHT - VIEWPORT_HEIGHT)
 
     def test_world_to_screen(self):
         self.cam.x = 100

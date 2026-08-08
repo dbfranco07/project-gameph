@@ -44,13 +44,12 @@ towers:
 # The last entry sits at the bottom-right river end; its mirror lands at the
 # top-left river end, so both river mouths get a camp.
 jungle_camps:
-  - [1490, 3380, 3]
-  - [1380, 2230, 3]
-
-  - [2280, 4800, 3]
-  - [3080, 4810, 2]
-  - [3980, 4810, 2]
-  - [3130, 4050, 2]
+  - [2280, 4800, 3] # neutral creep 1
+  - [3080, 4810, 4] # neutral creep 2
+  - [3130, 4050, 2] # neutral creep 3
+  - [3980, 4810, 2] # neutral creep 4
+  - [1490, 3380, 3] # neutral creep 5
+  - [1380, 2230, 4] # neutral creep 6
 
 # Wave-1 minion meeting points per lane (single, shared between sides). Wave-1
 # minion speed is tuned so both sides arrive here together, then reverts.
@@ -94,6 +93,7 @@ walls:
   - { p1: [3390, 5230], p2: [3555, 4520], thickness: 40 }
   # mid lane base-inner
   - { p1: [1860, 4555], p2: [2210, 4220], thickness: 100 }
+  - { p1: [2720, 3913], p2: [3014, 3652], thickness: 80 }
   # mid lane base-inner
   - { p1: [1735, 3775], p2: [2505, 3015], thickness: 50 }
   # top lane base-inner
@@ -125,3 +125,28 @@ trees:
 
   # mid-river
   - { p1: [2672, 2787], p2: [2771, 2688], thickness: 30 }
+
+  # neutral creep 1
+  - { p1: [2108, 4677], p2: [2352, 4662], thickness: 30 }
+  - { p1: [2352, 4662], p2: [2459, 4875], thickness: 30 }
+  - { p1: [2459, 4875], p2: [2345, 5027], thickness: 30 }
+
+  # neutral creep 2
+  - { p1: [2890, 4816], p2: [2962, 4651], thickness: 30 }
+  - { p1: [2962, 4651], p2: [3156, 4627], thickness: 30 }
+  - { p1: [3156, 4627], p2: [3297, 4818], thickness: 30 }
+
+  # neutral creep 3
+  - { p1: [3290, 3907], p2: [3364, 4119], thickness: 30 }
+  - { p1: [3364, 4119], p2: [3281, 4242], thickness: 30 }
+
+  # neutral creep 4
+  - { p1: [3719, 4753], p2: [3910, 4578], thickness: 30 }
+  - { p1: [4239, 4799], p2: [4144, 5015], thickness: 30 }
+
+  # neutral creep 5
+  - { p1: [1428, 3620], p2: [1665, 3509], thickness: 30 }
+  - { p1: [1665, 3509], p2: [1684, 3244], thickness: 30 }
+
+  # neutral creep 6
+  - { p1: [1429, 2497], p2: [1567, 2263], thickness: 40 }

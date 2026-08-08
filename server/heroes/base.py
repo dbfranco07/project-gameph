@@ -47,7 +47,8 @@ class Ability:
 
     def __init__(self, key: str, name: str, cd: float, mana: int,
                  cast: CastType, fn, desc: str = "", max_rank: int = 4,
-                 target: str = "ground", range: float = 0.0) -> None:
+                 target: str = "ground", range: float = 0.0,
+                 radius: float = 0.0) -> None:
         self.key = key
         self.name = name
         self.cd = cd
@@ -63,6 +64,12 @@ class Ability:
         # units, 0 = unbounded) bounds unit-target validity.
         self.target = target
         self.range = range
+        # AoE radius (world units, 0 = not an AoE): purely a client-side hint
+        # so the aiming cursor can draw the actual area of effect instead of
+        # a generic ring. Must match the radius passed to the skills helper
+        # (e.g. `skills.area_dmg(ctx, radius=Q_RADIUS, ...)`) that the ability
+        # body actually casts with.
+        self.radius = radius
 
     def describe(self) -> dict:
         """UI-agnostic metadata sent to the client (no cast code)."""
@@ -78,13 +85,15 @@ class Ability:
         }
         if self.range:
             d["range"] = self.range
+        if self.radius:
+            d["radius"] = self.radius
         return d
 
 
 def ability(key: str, name: str, cd: float, mana: int,
             cast: CastType = CastType.POINT, desc: str = "",
             max_rank: int | None = None, target: str = "ground",
-            range: float = 0.0):
+            range: float = 0.0, radius: float = 0.0):
     """Decorator tagging a `HeroDef` method as an ability.
 
     The decorated method takes a single `CastContext` (`ctx`). It is collected
@@ -92,14 +101,17 @@ def ability(key: str, name: str, cd: float, mana: int,
     declare abilities Q, W, E, R top-to-bottom. ``desc`` is HUD tooltip text;
     ``max_rank`` defaults to 3 for the ultimate (key "R") and 4 otherwise.
     ``target``/``range`` are client targeting hints (see ``Ability``); default
-    "ground" keeps a skillshot/point cast always-valid.
+    "ground" keeps a skillshot/point cast always-valid. ``radius``, when this
+    is an AoE, should match the radius the ability body actually casts with
+    (e.g. `skills.area_dmg(ctx, radius=Q_RADIUS, ...)`) — it only drives the
+    client's aiming-circle preview, nothing gameplay-affecting.
     """
     if max_rank is None:
         max_rank = 3 if key == "R" else 4
 
     def deco(fn):
         fn._ability_meta = (key, name, cd, mana, cast, desc, max_rank,
-                            target, range)
+                            target, range, radius)
         return fn
 
     return deco
@@ -196,10 +208,10 @@ class HeroDef:
             meta = getattr(value, "_ability_meta", None)
             if meta is None:
                 continue
-            key, name, cd, mana, cast, desc, max_rank, target, rng = meta
+            key, name, cd, mana, cast, desc, max_rank, target, rng, radius = meta
             collected.append(
                 Ability(key, name, cd, mana, cast, value, desc, max_rank,
-                        target, rng))
+                        target, rng, radius))
         cls.abilities = collected
         cls._validate()
 

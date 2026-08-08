@@ -626,13 +626,24 @@ def system_collision(state: GameState, dt: float) -> None:
     structs = [e for e in state.entities.values()
                if isinstance(e, Structure) and e.alive]
     obstacles = state.obstacle_capsules()
+    # Units mid-reel toward a fixed point (e.g. Lastikman's grapple) are
+    # exempted below so this system doesn't fight that tick's pull; the
+    # exemption self-clears the moment system_displacements drops the pull.
+    pulled_to_point = {p["tgt"] for p in state.pulls if "pt" in p}
     for u in units:
-        for s in structs:
-            _eject_circle(u, s.x, s.y, s.radius)
-        # Anything asserting the `phase` flag ignores walls and trees. The split
-        # and bind statuses both declare it, so this system no longer needs to
-        # know which hero mechanics happen to grant terrain phasing.
-        ignores_terrain = u.statuses.has("phase")
+        # A unit mid-reel toward a fixed point (e.g. Lastikman's grapple)
+        # must not have this tick's pull fought by ejection out of whatever
+        # it's being reeled toward, structure or obstacle alike.
+        pulled = u.entity_id in pulled_to_point
+        if not pulled:
+            for s in structs:
+                _eject_circle(u, s.x, s.y, s.radius)
+        # Anything asserting the `phase` flag ignores walls and trees (but not
+        # structures — phase was never meant to walk a unit through a tower).
+        # The split and bind statuses both declare it, so this system no
+        # longer needs to know which hero mechanics happen to grant terrain
+        # phasing.
+        ignores_terrain = u.statuses.has("phase") or pulled
         if not ignores_terrain:
             for cap in obstacles:
                 _push_out_of_capsule(u, cap)
@@ -810,9 +821,10 @@ def system_projectiles(state: GameState, dt: float) -> None:
             proj.x += proj.vx * dt
             proj.y += proj.vy * dt
             proj.range_left -= step
-            anchor = _grapple_hit(state, proj, px0, py0)
-            if anchor is not None:
-                _resolve_grapple(state, proj, anchor[0], anchor[1])
+            hit = _grapple_hit(state, proj, px0, py0)
+            if hit is not None:
+                (ax, ay), target_half = hit
+                _resolve_grapple(state, proj, ax, ay, target_half)
             elif proj.range_left <= 0 or not (0 <= proj.x <= MAP_WIDTH and 0 <= proj.y <= MAP_HEIGHT):
                 dead.append(proj.entity_id)  # missed all terrain: fizzle
         else:
@@ -851,9 +863,10 @@ HOOK_LINGER = 0.2  # min seconds a landed hook stays visible after latching
 
 def _grapple_hit(state: GameState, proj: HookProjectile, px0: float, py0: float):
     """Nearest wall / tree / structure the grapple's travel segment touches this
-    tick, as an anchor point (on the approach side) or None. The caster is reeled
-    to just outside this point (stop_dist)."""
-    best_pt, best_d = None, None
+    tick, as (anchor point, half-width the caster's own radius must additionally
+    clear to rest outside the target) or None. The caster is reeled to just
+    outside this point (stop_dist, floored against that clearance)."""
+    best_pt, best_d, best_half = None, None, 0.0
     for e in state.entities.values():
         if not e.alive:
             continue
@@ -863,28 +876,49 @@ def _grapple_hit(state: GameState, proj: HookProjectile, px0: float, py0: float)
             if not segment_capsule_intersect(px0, py0, proj.x, proj.y,
                                               x0, y0, x1, y1, th + 2 * proj.radius):
                 continue
-            ax, ay = closest_point_on_segment(e.x, e.y, px0, py0, proj.x, proj.y)
+            # Anchor at the point on the wall's own centerline nearest the
+            # caster (not the projectile path's closest approach to the wall's
+            # bounding-box midpoint) so the reel lands just outside the true
+            # wall surface instead of possibly inside/behind it.
+            ax, ay = closest_point_on_segment(px0, py0, x0, y0, x1, y1)
+            half = th / 2.0
         elif isinstance(e, Structure):
             ax, ay = closest_point_on_segment(e.x, e.y, px0, py0, proj.x, proj.y)
             if math.hypot(e.x - ax, e.y - ay) > proj.radius + e.radius:
                 continue
+            half = e.radius
         else:
             continue
         d = math.hypot(ax - px0, ay - py0)
         if best_d is None or d < best_d:
-            best_pt, best_d = (ax, ay), d
-    return best_pt
+            best_pt, best_d, best_half = (ax, ay), d, half
+    return (best_pt, best_half) if best_pt is not None else None
+
+
+# Extra clearance added on top of the caster's own radius + the target's
+# half-width/radius, so the reel never rests exactly on the collision
+# boundary (where floating-point noise could re-trigger an eject).
+GRAPPLE_CLEARANCE_BUFFER = 15.0
 
 
 def _resolve_grapple(state: GameState, proj: HookProjectile,
-                     ax: float, ay: float) -> None:
-    """A landed grapple: pin the hook head at (ax, ay) and reel the caster in."""
+                     ax: float, ay: float, target_half: float = 0.0) -> None:
+    """A landed grapple: pin the hook head at (ax, ay) and reel the caster in.
+
+    The stop distance is floored to comfortably clear the actual target's
+    size (a thick wall or the core is far wider than the flat default), so
+    the pull is guaranteed to reach a resting point system_collision won't
+    immediately re-eject it from — otherwise the pull could sit exactly on
+    (a thick wall) or forever short of (something wider than stop_dist, e.g.
+    the core) the collision boundary and never terminate."""
     owner = state.entities.get(proj.owner_id)
     if owner is not None and owner.alive:
-        state.pulls.append({"tgt": owner.entity_id, 
+        stop = max(proj.stop_dist,
+                   owner.radius + target_half + GRAPPLE_CLEARANCE_BUFFER)
+        state.pulls.append({"tgt": owner.entity_id,
                             "pt": (ax, ay),
-                            "speed": proj.pull_speed, 
-                            "stop": proj.stop_dist})
+                            "speed": proj.pull_speed,
+                            "stop": stop})
     proj.anchored = True
     proj.anchor_x, proj.anchor_y = ax, ay
     proj.vx = proj.vy = 0.0
@@ -1029,7 +1063,12 @@ def system_displacements(state: GameState, dt: float) -> None:
             margin = pull["stop"] + to.radius
         dx, dy = ax - tgt.x, ay - tgt.y
         dist = math.hypot(dx, dy)
-        if dist <= margin:
+        # A small tolerance beyond `margin` catches the case where `dist`
+        # converges to a hair's width above it: `step` below shrinks toward
+        # zero as that gap closes, so without this the unit can stall
+        # forever a fraction of a unit short of "arrived" (observed as
+        # Lastikman's grapple leaving the caster permanently stuck).
+        if dist <= margin + 0.5:
             continue  # arrived
         step = min(pull["speed"] * dt, dist - margin)
         tgt.x += (dx / dist) * step

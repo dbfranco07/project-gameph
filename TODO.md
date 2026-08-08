@@ -1,5 +1,13 @@
-- [] Create an HUD where the map, stats, skills, and items are there. Also reduce the screensize to ensure that the HUD and game screen are separate.
-- [] Not sure how to buy items. Right now numbers are used to buy them but now, there are more than 9 items and cannot buy some.
+- [x] Create an HUD where the map, stats, skills, and items are there. Also reduce the screensize to ensure that the HUD and game screen are separate. (minimap/attribute panel shrunk + overflow fixed, abilities now inline — the screen/HUD separation part is still open)
+- [x] Not sure how to buy items. Right now numbers are used to buy them but now, there are more than 9 items and cannot buy some.
 - [] Improve sprites
-- [] Add images for items
-- [] Lastikman sometimes get stuck on walls.
+- [x] Add images for items
+- [x] Lastikman sometimes get stuck on walls.
+- [x] AoE skills when targetting should be a circle showing the radius of the skill, and not a regular cursor.
+- [x] When targetting, if the target is invalid, I should not be able to continue. Right now if target is invalid, if I press left click, it uses the skill but nothing happens.
+- [] Now have an HUD but when my mouse is in the HUD, it makes the map pan below (not wanted). Should only pan when mouse is below the screen, not when in HUD
+- [] Improve HUD.
+- [] Fix aswang being able to target neutrals as well.
+- [] Still a bug in lastik man. When I target a wall, if I end up not being too close to the target point, I get stuck. Hopefully I should be able to move even if I was not too close to the wall.
+- [] Gold and exp earned (when killing enemy) should show up near enemy, and not to the hero. Make gold earned in yellow and exp earned in green.
+- [] In show, the added attributes overflow the show window. Would like it if each row there is the header which is the item name and price. Then below it (in smaller text) is the details and other benefits.

@@ -54,7 +54,7 @@ class Mangkukulam(HeroDef):
     phys_def_per_level = 2.0
     sp_def_per_level = 3.0
 
-    @ability("Q", "Hex Aura", cd=7, mana=70, cast=CastType.POINT,
+    @ability("Q", "Hex Aura", cd=7, mana=70, cast=CastType.POINT, radius=Q_RADIUS,
              desc="Curse an area: special damage to enemies and healing to "
                   "allies. With Evil Eye, also reduces enemy special defense.")
     def hex_aura(ctx):
@@ -85,6 +85,7 @@ class Mangkukulam(HeroDef):
         pass  # passive — read by Q/R via _evil_eye
 
     @ability("R", "Pangkukulam", cd=80, mana=130, cast=CastType.POINT,
+             radius=R_RADIUS,
              desc="Unleash a great curse: heavy special damage and a silence to "
                   "all enemies in a large area.")
     def pangkukulam(ctx):

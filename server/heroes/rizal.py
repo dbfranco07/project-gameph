@@ -97,6 +97,7 @@ class Rizal(HeroDef):
         ret.vx, ret.vy = rdx / rd * Q_SPEED, rdy / rd * Q_SPEED
 
     @ability("W", "Words of Reform", cd=12, mana=70, cast=CastType.POINT,
+             radius=W_RADIUS,
              desc="Hypnotic words silence enemies in an area (and briefly stun "
                   "them at higher ranks).")
     def words_of_reform(ctx):

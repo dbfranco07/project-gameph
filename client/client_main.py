@@ -11,6 +11,8 @@ _IS_MAC = sys.platform == "darwin"
 from shared.config import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
+    VIEWPORT_WIDTH,
+    VIEWPORT_HEIGHT,
     CLIENT_FPS,
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -211,7 +213,12 @@ class GameClient:
         # Send input messages (needs current entities for targeting).
         entities = self.interpolator.get_entities()
         messages = self.input_handler.process_events(
-            events, entities, self.my_team)
+            events,
+            entities,
+            self.my_team,
+            self.my_entity_id,
+            shop_rects=self.renderer._shop_rects,
+            shop_panel_rect=self.renderer._shop_panel_rect)
         for msg in messages:
             self._send(msg)
 
@@ -284,11 +291,11 @@ class GameClient:
         dx = dy = 0.0
         if mx <= EDGE_PAN_MARGIN:
             dx = -step
-        elif mx >= SCREEN_WIDTH - EDGE_PAN_MARGIN:
+        elif mx >= VIEWPORT_WIDTH - EDGE_PAN_MARGIN:
             dx = step
         if my <= EDGE_PAN_MARGIN:
             dy = -step
-        elif my >= SCREEN_HEIGHT - EDGE_PAN_MARGIN:
+        elif my >= VIEWPORT_HEIGHT - EDGE_PAN_MARGIN:
             dy = step
         if dx or dy:
             self.camera.pan(dx, dy)

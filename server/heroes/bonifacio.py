@@ -84,6 +84,7 @@ class Bonifacio(HeroDef):
     sp_def_per_level = 2.5
 
     @ability("Q", "Bolo Cleave", cd=6, mana=45, cast=CastType.POINT,
+             radius=Q_RADIUS,
              desc="Sweep your bolo, dealing physical damage to enemies in front "
                   "of you.")
     def bolo_cleave(ctx):

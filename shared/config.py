@@ -61,6 +61,16 @@ TICK_DURATION = 1.0 / SERVER_TICK_RATE  # seconds per tick
 MAP_CENTER = (MAP_WIDTH / 2, MAP_HEIGHT / 2)
 HERO_VISION_RADIUS = VISION_RADIUS
 
+# The window (SCREEN_WIDTH x SCREEN_HEIGHT) is split into a world viewport on
+# top and a horizontal HUD strip along the bottom, so the HUD never overlaps
+# the game view (previously the minimap/stats/etc. were drawn directly over
+# the bottom-left of the world, hiding whatever was there — e.g. Team 1's
+# base). The viewport is anchored at the window's top-left, so only the
+# height changes; width stays full-window for both.
+HUD_HEIGHT = 170
+VIEWPORT_WIDTH = SCREEN_WIDTH
+VIEWPORT_HEIGHT = SCREEN_HEIGHT - HUD_HEIGHT
+
 # Spawn / structure positions. The FOUNTAIN (well) is where heroes spawn and
 # fast-heal; the CORE is a distinct inland win structure (see _spawn_structures).
 T1_FOUNTAIN = tuple(_map["fountain"])

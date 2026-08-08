@@ -7,8 +7,9 @@ import sys
 import pygame
 
 from shared.game_types import MsgType, CastType
-from shared.config import ATTACK_CLICK_PIXELS
+from shared.config import ATTACK_CLICK_PIXELS, VIEWPORT_HEIGHT
 from client.camera import Camera
+from client import targeting
 
 # Ability keys mapped to their ability "key" label sent to the server. Most
 # heroes use Q/W/E/R; a few (e.g. Pedro Penduko's seven-color Mutya) extend
@@ -48,6 +49,9 @@ class InputHandler:
         self.attack_armed = False
         # Per-ability cast-type metadata (key -> CastType int), from JOIN_ACK.
         self.ability_cast_types: dict[str, int] = {}
+        # Full ability metadata (key/target/range/radius/...), from JOIN_ACK —
+        # needed to validate a pending cast's target before firing it.
+        self.hero_abilities: list[dict] = []
         # Key of an ability awaiting a target click (None = not targeting).
         self.pending_cast: str | None = None
         # Shop state + catalog (item metadata) delivered in JOIN_ACK.
@@ -55,6 +59,7 @@ class InputHandler:
         self.item_catalog: list[dict] = []
 
     def set_hero_abilities(self, abilities: list[dict]) -> None:
+        self.hero_abilities = abilities or []
         self.ability_cast_types = {
             ab["key"]: ab.get("cast", int(CastType.POINT))
             for ab in (abilities or [])
@@ -63,12 +68,19 @@ class InputHandler:
     def set_item_catalog(self, catalog: list[dict]) -> None:
         self.item_catalog = catalog or []
 
-    def process_events(self, events, entities, my_team) -> list[dict]:
+    def process_events(self, events, entities, my_team, my_entity_id=None,
+                       shop_rects=(), shop_panel_rect=None) -> list[dict]:
         """Process Pygame events and return messages to send to the server.
 
         `entities` is the current interpolated entity list, used to resolve which
         enemy (if any) sits under the cursor for an 'A + click' attack command or
-        a unit-targeted ability.
+        a unit-targeted ability. `my_entity_id` additionally lets a pending cast's
+        target be validated (range/unit/terrain) before it's sent, so clicking an
+        invalid target doesn't waste the ability. `shop_rects` (row rect, item_id)
+        and `shop_panel_rect` are the renderer's last-drawn shop layout, used to
+        route left-clicks while the shop is open: a click on a row buys that
+        item, a click elsewhere on the panel is swallowed, and a click outside
+        the panel falls through to normal hero control.
         """
         messages: list[dict] = []
 
@@ -111,9 +123,23 @@ class InputHandler:
                     messages.append({"t": int(MsgType.STOP)})
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
+                if self.shop_open and event.button == 1:
+                    if self._on_shop_click(event.pos, shop_rects,
+                                           shop_panel_rect, messages):
+                        continue  # click landed on/in the shop: don't fall
+                        # through to world-space hero control below
+                if event.button == 3 and self.pending_cast is not None:
+                    # Right-click always cancels a pending cast, even from
+                    # the HUD strip below the world viewport.
+                    self.attack_armed = False
+                    self.pending_cast = None
+                    continue
+                if event.pos[1] >= VIEWPORT_HEIGHT:
+                    continue  # click landed in the HUD strip: not world space
                 wx, wy = self.camera.screen_to_world(*event.pos)
                 if event.button == 1 and self.pending_cast is not None:
-                    self._resolve_cast(entities, my_team, wx, wy, messages)
+                    self._resolve_cast(entities, my_team, my_entity_id, wx, wy,
+                                       messages)
                 elif event.button == 1 and self.attack_armed:
                     # Attack command: focus an enemy under the cursor, or attack-move.
                     self.attack_armed = False
@@ -125,12 +151,8 @@ class InputHandler:
                         "tid": tid,
                     })
                 elif event.button == 3:
-                    # Right-click cancels a pending cast; otherwise it moves.
                     self.attack_armed = False
-                    if self.pending_cast is not None:
-                        self.pending_cast = None
-                    else:
-                        messages.append({"t": int(MsgType.MOVE), "tx": wx, "ty": wy})
+                    messages.append({"t": int(MsgType.MOVE), "tx": wx, "ty": wy})
 
         return messages
 
@@ -153,8 +175,23 @@ class InputHandler:
     def _buy(self, index: int, messages: list[dict]) -> None:
         """Shop is open: buy the catalog row at `index`."""
         if 0 <= index < len(self.item_catalog):
-            messages.append({"t": int(MsgType.BUY_ITEM),
-                             "item": self.item_catalog[index]["item_id"]})
+            self._buy_item_id(self.item_catalog[index]["item_id"], messages)
+
+    def _buy_item_id(self, item_id: str, messages: list[dict]) -> None:
+        messages.append({"t": int(MsgType.BUY_ITEM), "item": item_id})
+
+    def _on_shop_click(self, pos, shop_rects, shop_panel_rect,
+                       messages: list[dict]) -> bool:
+        """Handle a left-click while the shop is open. Returns True if the
+        click landed on/in the shop panel (and should not also drive hero
+        control), False if it missed the panel entirely."""
+        for rect, item_id in shop_rects:
+            if rect.collidepoint(pos):
+                self._buy_item_id(item_id, messages)
+                return True
+        if shop_panel_rect is not None and shop_panel_rect.collidepoint(pos):
+            return True  # inside the panel but not on a row: swallow it
+        return False
 
     def _on_item_slot(self, slot: int, messages: list[dict]) -> None:
         """F-key on an inventory slot: sell it while shopping, else use its active."""
@@ -166,9 +203,17 @@ class InputHandler:
                              "key": f"I{slot + 1}", "tx": 0.0, "ty": 0.0,
                              "tid": None})
 
-    def _resolve_cast(self, entities, my_team, wx, wy, messages: list[dict]) -> None:
-        """Left-click while targeting: send the queued ability at the click."""
+    def _resolve_cast(self, entities, my_team, my_entity_id, wx, wy,
+                      messages: list[dict]) -> None:
+        """Left-click while targeting: send the queued ability at the click —
+        unless the click isn't actually a valid target for it, in which case
+        the cast stays armed instead of firing (and wasting mana/cooldown) on
+        a click that would visibly do nothing."""
         key = self.pending_cast
+        valid = targeting.pending_target_valid(
+            entities, my_entity_id, my_team, self.hero_abilities, key, wx, wy)
+        if valid is False:
+            return  # invalid target: leave pending_cast armed, don't fire
         self.pending_cast = None
         cast = self.ability_cast_types.get(key, int(CastType.POINT))
         tid = None
