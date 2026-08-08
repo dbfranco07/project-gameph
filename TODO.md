@@ -1,0 +1,5 @@
+- [] Create an HUD where the map, stats, skills, and items are there. Also reduce the screensize to ensure that the HUD and game screen are separate.
+- [] Not sure how to buy items. Right now numbers are used to buy them but now, there are more than 9 items and cannot buy some.
+- [] Improve sprites
+- [] Add images for items
+- [] Lastikman sometimes get stuck on walls.

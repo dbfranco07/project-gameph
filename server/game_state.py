@@ -538,9 +538,9 @@ class GameState:
     def lane_cleared(self, team: Team, lane: str) -> bool:
         """True if every one of `team`'s towers in `lane` has been destroyed."""
         for e in self.entities.values():
-            if all(isinstance(e, Structure), e.team == team, e.lane == lane, 
-                   e.alive):
-                return False
+            if isinstance(e, Structure):
+                if all((e.team == team, e.lane == lane, e.alive)):
+                    return False
         return True
 
     def core_exposed(self, team: Team) -> bool:
@@ -553,12 +553,12 @@ class GameState:
         if struct.is_core:
             return self.core_exposed(struct.team)
         for e in self.entities.values():
-            if all(isinstance(e, Structure),
-                   e.team == struct.team,
-                   e.lane == struct.lane,
-                   e.alive,
-                   e.lane_order < struct.lane_order):
-                return False
+            if isinstance(e, Structure):
+                if all((e.team == struct.team, 
+                        e.lane == struct.lane, 
+                        e.alive, 
+                        e.lane_order < struct.lane_order)):
+                    return False
         return True
 
     def core_of(self, team: Team) -> Structure | None:
