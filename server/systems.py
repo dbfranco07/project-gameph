@@ -645,8 +645,15 @@ def system_collision(state: GameState, dt: float) -> None:
         # phasing.
         ignores_terrain = u.statuses.has("phase") or pulled
         if not ignores_terrain:
-            for cap in obstacles:
-                _push_out_of_capsule(u, cap)
+            # A single pass only resolves one capsule at a time: at a wall
+            # corner (two intersecting capsules), pushing out of one can push
+            # straight into the other, so without a second pass the unit can
+            # oscillate/stick between them across frames (e.g. Lastikman's
+            # grapple landing right at a corner). A couple of passes converges
+            # within the same tick.
+            for _ in range(2):
+                for cap in obstacles:
+                    _push_out_of_capsule(u, cap)
         u.x = max(u.radius, min(MAP_WIDTH - u.radius, u.x))
         u.y = max(u.radius, min(MAP_HEIGHT - u.radius, u.y))
 
@@ -1040,10 +1047,18 @@ def _resolve_hook(state: GameState, proj: HookProjectile, hit) -> None:
 # Displacements (pulls)
 # ---------------------------------------------------------------------------
 
+# Safety net for a pull that never converges (e.g. the resting point sits
+# past a map-edge clamp, so `dist` stalls above `margin` forever): drop it
+# after this long so the unit is freed to move again instead of being stuck
+# permanently (observed with Lastikman's grapple onto a wall).
+GRAPPLE_PULL_TIMEOUT = 1.5
+
+
 def system_displacements(state: GameState, dt: float) -> None:
     """Drag each pulled unit toward its puller, dropping the pull once the unit
-    is within `stop` units or either party is gone. Heroes and minions alike can
-    be pulled (e.g. by Tiktik's hook)."""
+    is within `stop` units, either party is gone, or it's been pulling too
+    long without converging. Heroes and minions alike can be pulled (e.g. by
+    Tiktik's hook)."""
     keep: list[dict] = []
     for pull in state.pulls:
         tgt = state.entities.get(pull["tgt"])
@@ -1070,6 +1085,9 @@ def system_displacements(state: GameState, dt: float) -> None:
         # Lastikman's grapple leaving the caster permanently stuck).
         if dist <= margin + 0.5:
             continue  # arrived
+        pull["elapsed"] = pull.get("elapsed", 0.0) + dt
+        if pull["elapsed"] >= GRAPPLE_PULL_TIMEOUT:
+            continue  # never converged in time; free the unit where it stands
         step = min(pull["speed"] * dt, dist - margin)
         tgt.x += (dx / dist) * step
         tgt.y += (dy / dist) * step
@@ -1255,13 +1273,17 @@ def system_damage_death(state: GameState, dt: float) -> None:
         state.entities.pop(eid, None)
 
 
-def _reward(state: GameState, hero: Hero, kind: str, amt: int) -> None:
-    """Record a gold/xp reward popup for the client (rendered as floating text)."""
+def _reward(state: GameState, hero: Hero, kind: str, amt: int,
+            x: float | None = None, y: float | None = None) -> None:
+    """Record a gold/xp reward popup for the client (rendered as floating
+    text). Positioned at the victim that was killed (`x`/`y`) rather than the
+    recipient hero, so it reads as loot dropping off the kill; falls back to
+    the recipient's own position if no victim position is given."""
     if amt:
-        state.combat_events.append({"k": kind, 
-                                    "amt": int(amt), 
-                                    "x": round(hero.x, 1),
-                                    "y": round(hero.y, 1), 
+        state.combat_events.append({"k": kind,
+                                    "amt": int(amt),
+                                    "x": round(x if x is not None else hero.x, 1),
+                                    "y": round(y if y is not None else hero.y, 1),
                                     "eid": hero.entity_id})
 
 
@@ -1305,7 +1327,7 @@ def _award_minion_bounty(state: GameState, victim: Minion, killer) -> None:
 
     if isinstance(killer, Hero) and killer.team == beneficiary:
         killer.gold += gold
-        _reward(state, killer, "gold", gold)
+        _reward(state, killer, "gold", gold, victim.x, victim.y)
     share = int(gold * MINION_ASSIST_GOLD_FRACTION)
     for hero in state.heroes():
         if not hero.alive or hero.team != beneficiary:
@@ -1315,11 +1337,11 @@ def _award_minion_bounty(state: GameState, victim: Minion, killer) -> None:
         if (hero is not killer and share > 0
                 and d <= GOLD_SHARE_RADIUS + victim.radius):
             hero.gold += share
-            _reward(state, hero, "gold", share)
+            _reward(state, hero, "gold", share, victim.x, victim.y)
         # XP is awarded in full to every nearby allied hero (incl. the killer).
         if d <= XP_SHARE_RADIUS + victim.radius:
             _grant_xp(hero, xp)
-            _reward(state, hero, "xp", xp)
+            _reward(state, hero, "xp", xp, victim.x, victim.y)
 
 
 def _kill(state: GameState, victim, src_id) -> None:
@@ -1364,8 +1386,8 @@ def _kill(state: GameState, victim, src_id) -> None:
         if isinstance(killer, Hero) and killer.team != victim.team:
             killer.gold += HERO_KILL_GOLD
             _grant_xp(killer, HERO_KILL_XP)
-            _reward(state, killer, "gold", HERO_KILL_GOLD)
-            _reward(state, killer, "xp", HERO_KILL_XP)
+            _reward(state, killer, "gold", HERO_KILL_GOLD, victim.x, victim.y)
+            _reward(state, killer, "xp", HERO_KILL_XP, victim.x, victim.y)
     elif isinstance(victim, Minion):
         _award_minion_bounty(state, victim, killer)
         # Credit the hero's creep score: jungle/rune kills count as neutral,
@@ -1381,7 +1403,7 @@ def _kill(state: GameState, victim, src_id) -> None:
     elif isinstance(victim, Structure):
         if isinstance(killer, Hero):
             killer.gold += STRUCTURE_GOLD
-            _reward(state, killer, "gold", STRUCTURE_GOLD)
+            _reward(state, killer, "gold", STRUCTURE_GOLD, victim.x, victim.y)
     elif isinstance(victim, Tree):
         victim.respawn_timer = TREE_RESPAWN
         state.invalidate_terrain()   # a felled tree stops blocking

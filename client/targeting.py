@@ -49,7 +49,10 @@ def unit_under_cursor(entities, my_entity_id, my_team, wx, wy, kind, rng):
         if not e.get("a", True) or e.get("et") == EntityType.PROJECTILE:
             continue
         team = e.get("tm", 0)
-        is_enemy = team not in (my_team, 0)
+        # Team 0 (Team.NONE: neutrals/jungle camps) is hostile to everyone by
+        # design (matches the server's `enemies_in_radius`), so it counts as
+        # a valid "enemy" target here too.
+        is_enemy = team != my_team
         if kind == "enemy" and not is_enemy:
             continue
         if kind == "ally" and (team != my_team or e.get("id") == my_entity_id):

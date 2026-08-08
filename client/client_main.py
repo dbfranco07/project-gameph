@@ -12,7 +12,6 @@ from shared.config import (
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
     VIEWPORT_WIDTH,
-    VIEWPORT_HEIGHT,
     CLIENT_FPS,
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -295,7 +294,11 @@ class GameClient:
             dx = step
         if my <= EDGE_PAN_MARGIN:
             dy = -step
-        elif my >= VIEWPORT_HEIGHT - EDGE_PAN_MARGIN:
+        # Measured from the window's true bottom (not the HUD's top edge),
+        # same margin as the other three sides. Most of the HUD, and the
+        # viewport strip just above it, do NOT pan — only the thin sliver
+        # right at the bottom of the window (inside the HUD) does.
+        elif my >= SCREEN_HEIGHT - EDGE_PAN_MARGIN:
             dy = step
         if dx or dy:
             self.camera.pan(dx, dy)

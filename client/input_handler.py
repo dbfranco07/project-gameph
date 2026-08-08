@@ -228,7 +228,9 @@ class InputHandler:
         best_dist = None
         for ent in entities:
             team = ent.get("tm", 0)
-            if team == my_team or team == 0:
+            # Team 0 (neutrals/jungle camps) is a valid enemy target, matching
+            # the server's generic "hostile to everyone" treatment of it.
+            if team == my_team:
                 continue
             if not ent.get("a", True):
                 continue

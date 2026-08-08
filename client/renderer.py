@@ -209,9 +209,13 @@ class Renderer:
         for ev in events or []:
             kind = ev.get("k")
             if kind == "gold":
-                self._floater(ev, f"+{ev['amt']}g", (240, 215, 90), 1.1)
+                # Gold/xp from the same kill share a world position; stack
+                # gold above xp (both still rise together) instead of
+                # overlapping — side-by-side was tried but read as harder to
+                # parse than a vertical stack.
+                self._floater(ev, f"+{ev['amt']}g", (255, 220, 40), 1.1, dy0=-14)
             elif kind == "xp":
-                self._floater(ev, f"+{ev['amt']} xp", (150, 200, 255), 1.1)
+                self._floater(ev, f"+{ev['amt']} xp", (90, 220, 110), 1.1, dy0=0)
             elif kind == "hit":
                 eid, src = ev.get("eid"), ev.get("src")
                 self._floater(ev, f"-{ev['amt']}", (235, 90, 90), 0.8)
@@ -234,10 +238,10 @@ class Renderer:
                     "r": ev.get("r", 0), "born": now,
                     "dur": ev.get("dur", 0.5)})
 
-    def _floater(self, ev, text, color, dur) -> None:
-        self.floaters.append({"wx": ev["x"], "wy": ev["y"], "text": text,
-                              "color": color, "born": time.monotonic(),
-                              "dur": dur})
+    def _floater(self, ev, text, color, dur, dy0=0) -> None:
+        self.floaters.append({"wx": ev["x"], "wy": ev["y"], "dy0": dy0,
+                              "text": text, "color": color,
+                              "born": time.monotonic(), "dur": dur})
 
     def set_hero_abilities(self, abilities: list[dict]) -> None:
         self.hero_abilities = abilities or []
@@ -301,6 +305,7 @@ class Renderer:
                 continue
             alive.append(f)
             sx, sy = self.camera.world_to_screen(f["wx"], f["wy"])
+            sy += f.get("dy0", 0)
             sy -= int(age * 34) + 24  # rise over time, start above the unit
             if sx < -50 or sx > SCREEN_WIDTH + 50 or sy < -20 or sy > SCREEN_HEIGHT:
                 continue
@@ -1105,12 +1110,20 @@ class Renderer:
             x = self._ability_rect.right + pad
             self._draw_inventory(
                 me, x, VIEWPORT_HEIGHT + (HUD_HEIGHT - 2 * 46) // 2)
+            # Frame the ability bar + item grid together as one "skills" block
+            # (matching the HUD mockup) with a divider between the two halves,
+            # instead of two grids floating with only a gap between them.
+            group = self._ability_rect.union(self._inventory_rect).inflate(10, 10)
+            pygame.draw.rect(self.screen, (90, 90, 110), group, 2, border_radius=6)
+            div_x = self._ability_rect.right + pad // 2
+            pygame.draw.line(
+                self.screen, (70, 70, 85),
+                (div_x, group.top + 4), (div_x, group.bottom - 4), 2)
             x = self._inventory_rect.right + pad
             self._draw_tp_slot(
                 me, x, VIEWPORT_HEIGHT + (HUD_HEIGHT - 46) // 2)
             if not me.get("a", True):
                 self._draw_respawn(me)
-            self._draw_hover_tooltip(me)
 
         if self.shop_open:
             self._draw_shop(me)
@@ -1118,6 +1131,10 @@ class Renderer:
             # Stale rows from the last time the shop was open must not keep
             # matching hover/click checks once it's closed.
             self._shop_rects = []
+        if me is not None:
+            # Drawn last (after the shop panel) so a shop-tile tooltip isn't
+            # painted over by the panel itself.
+            self._draw_hover_tooltip(me)
             self._shop_panel_rect = None
 
         # Hints / banners
@@ -1307,10 +1324,12 @@ class Renderer:
     def _draw_stats_panel(self, me: dict, x0: int, y0: int) -> None:
         """Two-column stat panel (right of the minimap, inside the HUD strip).
         Values are white; temporary buff/debuff deltas show green (+) / red
-        (-). Two columns of six rows keep the panel short enough to fit the
-        strip's height instead of the tall single column it used to be."""
-        col_w, line, rows_per_col = 175, 15, 6
-        w, h = col_w * 2, 10 + rows_per_col * line
+        (-). Sized to fill the strip's height (matching the minimap) instead
+        of a fixed content-driven height, so there's no dead gap below it."""
+        col_w, rows_per_col = 175, 6
+        pad = y0 - VIEWPORT_HEIGHT
+        w, h = col_w * 2, HUD_HEIGHT - 2 * pad
+        line = (h - 10) // rows_per_col
         self._stats_rect = pygame.Rect(x0, y0, w, h)
         panel = pygame.Surface((w, h))
         panel.set_alpha(225)
@@ -1566,6 +1585,10 @@ class Renderer:
                 if it is None:
                     return
                 lines = [f"{it['name']} ({it['cost']}g)"]
+                bonus = ", ".join(f"+{v} {k}" for k, v
+                                  in it.get("bonuses", {}).items())
+                if bonus:
+                    lines.append(bonus)
                 act = it.get("active")
                 if act:
                     lines.append(f"Active: {act['name']}  "
@@ -1591,14 +1614,26 @@ class Renderer:
             self.screen.blit(r, (bx + 8, by + 6 + i * 16))
 
     def _draw_shop(self, me: dict) -> None:
-        """Shop panel: an icon + name/cost row per catalog item, click (or the
-        matching number key) to buy. Rows are recorded in `_shop_rects` for
-        the input handler's click-to-buy hit-testing and for hover tooltips."""
+        """Shop panel: a compact grid of icon+name tiles (one per catalog
+        item), click (or the matching number key) to buy — full bonuses/
+        passive/active details only show in the hover tooltip
+        (`_draw_hover_tooltip`'s `_shop_rects` branch) instead of being
+        crammed inline, so the panel stays small regardless of catalog size.
+        Tile rects are recorded in `_shop_rects` for the input handler's
+        click-to-buy hit-testing and for that hover tooltip."""
         gold = me.get("gold", 0) if me else 0
         pad = 12
-        icon = 28
-        w, line = 320, 32
-        h = pad * 2 + line * (len(self.item_catalog) + 1)
+        cols = 4
+        # Icon shrunk (was 36) and the tile widened (was 78) + the name
+        # allowed to wrap to 2 lines, so names like "Boots of Travel" or
+        # "Guardian Amulet" fit instead of getting cut off ("Health ...").
+        tile_w, tile_h, gap = 104, 92, 6
+        icon = 26
+        n = len(self.item_catalog)
+        rows = max(1, (n + cols - 1) // cols)
+        header_h = 34
+        w = pad * 2 + cols * tile_w + (cols - 1) * gap
+        h = pad * 2 + header_h + rows * tile_h + (rows - 1) * gap + 22
         x0, y0 = 20, 80
         self._shop_panel_rect = pygame.Rect(x0, y0, w, h)
         panel = pygame.Surface((w, h))
@@ -1612,28 +1647,81 @@ class Renderer:
                          (x0 + pad + 90, y0 + pad + 6))
         self._shop_rects = []
         mx, my = pygame.mouse.get_pos()
+        grid_y0 = y0 + pad + header_h
         for i, it in enumerate(self.item_catalog):
-            y = y0 + pad + line * (i + 1) + 4
-            row_rect = pygame.Rect(x0 + 4, y - 2, w - 8, line - 2)
-            self._shop_rects.append((row_rect, it["item_id"]))
+            col, row = i % cols, i // cols
+            tx = x0 + pad + col * (tile_w + gap)
+            ty = grid_y0 + row * (tile_h + gap)
+            tile_rect = pygame.Rect(tx, ty, tile_w, tile_h)
+            self._shop_rects.append((tile_rect, it["item_id"]))
             affordable = gold >= it["cost"]
             color = COLOR_TEXT if affordable else (130, 130, 130)
-            if row_rect.collidepoint(mx, my):
-                pygame.draw.rect(self.screen, (55, 60, 72), row_rect,
-                                 border_radius=4)
+            bg = (55, 60, 72) if tile_rect.collidepoint(mx, my) else (34, 37, 46)
+            pygame.draw.rect(self.screen, bg, tile_rect, border_radius=4)
             icon_img = self.sprites.item_icon(it["item_id"])
             if icon_img is not None:
                 scaled = pygame.transform.smoothscale(icon_img, (icon, icon))
-                self.screen.blit(scaled, (x0 + pad, y - 3))
-            bonus = ", ".join(f"+{v} {k}" for k, v in it.get("bonuses", {}).items())
-            act = "  [active]" if it.get("active") else ""
-            row = f"{i+1}. {it['name']} ({it['cost']}g)  {bonus}{act}"
-            self.screen.blit(self.font.render(row, True, color),
-                             (x0 + pad + icon + 6, y))
+                self.screen.blit(scaled, (tx + (tile_w - icon) // 2, ty + 4))
+            badge = self.font_small.render(str(i + 1), True, (200, 200, 210))
+            self.screen.blit(badge, (tx + 3, ty + 2))
+            name_y = ty + icon + 6
+            for line in self._wrap_to_width(it["name"], self.font_small, tile_w - 6):
+                line_lbl = self.font_small.render(line, True, color)
+                self.screen.blit(line_lbl, (tx + (tile_w - line_lbl.get_width()) // 2,
+                                            name_y))
+                name_y += 13
+            cost_lbl = self.font_small.render(f"{it['cost']}g", True, (240, 220, 120))
+            self.screen.blit(cost_lbl, (tx + (tile_w - cost_lbl.get_width()) // 2,
+                                        ty + tile_h - 16))
         self.screen.blit(
-            self.font.render("click/num=buy  F1-F6=sell  B=close",
+            self.font.render("click/num=buy  F1-F6=sell  B=close  hover=details",
                              True, (150, 150, 150)),
             (x0 + pad, y0 + h - 20))
+
+    def _wrap_to_width(self, text: str, font: pygame.font.Font,
+                       max_w: int, max_lines: int = 2) -> list[str]:
+        """Word-wrap `text` to at most `max_lines` lines of `max_w` pixels;
+        if there are more words than fit, the last line is ellipsized."""
+        words = text.split()
+        lines: list[str] = []
+        cur = ""
+        for word in words:
+            trial = f"{cur} {word}".strip()
+            if not cur or font.size(trial)[0] <= max_w:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = word
+        if cur:
+            lines.append(cur)
+        if len(lines) > max_lines:
+            overflow = " ".join(lines[max_lines - 1:])
+            lines = lines[:max_lines - 1]
+            lines.append(self._truncate_to_width(overflow, font, max_w))
+        elif lines and font.size(lines[-1])[0] > max_w:
+            lines[-1] = self._truncate_to_width(lines[-1], font, max_w)
+        return lines or [""]
+
+    def _shop_item_details(self, it: dict) -> str:
+        """Bonus/passive/active summary shown in the shop tile hover tooltip
+        (the only "details" fields the server sends per item — there's no
+        free-text description)."""
+        parts = [f"+{v} {k}" for k, v in it.get("bonuses", {}).items()]
+        if it.get("passive"):
+            parts.append(it["passive"])
+        active = it.get("active")
+        if active:
+            mana_part = f", {active['mana']}mp" if active.get("mana") else ""
+            parts.append(f"{active['name']} (cd {active['cd']:.0f}s{mana_part})")
+        return ", ".join(parts) if parts else "—"
+
+    def _truncate_to_width(self, text: str, font: pygame.font.Font, max_w: int) -> str:
+        """Ellipsize `text` with `font` so it renders within `max_w` pixels."""
+        if font.size(text)[0] <= max_w:
+            return text
+        while text and font.size(text + "...")[0] > max_w:
+            text = text[:-1]
+        return text + "..." if text else ""
 
     def _draw_respawn(self, me: dict) -> None:
         t = me.get("resp", 0)

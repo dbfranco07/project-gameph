@@ -1,13 +1,24 @@
-- [x] Create an HUD where the map, stats, skills, and items are there. Also reduce the screensize to ensure that the HUD and game screen are separate. (minimap/attribute panel shrunk + overflow fixed, abilities now inline — the screen/HUD separation part is still open)
-- [x] Not sure how to buy items. Right now numbers are used to buy them but now, there are more than 9 items and cannot buy some.
-- [] Improve sprites
-- [x] Add images for items
-- [x] Lastikman sometimes get stuck on walls.
-- [x] AoE skills when targetting should be a circle showing the radius of the skill, and not a regular cursor.
-- [x] When targetting, if the target is invalid, I should not be able to continue. Right now if target is invalid, if I press left click, it uses the skill but nothing happens.
-- [] Now have an HUD but when my mouse is in the HUD, it makes the map pan below (not wanted). Should only pan when mouse is below the screen, not when in HUD
-- [] Improve HUD.
-- [] Fix aswang being able to target neutrals as well.
-- [] Still a bug in lastik man. When I target a wall, if I end up not being too close to the target point, I get stuck. Hopefully I should be able to move even if I was not too close to the wall.
-- [] Gold and exp earned (when killing enemy) should show up near enemy, and not to the hero. Make gold earned in yellow and exp earned in green.
-- [] In show, the added attributes overflow the show window. Would like it if each row there is the header which is the item name and price. Then below it (in smaller text) is the details and other benefits.
+# Strikethrough tasks means they are already implemented.
+
+- ~~Create an HUD where the map, stats, skills, and items are there. Also reduce the screensize to ensure that the HUD and game screen are separate. (minimap/attribute panel shrunk + overflow fixed, abilities now inline — the screen/HUD separation part is still open)~~
+- ~~Not sure how to buy items. Right now numbers are used to buy them but now, there are more than 9 items and cannot buy some.~~
+- ~~Add placeholder sprites for items.~~
+- ~~Lastikman sometimes get stuck on walls.~~
+- ~~AoE skills when targetting should be a circle showing the radius of the skill, and not a regular cursor.~~
+- ~~When targetting, if the target is invalid, I should not be able to continue. Right now if target is invalid, if I press left click, it uses the skill but nothing happens.~~
+- ~~Improve HUD.~~
+  - ~~Can you extend the stats panel downards (seems weird to have a gap)~~
+- ~~Fix aswang being able to target neutrals as well.~~
+  - ~~Nope. What I wanted is that I should be able to target neutrals. Before it says invalid target. Now, still says invalid target. Again, aswang should be able to devour enemy or neutrals.~~
+- ~~Still a bug in lastik man. When I target a wall, if I end up not being too close to the target point, I get stuck. Hopefully I should be able to move even if I was not too close to the wall.~~
+  - ~~Still gets stuck on walls from time to time, especially if I cast a movement away from the wall.~~
+- ~~Gold and exp earned (when killing enemy) should show up near enemy, and not to the hero. Make gold earned in yellow and exp earned in green.~~
+  - ~~Make this such that the gold and exp does not overlap each other. Killing minions and seeing gold and exp earned is hard to read.~~
+- ~~In show, the added attributes overflow the show window. Would like it if each row there is the header which is the item name and price. Then below it (in smaller text) is the details and other benefits.~~
+  - ~~Can you make the shop show only the icons and item name (make it grid style). The details should only be shown when I hover over the item. This makes it more compact instead of right now seeing the details bot cropped.~~
+- ~~Can you complete the IMAGINE.md. Get the hero skill names and details (like the first few entries). Also add the items here. The goal here is to have a document where I can plot my ideas on improving heroes, etc.~~
+- Improve sprites.
+- ~~Now have an HUD but when my mouse is in the HUD, it makes the map pan below (not wanted). Should only pan when mouse is below the screen, not when in HUD~~~
+  - ~~Not what I was expecting. Game should still span the whole screen.~~
+  - ~~Seems when I move the mouse down, it does not pan. What I want is if my mouse is below the HUD, it should pan below. So basically if mouse is in HUD, do not pat. If mouse is below HUD, then pan below.~~
+  - ~~Is it a limitation to have the game fullscreen? There are black strips and it seems a waste of space.~~

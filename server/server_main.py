@@ -418,6 +418,21 @@ class GameServer:
         if self.state.set_lobby_hero(client_id, msg.get("hero")):
             self._broadcast_lobby()
 
+    def _release_self_pull(self, hero) -> None:
+        """Drop any active self-grapple (e.g. Lastikman's W) reeling `hero`
+        toward a fixed terrain point, so a fresh player order takes effect
+        immediately instead of being fought/rubber-banded by the pull every
+        tick until it finishes or times out (`system_displacements` in
+        systems.py re-evaluates "have I arrived?" from the hero's live
+        position each tick, and re-arms if a move order increases the
+        distance). Only "pt" pulls (self-administered terrain reels) are
+        released this way — "to" pulls (e.g. an enemy's hook dragging this
+        hero toward them) are real crowd control and must keep overriding
+        movement, so those are left untouched."""
+        self.state.pulls = [
+            p for p in self.state.pulls
+            if not (p.get("tgt") == hero.entity_id and "pt" in p)]
+
     def _handle_move(self, client_id: int, msg: dict) -> None:
         """Sets a hero's move destination from a right-click move command.
 
@@ -441,6 +456,7 @@ class GameServer:
             hero.attack_move_x = hero.attack_move_y = None
             hero.target_x = max(0, min(MAP_WIDTH, float(tx)))
             hero.target_y = max(0, min(MAP_HEIGHT, float(ty)))
+            self._release_self_pull(hero)
 
     def _handle_attack(self, client_id: int, msg: dict) -> None:
         """Handles an 'A + click' attack command.
@@ -468,6 +484,7 @@ class GameServer:
             hero.attack_move_x = hero.attack_move_y = None
             hero.target_x = target.x
             hero.target_y = target.y
+            self._release_self_pull(hero)
         else:
             # Attack-move: clear focus, advance to the point but stop to attack
             # any enemy that comes into range (handled in _update_attack_move).
@@ -478,6 +495,7 @@ class GameServer:
                 hero.attack_move = True
                 hero.attack_move_x, hero.attack_move_y = px, py
                 hero.target_x, hero.target_y = px, py
+                self._release_self_pull(hero)
 
     def _handle_stop(self, client_id: int) -> None:
         """Halts a hero, clearing its focus target and move destination.
