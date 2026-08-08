@@ -682,6 +682,8 @@ def _push_out_of_capsule(u, cap) -> None:
 # ---------------------------------------------------------------------------
 
 def system_ability_cast(state: GameState, dt: float) -> None:
+    """Process all ability-cast requests, applying mana cost and cooldowns, and
+    invoke the ability's effect function. Invalid casts are ignored."""
     for cast in state.ability_casts:
         caster = state.entities.get(cast["caster"])
         if not isinstance(caster, Hero) or not caster.alive:
@@ -791,6 +793,7 @@ def _cast_tp(state: GameState, caster: Hero, cast: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def system_projectiles(state: GameState, dt: float) -> None:
+    """Advance all projectiles, checking for collisions with units and terrain."""
     dead: list[int] = []
     for proj in state.entities.values():
         if not isinstance(proj, Projectile):
@@ -878,8 +881,10 @@ def _resolve_grapple(state: GameState, proj: HookProjectile,
     """A landed grapple: pin the hook head at (ax, ay) and reel the caster in."""
     owner = state.entities.get(proj.owner_id)
     if owner is not None and owner.alive:
-        state.pulls.append({"tgt": owner.entity_id, "pt": (ax, ay),
-                            "speed": proj.pull_speed, "stop": proj.stop_dist})
+        state.pulls.append({"tgt": owner.entity_id, 
+                            "pt": (ax, ay),
+                            "speed": proj.pull_speed, 
+                            "stop": proj.stop_dist})
     proj.anchored = True
     proj.anchor_x, proj.anchor_y = ax, ay
     proj.vx = proj.vy = 0.0
@@ -1043,6 +1048,10 @@ REVEAL_TIME = 0.4  # seconds a stealthed hero is revealed after it attacks
 
 
 def system_combat(state: GameState, dt: float) -> None:
+    """Process all auto-attacks for heroes, minions, and structures. Each entity
+    with a valid target in range deals its attack damage and starts its cooldown.
+    The combat system does not apply damage or handle deaths; it only generates
+    damage events for the damage pipeline to resolve."""
     # Snapshot: ranged attacks insert projectiles into state.entities mid-loop.
     for e in list(state.entities.values()):
         if not e.alive or e.attack_damage <= 0 or isinstance(e, Projectile):
@@ -1099,6 +1108,9 @@ def _combat_target(state: GameState, attacker):
 
 
 def _spawn_basic_projectile(state: GameState, attacker, target, dmg: int) -> None:
+    """Spawn a basic-attack projectile from `attacker` to `target`, with the
+    given damage. The projectile is homing and will hit the target even if it
+    moves (unless it dies or becomes untargetable)."""
     proj = Projectile(
         team=attacker.team,
         x=attacker.x,
