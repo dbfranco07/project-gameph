@@ -182,6 +182,8 @@ CREEP_MELEE_PER_WAVE = 3
 CREEP_RANGED_PER_WAVE = 1
 # config/minions.yaml: creep_cart_every
 CREEP_CART_EVERY = 3
+# config/minions.yaml: first_wave_speed_multiplier
+FIRST_WAVE_SPEED_MULTIPLIER = 1.8
 
 # --- config/neutrals.yaml ---
 # config/neutrals.yaml: neutral_hp
