@@ -202,6 +202,8 @@ NEUTRAL_GOLD = 40
 NEUTRAL_XP = 45
 # config/neutrals.yaml: neutral_respawn
 NEUTRAL_RESPAWN = 60.0
+# config/neutrals.yaml: rune_patrol
+RUNE_PATROL = 250
 
 # --- config/structures.yaml ---
 # config/structures.yaml: tower_hp

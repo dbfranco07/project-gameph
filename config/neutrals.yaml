@@ -9,3 +9,4 @@ neutral_radius: 14
 neutral_gold: 40
 neutral_xp: 45
 neutral_respawn: 60.0         # seconds to respawn a cleared camp
+rune_patrol: 250              # radius of patrol for runes (power-ups)

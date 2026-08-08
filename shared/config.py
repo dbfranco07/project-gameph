@@ -106,11 +106,11 @@ _rune_defs = _map.get("runes", [])
 RUNES = (
     [{"zone": list(r["zone"]),
       "buff": r["buff"], 
-      "patrol": r.get("patrol", 400)}
+      "patrol": r.get("patrol", RUNE_PATROL)}
       for r in _rune_defs] + 
     [{"zone": _mirror_zone(r["zone"]), 
       "buff": r["buff"],
-      "patrol": r.get("patrol", 400)}
+      "patrol": r.get("patrol", RUNE_PATROL)}
       for r in _rune_defs]
 )
 # Walls and trees are authored for one side and mirrored to the other. Each is a

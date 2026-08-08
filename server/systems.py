@@ -39,6 +39,7 @@ from shared.config import (
     NEUTRAL_RESPAWN,
     BASIC_PROJECTILE_RADIUS,
     RUNES,
+    RUNE_PATROL,
     MEET_POINTS,
     SPAWN_ZONE_RADIUS,
     BASE_TOWER_T,
@@ -416,9 +417,13 @@ def _spawn_rune(state: GameState, idx: int, cfg: dict) -> None:
     if buff == "random":
         buff = random.choice(RUNE_BUFF_TYPES)
     rune = RuneCreature(
-        x=px, y=py, dest_x=px, dest_y=py,
-        home_x=px, home_y=py,
-        patrol_radius=cfg.get("patrol", 400),
+        x=px, 
+        y=py, 
+        dest_x=px, 
+        dest_y=py,
+        home_x=px, 
+        home_y=py,
+        patrol_radius=cfg.get("patrol", RUNE_PATROL),
         rune_buff=buff,
         rune_index=idx,
     )
@@ -1216,9 +1221,13 @@ def _fx(state: GameState, name: str, x: float, y: float, r: float = 0.0,
     `eid` ties the event to a source entity for vision; the broadcast filter also
     reveals it by position so telegraphs show even when the caster is fogged.
     """
-    state.combat_events.append({"k": "fx", "name": name,
-                                "x": round(x, 1), "y": round(y, 1),
-                                "r": int(r), "eid": eid, "dur": dur})
+    state.combat_events.append({"k": "fx", 
+                                "name": name,
+                                "x": round(x, 1), 
+                                "y": round(y, 1),
+                                "r": int(r), 
+                                "eid": eid, 
+                                "dur": dur})
 
 
 def _provoke_camp(state: GameState, camp_id: int) -> None:
