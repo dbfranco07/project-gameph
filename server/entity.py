@@ -133,7 +133,7 @@ class Entity:
         this rather than the base field."""
         return int(self.stats.total("max_hp_bonus", self.max_hp))
 
-    def to_snapshot(self) -> dict:
+    def to_snapshot(self) -> dict[str, object]:
         """Minimal data sent to clients each tick."""
         return {
             "id": self.entity_id,
@@ -486,6 +486,7 @@ class Minion(Entity):
     is_neutral: bool = False
     provoked: bool = False
     camp_id: int = -1  # index into JUNGLE_CAMPS for neutral monsters
+    
     # Wave-1 "meet point": until reached, the minion walks at meet_speed, then
     # reverts to its default move_speed. meet_speed == 0 means inactive.
     meet_x: float = 0.0

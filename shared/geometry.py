@@ -10,10 +10,10 @@ import math
 
 def polyline_length(points: list[tuple[float, float]]) -> float:
     """Total length of a polyline."""
-    total = 0.0
+    total_length = 0.0
     for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        total += math.hypot(x1 - x0, y1 - y0)
-    return total
+        total_length += math.hypot(x1 - x0, y1 - y0)
+    return total_length
 
 
 def point_along(points: list[tuple[float, float]],
@@ -23,14 +23,15 @@ def point_along(points: list[tuple[float, float]],
         return points[0]
     if t >= 1.0:
         return points[-1]
-    target = polyline_length(points) * t
+    target_len = polyline_length(points) * t
     acc = 0.0
     for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        seg = math.hypot(x1 - x0, y1 - y0)
-        if acc + seg >= target:
-            f = (target - acc) / seg if seg > 1e-9 else 0.0
+        seg_len = math.hypot(x1 - x0, y1 - y0)
+        if acc + seg_len >= target_len:
+            f = (target_len - acc) / seg_len if seg_len > 1e-9 else 0.0
             return (x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)
-        acc += seg
+        acc += seg_len
+    # return end point if t is slightly > 1.0 due to floating-point error
     return points[-1]
 
 
@@ -149,7 +150,7 @@ def _segments_intersect(ax: float, ay: float, bx: float, by: float,
     def orient(ox, oy, px, py, qx, qy) -> float:
         return (px - ox) * (qy - oy) - (py - oy) * (qx - ox)
 
-    d1 = orient(cx, cy, dx, dy, ax, ay)
+    d1 = orient(cx, cy, dx, dy, ax, ay) 
     d2 = orient(cx, cy, dx, dy, bx, by)
     d3 = orient(ax, ay, bx, by, cx, cy)
     d4 = orient(ax, ay, bx, by, dx, dy)

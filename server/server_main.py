@@ -19,8 +19,12 @@ from shared.protocol import PROTOCOL_VERSION
 from shared.config import ITEM_SLOTS, MAX_LEVEL
 from server.heroes import validate_all
 from server.items import (
-    validate_all as validate_items, get_item_def, item_catalog,
-    purchase_plan, apply_inventory_change)
+    validate_all as validate_items, 
+    get_item_def, 
+    item_catalog,
+    purchase_plan, 
+    apply_inventory_change
+)
 from server.entity import Hero
 from server.game_state import GameState
 from server.net_handler import ClientHandler
@@ -95,7 +99,8 @@ class GameServer:
             await server.serve_forever()
 
     async def stop(self) -> None:
-        """Shut the server down: stop simulating, drop clients, close the port."""
+        """Shut the server down: stop simulating, drop clients, close the port.
+        """
         if self._loop_task is not None:
             self._loop_task.cancel()
             try:

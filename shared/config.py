@@ -6,9 +6,6 @@ of the codebase already imports (``MINION_HP``, ``LANE_PATHS``, ``COLOR_BG``, â€
 plus the newer ones. Editing a YAML value changes the game on next launch â€” no
 code edits needed.
 
-Heroes are deliberately NOT data-driven here: each hero is its own Python class
-(see ``server/heroes/``). Only non-hero tuning is YAML.
-
 Map features are authored for one side (Team 1) in ``map.yaml`` and mirrored
 through the map center to build Team 2's set.
 """
@@ -20,26 +17,44 @@ import yaml
 
 from shared.geometry import mirror_point
 from shared.terrain import River
+from shared._config_gen import ensure_fresh
+ensure_fresh() # ensures constants from _config_constants are updated
+# _config_constants are all configs from all yaml files
+from shared._config_constants import *  # noqa: F401,F403
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
-def _load(name: str) -> dict:
-    # print(f'Loading config/{name}.yaml')
+def _load(name: str) -> dict[str: object]:
+    """Load a config YAML file from ``config/``."""
     with open(_CONFIG_DIR / f"{name}.yaml", "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 
+def _mirror(p: tuple[float, float]) -> tuple[float, float]:
+    """Reflect a point through the map center. The map is authored for Team 1"""
+    return mirror_point((p[0], p[1]), MAP_WIDTH, MAP_HEIGHT)
 
-from shared._config_gen import ensure_fresh
+def _mirror_zone(z: list[int]) -> list[int]:
+    """Reflect a rectangular zone through the map center. Used for mirrored rune 
+    spawn zones."""
+    x, y, w, h = z
+    mx, my = _mirror((x + w, y + h))  # mirror the far corner to stay top-left
+    return [mx, my, w, h]
 
-ensure_fresh()
-from shared._config_constants import *  # noqa: F401,F403
+def _capsule(c: dict[str, object]) -> dict[str, object]:
+    """Convert a dictionary to a capsule format."""
+    return {"p1": tuple(c["p1"]), 
+            "p2": tuple(c["p2"]),
+            "thickness": float(c.get("thickness", 60))}
+
+def _mirror_capsule(c: dict[str, object]) -> dict[str, object]:
+    """Reflect a capsule through the map center. Used for walls and trees."""
+    return {"p1": _mirror(c["p1"]), 
+            "p2": _mirror(c["p2"]),
+            "thickness": float(c.get("thickness", 60))}
+
 
 _map = _load("map")
-
-#Map: authored for Team 1, mirrored through the center
-def _mirror(p) -> tuple[float, float]:
-    return mirror_point((p[0], p[1]), MAP_WIDTH, MAP_HEIGHT)
 
 # Derived scalars
 TICK_DURATION = 1.0 / SERVER_TICK_RATE  # seconds per tick
@@ -72,7 +87,7 @@ LANE_TOWERS = {1: _t1_towers, 2: _t2_towers}
 # Arc-length fraction of each team's base tower (lane_order 2). Minions spawn
 # here (next to their base tower), not at the fountain/core. Because the path is
 # oriented per team, the same fraction means "base tower" for both sides.
-BASE_TOWER_T = next(t for (lo, t, _k) in _t1_towers if lo == 2)
+BASE_TOWER_T = next(t for (lo, t, _) in _t1_towers if lo == 2)
 
 # Jungle camps authored for one dead zone; the mirror fills the other.
 _t1_camps = [tuple(c) for c in _map["jungle_camps"]]
@@ -83,16 +98,10 @@ JUNGLE_CAMPS = _t1_camps + _t2_camps
 MEET_POINTS = {lane: tuple(pt) 
                for lane, pt in _map.get("meet_points", {}).items()}
 
-# Spawn-point regen zone radius around each core.
+# Additional map features authored for one side and mirrored to the other.
 SPAWN_ZONE_RADIUS = _map.get("spawn_zone_radius", 0)
 
-# Runes: authored Team-1 + mirror. Each carries a rectangular spawn `zone`
-# (x, y, w, h) from which a uniform-random spawn point is drawn at (re)spawn.
-def _mirror_zone(z) -> list:
-    x, y, w, h = z
-    mx, my = _mirror((x + w, y + h))  # mirror the far corner to stay top-left
-    return [mx, my, w, h]
-
+# Runes (power-ups) authored for one side and mirrored to the other.
 _rune_defs = _map.get("runes", [])
 RUNES = (
     [{"zone": list(r["zone"]),
@@ -104,22 +113,15 @@ RUNES = (
       "patrol": r.get("patrol", 400)}
       for r in _rune_defs]
 )
-
-
-# Walls (unwalkable + vision-blocking) and trees (destructible). Each is an
-# oriented CAPSULE: a centerline p1->p2 plus a thickness. Authored Team-1 +
-# mirror (mirror reflects both endpoints through the center).
-def _capsule(c) -> dict:
-    return {"p1": tuple(c["p1"]), "p2": tuple(c["p2"]),
-            "thickness": float(c.get("thickness", 60))}
-
-def _mirror_capsule(c) -> dict:
-    return {"p1": _mirror(c["p1"]), "p2": _mirror(c["p2"]),
-            "thickness": float(c.get("thickness", 60))}
-
+# Walls and trees are authored for one side and mirrored to the other. Each is a
+# capsule: two endpoints and a thickness. The mirror is a geometric reflection
+# through the map center.
 WALLS = ([_capsule(w) for w in _map.get("walls", [])]
          + [_mirror_capsule(w) for w in _map.get("walls", [])])
 
+# Trees are authored for one side and mirrored to the other. Each is a capsule: two
+# endpoints and a thickness. The mirror is a geometric reflection through the map
+# center. The thickness is optional; if missing, a default is used.
 TREES = ([_capsule(t) for t in _map.get("trees", [])]
          + [_mirror_capsule(t) for t in _map.get("trees", [])])
 

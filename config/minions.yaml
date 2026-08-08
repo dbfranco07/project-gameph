@@ -31,3 +31,5 @@ creep_wave_interval: 30.0     # seconds between waves
 creep_melee_per_wave: 3
 creep_ranged_per_wave: 1
 creep_cart_every: 3           # a cart joins each lane every Nth wave
+
+first_wave_speed_multiplier: 1.8  # wave-1 minions move faster to meet in the middle

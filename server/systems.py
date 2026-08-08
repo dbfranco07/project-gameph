@@ -34,6 +34,7 @@ from shared.config import (
     CREEP_MELEE_PER_WAVE,
     CREEP_RANGED_PER_WAVE,
     CREEP_CART_EVERY,
+    FIRST_WAVE_SPEED_MULTIPLIER,
     JUNGLE_CAMPS,
     NEUTRAL_RESPAWN,
     BASIC_PROJECTILE_RADIUS,
@@ -55,7 +56,8 @@ from server.entity import (
 )
 from server.damage import DamageEvent, apply_defense, resolve
 from server.status import (
-    RuneCooldown, RuneDoubleDamage, RuneHaste, RuneRegen, Slow, Stun,
+    RuneCooldown, RuneDoubleDamage, RuneHaste, RuneRegen, 
+    Slow, Stun,
 )
 from server.bind import release_bind
 from server.game_state import GameState, enemy_team
@@ -90,7 +92,8 @@ _PRIORITY = {
 }
 
 
-def _attacker_kind(attacker) -> str:
+def _attacker_kind(attacker: Hero | Minion | Structure) -> str:
+    """Return the attacker kind string for _PRIORITY lookup."""
     if isinstance(attacker, Minion):
         return "minion"
     if isinstance(attacker, Structure):
@@ -98,20 +101,25 @@ def _attacker_kind(attacker) -> str:
     return "hero"
 
 
-def find_attack_target(state: GameState, attacker):
+def find_attack_target(
+        state: GameState, 
+        attacker: Hero | Minion | Structure
+    ) -> Hero | Minion | Structure | None:
     """Nearest valid enemy within range, respecting per-type priority and
     structure invulnerability. Returns an entity or None."""
     # Neutral jungle monsters only fight back once provoked (damaged).
     if isinstance(attacker, Minion) and attacker.is_neutral and not attacker.provoked:
         return None
     order = _PRIORITY[_attacker_kind(attacker)]
+
     # Heroes only acquire targets their team can currently see (fog of war).
     # Minions/structures/neutrals stay ungated: Team.NONE has no vision
     # sources, and lane units always fight what walks up to them.
     vis = (state.visible_ids_cached(attacker.team)
            if isinstance(attacker, Hero) else None)
-    best = None
-    best_key = None
+    best: Hero | Minion | Structure | None = None
+    best_key: tuple[int, float] | None = None
+
     # Only entities that could possibly be in range. The grid returns a
     # superset; the exact distance test below is unchanged. This was a full
     # scan of every entity, per attacker, per tick — the simulation's single
@@ -140,9 +148,10 @@ def find_attack_target(state: GameState, attacker):
             continue  # fogged: the attacker's team has no line of sight
         d = attacker.distance_to(e)
         if d > attacker.effective_attack_range() + e.radius:
-            continue
+            continue # out of range
         key = (prio, d)
-        if best_key is None or key < best_key:
+        if best_key is None or key < best_key: 
+            # select the nearest of the highest-priority target
             best, best_key = e, key
     return best
 
@@ -205,6 +214,7 @@ def system_clock(state: GameState, dt: float) -> None:
 
 
 def system_spawn_creeps(state: GameState, dt: float) -> None:
+    """Spawn a new wave of lane creeps if the inter-wave cooldown has elapsed."""
     if state.match_clock < 0:
         return  # creeps wait for the countdown to finish
     state.creep_timer -= dt
@@ -216,6 +226,7 @@ def system_spawn_creeps(state: GameState, dt: float) -> None:
 
 
 def _spawn_wave(state: GameState) -> None:
+    """Spawn one wave of lane creeps for both teams, marching out from their"""
     cart = state.wave_count % CREEP_CART_EVERY == 0
     for team_int in (1, 2):
         team = Team(team_int)
@@ -231,9 +242,11 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
     if team == Team.TEAM2:
         path = path[::-1]
 
-    classes = ([MeleeMinion] * CREEP_MELEE_PER_WAVE
-               + [RangedMinion] * CREEP_RANGED_PER_WAVE
-               + ([CartMinion] if cart else []))
+    classes = (
+        [MeleeMinion] * CREEP_MELEE_PER_WAVE
+        + [RangedMinion] * CREEP_RANGED_PER_WAVE
+        + ([CartMinion] if cart else [])
+    )
 
     # Minions spawn next to their lane's base tower (not the fountain/core).
     # The path is already oriented per team, so BASE_TOWER_T is "base tower" for
@@ -243,7 +256,7 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
     nxt = path[1] if len(path) > 1 else path[0]
     dx, dy = nxt[0] - spawn[0], nxt[1] - spawn[1]
     d = math.hypot(dx, dy) or 1.0
-    ux, uy = dx / d, dy / d
+    ux, uy = dx / d, dy / d # normalized distance
 
     # Wave 1 marches faster until it reaches the lane's meeting point, then
     # reverts to default speed (so both sides clash at the meet point).
@@ -266,7 +279,7 @@ def _spawn_lane_group(state: GameState, team: Team, lane: str, cart: bool) -> No
         )
         if meet is not None:
             minion.meet_x, minion.meet_y = meet
-            minion.meet_speed = minion.move_speed * 1.4
+            minion.meet_speed = minion.move_speed * FIRST_WAVE_SPEED_MULTIPLIER
         state.entities[minion.entity_id] = minion
 
 
@@ -285,7 +298,9 @@ def system_neutral_camps(state: GameState, dt: float) -> None:
             _spawn_camp(state, camp_id, cx, cy, count)
             state.neutral_camps[camp_id] = {"timer": 0.0}
             continue
-        alive = any(isinstance(e, NeutralMinion) and e.camp_id == camp_id and e.alive
+        alive = any(isinstance(e, NeutralMinion) 
+                    and e.camp_id == camp_id 
+                    and e.alive
                     for e in state.entities.values())
         if alive:
             camp["timer"] = 0.0
@@ -301,6 +316,7 @@ def system_neutral_camps(state: GameState, dt: float) -> None:
 
 def _spawn_camp(state: GameState, camp_id: int, cx: float, cy: float,
                 count: int) -> None:
+    """Spawn `count` neutral monsters in a circle around (cx, cy)."""
     for i in range(count):
         angle = (2 * math.pi / count) * i
         mob = NeutralMinion(
@@ -321,30 +337,38 @@ RUNE_HASTE_SPEED = 220         # near-max move speed bonus
 RUNE_BUFF_TYPES = ("haste", "double_damage", "cdr_50", "regen_10x")
 
 
-def _rune_haste(hero):
-    return RuneHaste(RUNE_BUFF_DURATION, source="rune:haste",
+def _rune_haste(hero: Hero) -> RuneHaste:
+    """Haste: +RUNE_HASTE_SPEED move speed. The status cancels itself when hit —"""
+    return RuneHaste(RUNE_BUFF_DURATION, 
+                     source="rune:haste",
                      speed_bonus=RUNE_HASTE_SPEED)
 
 
-def _rune_double_damage(hero):
-    return RuneDoubleDamage(RUNE_BUFF_DURATION, source="rune:double_damage",
+def _rune_double_damage(hero: Hero) -> RuneDoubleDamage:
+    """Double damage. The status cancels itself when hit — see RuneDoubleDamage."""
+    return RuneDoubleDamage(RUNE_BUFF_DURATION, 
+                            source="rune:double_damage",
                             dmg_mult=2.0)
 
 
-def _rune_cdr(hero):
-    return RuneCooldown(RUNE_BUFF_DURATION, source="rune:cdr_50", cd_mult=0.5)
+def _rune_cdr(hero: Hero) -> RuneCooldown:
+    """50% cooldown reduction. The status cancels itself when hit — see RuneCDR."""
+    return RuneCooldown(RUNE_BUFF_DURATION, 
+                        source="rune:cdr_50", 
+                        cd_mult=0.5)
 
 
-def _rune_regen(hero):
-    # 10x current regen. The status cancels itself when hit — see RuneRegen.
-    return RuneRegen(RUNE_REGEN_DURATION, source="rune:regen_10x",
+def _rune_regen(hero: Hero) -> RuneRegen:
+    """10x current regen. The status cancels itself when hit — see RuneRegen."""
+    return RuneRegen(RUNE_REGEN_DURATION, 
+                     source="rune:regen_10x",
                      hp_regen_bonus=hero.hp_regen * 9.0,
                      mana_regen_bonus=hero.mana_regen * 9.0)
 
 
 # Each rune names the status it drops. Adding a rune is a new entry here plus
 # its status class, rather than another branch in a hardcoded if/elif chain.
-RUNE_BUILDERS = {
+RUNE_BUILDERS: dict[str, callable] = {
     "haste": _rune_haste,
     "double_damage": _rune_double_damage,
     "cdr_50": _rune_cdr,
@@ -352,7 +376,7 @@ RUNE_BUILDERS = {
 }
 
 
-def apply_rune_buff(hero: Hero, kind: str, state=None) -> None:
+def apply_rune_buff(hero: Hero, kind: str, state: GameState | None=None) -> None:
     """Grant a hero the timed buff a slain rune drops."""
     build = RUNE_BUILDERS.get(kind)
     if build is not None:
@@ -382,7 +406,7 @@ def system_runes(state: GameState, dt: float) -> None:
 
 
 def _spawn_rune(state: GameState, idx: int, cfg: dict) -> None:
-    # Spawn at a uniform-random point inside the rune's rectangular zone.
+    """Spawn at a uniform-random point inside the rune's rectangular zone."""
     zx, zy, zw, zh = cfg["zone"]
     px = random.uniform(zx, zx + zw)
     py = random.uniform(zy, zy + zh)
@@ -403,6 +427,7 @@ def _spawn_rune(state: GameState, idx: int, cfg: dict) -> None:
 
 
 def _patrol_rune(state: GameState, rune: RuneCreature, dt: float) -> None:
+    """Move the rune toward its current patrol target, picking a new random target"""
     if find_attack_target(state, rune) is not None:
         return  # an enemy is in range: stand and fight (combat handles attacks)
     dx, dy = rune.dest_x - rune.x, rune.dest_y - rune.y
@@ -527,9 +552,13 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
     # A fogged target drops the order (no live-tracking through the fog of
     # war); the last set target_x/y remains, so the hero walks to the spot
     # where the enemy was last seen.
-    if (target is None or not target.alive or target.team == hero.team
-            or (isinstance(target, Structure) and not state.is_structure_vulnerable(target))
-            or target.entity_id not in state.visible_ids_cached(hero.team)):
+    if (
+        target is None 
+        or not target.alive
+        or target.team == hero.team
+        or (isinstance(target, Structure) and not state.is_structure_vulnerable(target))
+        or target.entity_id not in state.visible_ids_cached(hero.team)
+    ):
         hero.forced_target_id = None
         return
     in_range = hero.distance_to(target) <= hero.effective_attack_range() + target.radius
@@ -1148,9 +1177,15 @@ def system_damage_death(state: GameState, dt: float) -> None:
         if amt > 0 and (isinstance(tgt, (Hero, SplitBody, RuneCreature))
                         or isinstance(src, Hero)):
             state.combat_events.append({
-                "k": "hit", "x": round(tgt.x, 1), "y": round(tgt.y, 1),
-                "amt": int(amt), "eid": tgt.entity_id, "crit": resolved.crit,
-                "src": ev.get("src"), "dt": dtype})
+                "k": "hit", 
+                "x": round(tgt.x, 1), 
+                "y": round(tgt.y, 1),
+                "amt": int(amt), 
+                "eid": tgt.entity_id, 
+                "crit": resolved.crit,
+                "src": ev.get("src"), 
+                "dt": dtype
+            })
         if isinstance(tgt, Minion) and tgt.is_neutral:
             _provoke_camp(state, tgt.camp_id)  # whole camp aggros when one is hit
         if tgt.hp <= 0:

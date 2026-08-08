@@ -30,11 +30,13 @@ _HEADER = (
 
 
 def _load(name: str) -> dict:
+    """Load a config YAML file from ``config/``."""
     with open(_CONFIG_DIR / f"{name}.yaml", "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 
 
 def generate() -> None:
+    """Generate ``shared/_config_constants.py`` from the flat YAML files."""
     lines = [_HEADER]
     for name in FLAT_YAML_FILES:
         data = _load(name)
@@ -53,6 +55,7 @@ def generate() -> None:
 
 
 def _is_stale() -> bool:
+    """Return True if the generated file is missing or older than any source."""
     if not _OUT_PATH.exists():
         return True
     out_mtime = _OUT_PATH.stat().st_mtime
@@ -61,5 +64,6 @@ def _is_stale() -> bool:
 
 
 def ensure_fresh() -> None:
+    """Generate the constants file if it is missing or stale."""
     if _is_stale():
         generate()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Iterator
 
 from shared.config import (
     SPAWN_POSITIONS,
@@ -386,8 +387,8 @@ class GameState:
         move, and their radii are large enough that gridding them would just
         spread each one over many cells.
         """
-        grid: dict[tuple[int, int], list] = {}
-        structures: list = []
+        grid: dict[tuple[int, int], list[Entity]] = {}
+        structures: list[Structure] = []
         cell = GRID_CELL
         self._grid_tick = self.tick
         for e in self.entities.values():
@@ -397,14 +398,13 @@ class GameState:
                 structures.append(e)
                 continue
             if isinstance(e, (Projectile, Obstacle)):
-                # never auto-attack targets
                 continue 
             grid.setdefault((int(e.x // cell), int(e.y // cell)), []).append(e)
         self._grid = grid
         self._grid_structures = structures
 
     def nearby(self, x: float, y: float, radius: float,
-               include_structures: bool = True) -> list:
+               include_structures: bool = True) -> list[Entity | Structure]:
         """Candidate entities near a point: a superset of what is truly in
         range, cheap to produce. Callers apply their own exact test.
 
@@ -419,23 +419,24 @@ class GameState:
         cell = GRID_CELL
         cx0, cx1 = int((x - reach) // cell), int((x + reach) // cell)
         cy0, cy1 = int((y - reach) // cell), int((y + reach) // cell)
-        out: list = []
+        near: list[Entity | Structure] = []
         grid = self._grid
         for gx in range(cx0, cx1 + 1):
             for gy in range(cy0, cy1 + 1):
                 bucket = grid.get((gx, gy))
                 if bucket:
-                    out.extend(bucket)
+                    near.extend(bucket)
         if include_structures:
             # Structures are few and static but large, so they are distance-
             # filtered here rather than bucketed (a core would span several
-            # cells and need de-duplicating). Squared compare: no sqrt.
+            # cells and need de-duplicating).
             for st in self._grid_structures:
                 dx, dy = st.x - x, st.y - y
                 limit = reach + st.radius
+                # Squared compare: no sqrt.
                 if dx * dx + dy * dy <= limit * limit:
-                    out.append(st)
-        return out
+                    near.append(st)
+        return near
 
     # --------------------------------------------------------------------------
     # Match lifecycle
@@ -444,6 +445,8 @@ class GameState:
         """Transition WAITING -> PLAYING and spawn the lane structures."""
         if kill_target is not None:
             self.kill_target = max(1, int(kill_target))
+        # Reset everything to a clean slate, in case the server is reusing the 
+        # GameState for a new match.
         self.team_kills = {Team.TEAM1: 0, Team.TEAM2: 0}
         self.winner = None
         self.creep_timer = 0.0
@@ -458,23 +461,27 @@ class GameState:
         self.phase = GamePhase.PLAYING
 
     def _spawn_structures(self) -> None:
+        """Spawn lane towers and cores from the config."""
         # Lane towers: three per lane per team, positioned along each lane
         # polyline by arc-length fraction.
+
+        # Spawning regular towers
         for team_int, towers in LANE_TOWERS.items():
             team = Team(team_int)
             for lane in LANE_PATHS:
                 path = LANE_PATHS[lane]
-                for lane_order, t, _kind in towers:
+                for lane_order, t, _ in towers:
                     x, y = point_along(path, t)
                     struct = Structure(
                         team=team,
                         x=x,
                         y=y,
-                        lane_order=lane_order,
+                        lane_order=lane_order, # for vulnerability checks
                         lane=lane,
                         attack_proj_speed=TOWER_PROJECTILE_SPEED,
                     )
                     self.entities[struct.entity_id] = struct
+
         # One core per team, inland between its fountain and mid base tower.
         for team_int, (cx, cy) in CORE_POSITIONS.items():
             team = Team(team_int)
@@ -531,8 +538,8 @@ class GameState:
     def lane_cleared(self, team: Team, lane: str) -> bool:
         """True if every one of `team`'s towers in `lane` has been destroyed."""
         for e in self.entities.values():
-            if (isinstance(e, Structure) and e.team == team
-                    and e.lane == lane and e.alive):
+            if all(isinstance(e, Structure), e.team == team, e.lane == lane, 
+                   e.alive):
                 return False
         return True
 
@@ -546,17 +553,16 @@ class GameState:
         if struct.is_core:
             return self.core_exposed(struct.team)
         for e in self.entities.values():
-            if (
-                isinstance(e, Structure)
-                and e.team == struct.team
-                and e.lane == struct.lane
-                and e.alive
-                and e.lane_order < struct.lane_order
-            ):
+            if all(isinstance(e, Structure),
+                   e.team == struct.team,
+                   e.lane == struct.lane,
+                   e.alive,
+                   e.lane_order < struct.lane_order):
                 return False
         return True
 
     def core_of(self, team: Team) -> Structure | None:
+        """Return the core structure for `team`, or None if not found."""
         for e in self.entities.values():
             if isinstance(e, Structure) and e.is_core and e.team == team:
                 return e
@@ -565,11 +571,12 @@ class GameState:
     # --------------------------------------------------------------------------
     # Snapshot / vision
     # --------------------------------------------------------------------------
-    def build_snapshot(self) -> list[dict]:
+    def build_snapshot(self) -> list[dict[str, object]]:
         """Build a list of entity snapshots for broadcast (no fog)."""
         return [e.to_snapshot() for e in self.entities.values()]
 
-    def _vision_sources(self, team: Team):
+    def _vision_sources(self, 
+                        team: Team) -> Iterator[tuple[float, float, float, bool]]:
         """Yield (x, y, radius, unobstructed) for each alive vision-granting unit
         of `team`. `unobstructed` sight ignores wall/tree line-of-sight blocks."""
         for e in self.entities.values():
