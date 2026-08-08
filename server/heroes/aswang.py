@@ -2,12 +2,15 @@
 
 Kit:
   Q Devour     (unit)     eat an enemy minion/neutral whole for a timed buff;
-                          against a hero it is a heavy bite instead.
+                          against a hero it is a heavy bite instead, with a
+                          slow.
   W Shapeshift (self)     morph into a random beast form — Dog (fast), Pig
-                          (tanky), or Snake (phases terrain, slows on hit).
+                          (tanky), or Bat (phases terrain, slows on hit,
+                          unobstructed vision).
   E Nightstalker(passive) lifesteal, and bonus damage while hunting alone.
-  R True Aswang(self)     drop the disguise: a winged terror that flies over
-                          terrain with bonus damage and heavy lifesteal.
+  R True Aswang(passive)  rank 1: Devour on a hero extends Shapeshift's
+                          duration; rank 2: Shapeshift grants 2 random
+                          beasts' abilities at once; rank 3: all 3.
 """
 
 from __future__ import annotations
@@ -22,21 +25,42 @@ from server import skills
 
 # --- Tuning ----------------------------------------------------------------
 Q_RANGE = 200
-Q_HERO_BITE = 120
-Q_BUFF_DUR = 14.0
-Q_BUFF_DMG, Q_BUFF_SPEED = 22, 30   # gorging on prey: bonus damage + speed
+Q_BASE_DMG, Q_DMG_PER_RANK = 22, 6           # gorging on prey: bonus damage
+Q_BASE_SPEED, Q_SPEED_PER_RANK = 30, 8       # ...and bonus speed
+Q_BASE_DUR, Q_DUR_PER_RANK = 12.0, 1.5       # ...for a rank-scaled duration
+Q_HERO_BITE, Q_HERO_BITE_PER_RANK = 120, 15
+Q_HERO_SLOW, Q_HERO_SLOW_DUR = 0.3, 1.5
 
 FORM_DUR = 12.0
-DOG_SPEED, DOG_ATKSPD = 110, 0.4
-PIG_PDEF, PIG_SDEF, PIG_REDUCE = 24, 24, 0.15
-SNAKE_SLOW, SNAKE_SLOW_DUR = 0.3, 1.2
+DOG_SPEED, DOG_SPEED_PER_RANK = 110, 20
+DOG_ATKSPD, DOG_ATKSPD_PER_RANK = 0.4, 0.08
+PIG_DEF, PIG_DEF_PER_RANK = 24, 6
+PIG_REDUCE, PIG_REDUCE_PER_RANK = 0.15, 0.03
+BAT_SLOW, BAT_SLOW_PER_RANK = 0.25, 0.05
+BAT_SLOW_DUR = 1.2
+BAT_VISION, BAT_VISION_PER_RANK = 500, 100
 
 E_LIFESTEAL_PER_RANK = 0.06
 E_LONE_DMG_PER_RANK = 10
 E_ALLY_RADIUS = 700
 
-R_DUR = 9.0
-R_DMG_BONUS, R_SPEED, R_LIFESTEAL = 55, 80, 0.25
+R_DEVOUR_EXTEND = 12.0
+
+
+def _beast_mods(beast: str, rank: int) -> dict:
+    """Stat modifiers for one beast form of Shapeshift at W's current rank."""
+    if beast == "dog":
+        return {"speed_bonus": DOG_SPEED + DOG_SPEED_PER_RANK * (rank - 1),
+                "atkspd_pct": DOG_ATKSPD + DOG_ATKSPD_PER_RANK * (rank - 1)}
+    if beast == "pig":
+        d = PIG_DEF + PIG_DEF_PER_RANK * (rank - 1)
+        return {"phys_def": d, "sp_def": d,
+                "dmg_reduction": PIG_REDUCE + PIG_REDUCE_PER_RANK * (rank - 1)}
+    # bat
+    return {"phase": True, "unobstructed_vision": True,
+            "attack_slow_pct": BAT_SLOW + BAT_SLOW_PER_RANK * (rank - 1),
+            "attack_slow_dur": BAT_SLOW_DUR,
+            "vision_bonus": BAT_VISION + BAT_VISION_PER_RANK * (rank - 1)}
 
 
 class Nightstalker(Aura):
@@ -93,33 +117,48 @@ class Aswang(HeroDef):
     phys_def_per_level = 3.0
     sp_def_per_level = 2.0
 
-    @ability("Q", "Devour", cd=10, mana=60, cast=CastType.UNIT,
+    @ability("Q", "Devour", cd=8, mana=60, cast=CastType.UNIT,
              desc="Eat an enemy minion or neutral whole for a timed buff. Heroes "
-                  "take a heavy bite instead.")
+                  "take a heavy bite instead, and are slowed.")
     def devour(ctx):
-        skills.devour(ctx, range=Q_RANGE, buff_dur=Q_BUFF_DUR,
-                      source="aswang:devour",
-                      hero_bite=Q_HERO_BITE, dmg_bonus=Q_BUFF_DMG,
-                      speed_bonus=Q_BUFF_SPEED)
+        hero = ctx.caster
+        rank = hero.ability_rank("Q")
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (rank - 1)
+        speed = Q_BASE_SPEED + Q_SPEED_PER_RANK * (rank - 1)
+        dur = Q_BASE_DUR + Q_DUR_PER_RANK * (rank - 1)
+        bite = Q_HERO_BITE + Q_HERO_BITE_PER_RANK * (rank - 1)
+        target = skills.devour(ctx, range=Q_RANGE, buff_dur=dur,
+                               source="aswang:devour",
+                               hero_bite=bite, dmg_bonus=dmg,
+                               speed_bonus=speed)
+        if isinstance(target, Hero):
+            skills.slow(ctx, target, Q_HERO_SLOW, Q_HERO_SLOW_DUR)
+            if hero.ability_rank("R") >= 1:
+                for form_status in hero.statuses.by_source("aswang:form"):
+                    form_status.remaining += R_DEVOUR_EXTEND
 
-    @ability("W", "Shapeshift", cd=13, mana=50, cast=CastType.NONE,
-             desc="Morph into a random beast: Dog (speed), Pig (tank), or Snake "
-                  "(phase through terrain, slow on hit).")
+    @ability("W", "Shapeshift", cd=20, mana=70, cast=CastType.NONE,
+             desc="Morph into a random beast: Dog (speed), Pig (tank), or Bat "
+                  "(phase through terrain, slow on hit, unobstructed vision).")
     def shapeshift(ctx):
         hero = ctx.caster
         hero.statuses.remove_source("aswang:form", ctx.state)
-        form = random.choice(("dog", "pig", "snake"))
-        if form == "dog":
-            mods = {"speed_bonus": DOG_SPEED, "atkspd_pct": DOG_ATKSPD}
-        elif form == "pig":
-            mods = {"phys_def": PIG_PDEF, "sp_def": PIG_SDEF,
-                    "dmg_reduction": PIG_REDUCE}
-        else:  # snake
-            mods = {"phase": True, "attack_slow_pct": SNAKE_SLOW,
-                    "attack_slow_dur": SNAKE_SLOW_DUR}
+        w_rank = hero.ability_rank("W")
+        r_rank = hero.ability_rank("R")
+        beasts = ("dog", "pig", "bat")
+        if r_rank >= 3:
+            chosen = beasts
+        elif r_rank >= 2:
+            chosen = random.choice((("dog", "pig"), ("pig", "bat"),
+                                    ("bat", "dog")))
+        else:
+            chosen = (random.choice(beasts),)
+        mods = {}
+        for beast in chosen:
+            mods.update(_beast_mods(beast, w_rank))
         hero.statuses.add(make_status(FORM_DUR, source="aswang:form", **mods),
                           ctx.state)
-        hero.ability_state["form"] = form
+        hero.ability_state["form"] = "+".join(chosen)
 
     @ability("E", "Nightstalker", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive: gain lifesteal, plus bonus damage while no allied "
@@ -127,14 +166,12 @@ class Aswang(HeroDef):
     def nightstalker(ctx):
         pass  # passive — refreshed in on_tick
 
-    @ability("R", "True Aswang", cd=75, mana=120, cast=CastType.NONE,
-             desc="Reveal your winged true form: fly over terrain with bonus "
-                  "damage and heavy lifesteal.")
+    @ability("R", "True Aswang", cd=0, mana=0, cast=CastType.PASSIVE,
+             desc="Passive: rank 1 makes Devour on a hero extend Shapeshift's "
+                  "duration; rank 2 makes Shapeshift grant 2 random beasts' "
+                  "abilities at once; rank 3 grants all 3.")
     def true_aswang(ctx):
-        ctx.caster.statuses.add(
-            make_status(R_DUR, source="aswang:true", phase=True,
-                        dmg_bonus=R_DMG_BONUS, speed_bonus=R_SPEED,
-                        lifesteal=R_LIFESTEAL), ctx.state)
+        pass  # passive — read by rank in devour() and shapeshift()
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod

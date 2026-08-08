@@ -3,21 +3,38 @@
 
 ## 1. Aswang
 - Q - Devour
-  - (unit, cd 10, mana 60) Eat an enemy minion/neutral whole for a 14s buff (+22 dmg, +30 speed); against a hero it's a heavy 120-damage bite instead.
+  - Eat an enemy minion/neutral whole for a 12s buff (+22dmg, +30speed) # dmg, speed, and duration improves as rank.
+  - Against a hero it's a heavy physical damage bite instead with slow.
+  - Targets minions/neutrals/heroes. Cannot target towers.
+  - CD: 8s. Cost: 60 mana
 - W - Shapeshift
-  - (self, cd 13, mana 50) Morph into a random beast for 12s — Dog (+110 speed, +0.4 atkspd), Pig (+24 phys/sp def, 15% dmg reduction), or Snake (phases terrain, slows on hit).
+  - Morph into a random beast for 12s:
+    - Dog (+110 speed, +0.4 atkspd) # Speed and atkspeed increases as rank.
+    - Pig (+24 phys/sp def, 15% dmg reduction) # physical and special defense increases as rank; increasing dmg reduction as well
+    - Bat (phases terrain, slows on hit, gain unobstructed vision). # slow increases per rank, vision radius increases per rank.
+  - Self cast. CD: 20s. Cost: 70 mana
 - E - Night Stalker
-  - (passive) Lifesteal scaling with rank (6%/rank) plus bonus damage (10/rank) while no ally is within 700 range.
+  - Lifesteal scaling with rank (6%/rank) plus bonus damage (10/rank) if an enemy has no ally within 700 range.
 - R - True Aswang
-  - (self, cd 75, mana 120) Drop the disguise for 9s: phases terrain, +55 dmg, +80 speed, 25% lifesteal.
+  - Rank 1 makes casting devour on a hero extend the duration of shapeshift by another 12 seconds.
+  - Rank 2 makes shapeshift combine the abilities of 2 random beast (Dog+Pig, Pig+Bat, or Bat+Dog).
+  - Rank 3 makes shapeshift combine all 3 beasts and their abilities.
+  - Passive.
 
 ## 2. Bonifacio
 - Q - Bolo Cleave
-  - (point, cd 6, mana 45, radius 220) A sweeping bolo strike: 110 physical damage in an arc in front of him.
+  - A sweeping bolo strike: 110 physical damage in an arc in front of him. Rank increases the damage.
+  - The skill also reduces physical defense of enemies hit.
+  - Can only cast in melee range. If cast at a distance, Bonifacio must move towards that point first. 
+  - Point cast. CD: 6s. Cost: 45 mana. Radius: 220.
 - W - Rip the Cedula
-  - (self, cd 14, mana 55) Tear the cedula in defiance: 6s of +40 dmg, 20% lifesteal, +16 phys/sp def.
+  - Tear the cedula in defiance: 8s of +40 dmg, 20% lifesteal, +16 phys/sp def. Benefits increase as rank.
+  - Allied heroes nearby gain the same benefits.
+  - Allied minions nearby gain benefits, but at a scaled down value.
+  - Allied structures gain the defense benefits.
+  - Self cast. CD: 14s. Cost: 55 mana.
 - E - Katipunero
-  - (passive) +14 dmg and +6 phys def per nearby allied hero (capped at 3 allies) within 600 range.
+  - +14 dmg and +6 phys def per nearby allied hero (capped at 3 allies) within 600 range.
 - R - KKK Warcry
   - (self, cd 70, mana 100) With at least two allies within 700 range, rallies all allies for 7s (+45 dmg, +70 speed, +16 phys/sp def); solo, gives a weaker self-rally (+20 dmg, +35 speed).
 
