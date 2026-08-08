@@ -66,3 +66,35 @@ def unpack_from_buffer(buf: bytearray) -> list[dict]:
         del buf[:total]
         messages.append(msgpack.unpackb(payload, raw=False))
     return messages
+
+
+#: A Terraria "Connect Request" packet: [u16 LE total length][msg type 1]
+#: [7-bit-length-prefixed version string].
+#:
+#: playit.gg's free tier only offers game-preset tunnels, and a preset edge
+#: *sniffs the first packet* — a connection whose opening bytes aren't a valid
+#: handshake for that game is reset before it ever reaches the agent, which is
+#: why a tunnelled client saw an empty lobby forever. Sending this as the first
+#: thing on the wire gets us past the sniffer; the edge then forwards it
+#: verbatim and pipes the rest of the connection transparently, so the server
+#: only has to consume these 15 bytes before the real stream begins.
+#:
+#: This is a tunnel workaround, not part of the game protocol — it carries no
+#: information and deliberately sits outside `PROTOCOL_VERSION`.
+TUNNEL_PRELUDE = b"\x0f\x00\x01\x0bTerraria279"
+
+
+def take_tunnel_prelude(buf: bytearray) -> bool | None:
+    """Consume a leading `TUNNEL_PRELUDE` from `buf`, if one is there.
+
+    Returns True if the prelude was consumed, False if `buf` definitively does
+    not start with one (a direct connection — the caller should stop checking),
+    and None if there aren't enough bytes to tell yet.
+    """
+    n = min(len(buf), len(TUNNEL_PRELUDE))
+    if bytes(buf[:n]) != TUNNEL_PRELUDE[:n]:
+        return False
+    if len(buf) < len(TUNNEL_PRELUDE):
+        return None  # a partial match so far; wait for the rest
+    del buf[:len(TUNNEL_PRELUDE)]
+    return True

@@ -12,7 +12,9 @@ from shared.protocol import (
     MAX_MSG_SIZE,
     MessageTooLarge,
     PROTOCOL_VERSION,
+    TUNNEL_PRELUDE,
     pack_message,
+    take_tunnel_prelude,
     unpack_from_buffer,
 )
 from shared.game_types import GamePhase, MsgType, Team
@@ -58,6 +60,46 @@ class TestFraming(unittest.TestCase):
     def test_oversized_outgoing_message_raises_the_typed_error(self):
         with self.assertRaises(MessageTooLarge):
             pack_message({"t": 1, "blob": "x" * (MAX_MSG_SIZE + 10)})
+
+
+class TestTunnelPrelude(unittest.TestCase):
+    """playit's free game-preset tunnels sniff the first packet and reset
+    anything they don't recognise, so a tunnelled client opens with a Terraria
+    handshake. The edge forwards those bytes verbatim, so the server strips
+    them before framing."""
+
+    def test_prelude_is_consumed_and_leaves_the_real_stream(self):
+        buf = bytearray(TUNNEL_PRELUDE + pack_message({"t": 1}))
+        self.assertIs(take_tunnel_prelude(buf), True)
+        self.assertEqual(unpack_from_buffer(buf), [{"t": 1}])
+
+    def test_absent_prelude_is_reported_without_consuming(self):
+        frame = pack_message({"t": 1})
+        buf = bytearray(frame)
+        self.assertIs(take_tunnel_prelude(buf), False)
+        self.assertEqual(bytes(buf), frame)  # a direct client is untouched
+
+    def test_split_prelude_waits_for_the_rest(self):
+        # 15 bytes can arrive across two reads; answering False there would
+        # feed the handshake into the framer and corrupt the connection.
+        buf = bytearray(TUNNEL_PRELUDE[:6])
+        self.assertIsNone(take_tunnel_prelude(buf))
+        self.assertEqual(bytes(buf), TUNNEL_PRELUDE[:6])  # nothing consumed
+        buf.extend(TUNNEL_PRELUDE[6:])
+        self.assertIs(take_tunnel_prelude(buf), True)
+        self.assertEqual(bytes(buf), b"")
+
+    def test_short_non_matching_read_is_settled_immediately(self):
+        buf = bytearray(b"\x00\x00")  # a real frame header, not the prelude
+        self.assertIs(take_tunnel_prelude(buf), False)
+
+    def test_prelude_is_a_valid_terraria_connect_request(self):
+        # The edge validates length, message type 1, and the version string.
+        self.assertEqual(
+            int.from_bytes(TUNNEL_PRELUDE[:2], "little"), len(TUNNEL_PRELUDE))
+        self.assertEqual(TUNNEL_PRELUDE[2], 1)
+        self.assertEqual(TUNNEL_PRELUDE[3], len(TUNNEL_PRELUDE[4:]))
+        self.assertTrue(TUNNEL_PRELUDE[4:].startswith(b"Terraria"))
 
 
 class TestSnapshotSplit(unittest.TestCase):

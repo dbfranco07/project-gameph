@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from shared.protocol import (
-    MessageTooLarge, pack_message, unpack_from_buffer)
+    MessageTooLarge, pack_message, take_tunnel_prelude, unpack_from_buffer)
 
 
 class ClientHandler:
@@ -30,6 +30,9 @@ class ClientHandler:
         #: Set once the client passes the version handshake.
         self.player_name: str = ""
         self._reader_task: asyncio.Task | None = None
+        #: Whether we've settled the question of a leading `TUNNEL_PRELUDE`.
+        #: Direct connections don't send one, so its absence is not an error.
+        self._prelude_settled = False
 
         # Disable Nagle: our messages are small and latency-sensitive, and
         # coalescing them adds up to ~40ms of input delay on a real WAN link.
@@ -60,6 +63,15 @@ class ClientHandler:
                 if not data:
                     break                      # clean EOF: peer closed
                 self.buffer.extend(data)
+                if not self._prelude_settled:
+                    # A tunnelled client opens with TUNNEL_PRELUDE to satisfy
+                    # playit's protocol sniffer; the edge passes those bytes
+                    # through, so strip them before framing. 15 bytes can
+                    # arrive split, hence the three-way answer.
+                    verdict = take_tunnel_prelude(self.buffer)
+                    if verdict is None:
+                        continue           # partial prelude; need more bytes
+                    self._prelude_settled = True
                 try:
                     self.incoming.extend(unpack_from_buffer(self.buffer))
                 except MessageTooLarge:

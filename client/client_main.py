@@ -20,7 +20,7 @@ from shared.config import (
 )
 from shared.game_types import MsgType, GamePhase
 from shared.protocol import (
-    PROTOCOL_VERSION, pack_message, unpack_from_buffer)
+    PROTOCOL_VERSION, TUNNEL_PRELUDE, pack_message, unpack_from_buffer)
 from client.camera import Camera
 from client.interpolation import Interpolator
 from client.input_handler import InputHandler
@@ -88,6 +88,11 @@ class GameClient:
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.sock.setblocking(False)  # clears the timeout for in-game use
             print(f"[CLIENT] Connected to {self.host}:{self.port}")
+
+            # Must be the first bytes on the wire: a playit game-preset tunnel
+            # sniffs the opening packet and resets anything it can't recognise.
+            # Harmless on a direct connection — the server strips it if present.
+            self.sock.sendall(TUNNEL_PRELUDE)
 
             # Send join message
             join_msg = pack_message({
@@ -222,6 +227,8 @@ class GameClient:
             self._send(msg)
 
         self._receive()
+        if self.screen_state != SCREEN_GAME:
+            return True  # dropped to the menu mid-frame; don't draw a dead world
 
         entities = self.interpolator.get_entities()
         if not self._centered:
@@ -309,8 +316,8 @@ class GameClient:
         try:
             data = pack_message(msg)
             self.sock.sendall(data)
-        except (BrokenPipeError, OSError):
-            pass
+        except (BrokenPipeError, OSError) as e:
+            self._lost_connection(f"send failed: {e}")
 
     def _receive(self) -> None:
         if self.sock is None:
@@ -318,11 +325,16 @@ class GameClient:
         try:
             data = self.sock.recv(65536)
             if not data:
+                # Clean EOF: the peer closed. Through a tunnel this is what an
+                # edge that accepts and then resets looks like — silently
+                # ignoring it left us sitting in an empty lobby forever.
+                self._lost_connection("connection closed by the server")
                 return
             self.recv_buffer.extend(data)
         except BlockingIOError:
             pass
-        except (ConnectionResetError, OSError):
+        except (ConnectionResetError, OSError) as e:
+            self._lost_connection(str(e))
             return
 
         messages = unpack_from_buffer(self.recv_buffer)
@@ -391,6 +403,31 @@ class GameClient:
         elif msg_type == MsgType.GAME_OVER:
             self.winner = msg.get("winner", 0)
             print(f"[CLIENT] Game Over! Team {self.winner} wins!")
+
+    def _lost_connection(self, reason: str) -> None:
+        """Drop back to the menu with a readable reason.
+
+        Called from both send and receive paths, so it must be idempotent —
+        a failed send usually produces a failed recv on the same frame.
+        """
+        if self.sock is None:
+            return
+        print(f"[CLIENT] Connection lost: {reason}")
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        self.sock = None
+        self.recv_buffer.clear()
+        # Reset lobby/match state so a reconnect doesn't render stale rosters.
+        self.my_client_id = None
+        self.my_entity_id = None
+        self.is_host = False
+        self.lobby_players = []
+        self.available_heroes = []
+        self.screen_state = SCREEN_MENU
+        if self.menu is not None:
+            self.menu.error = f"Lost connection to {self.host}:{self.port} ({reason})"
 
     def _disconnect(self) -> None:
         if self.sock:
