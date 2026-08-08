@@ -86,8 +86,6 @@ ATTACK_CLICK_PIXELS = 14
 HERO_RESPAWN_BASE = 2.0
 # config/combat.yaml: hero_respawn_per_level
 HERO_RESPAWN_PER_LEVEL = 3.0
-# config/combat.yaml: tree_respawn
-TREE_RESPAWN = 20.0
 # config/combat.yaml: max_level
 MAX_LEVEL = 15
 # config/combat.yaml: xp_base

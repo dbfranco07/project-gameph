@@ -29,6 +29,7 @@ from server.entity import Hero
 from server.game_state import GameState
 from server.net_handler import ClientHandler
 from server.systems import step, sandbox_set_level
+from server.targeting import is_valid_attack_target
 
 
 class GameServer:
@@ -478,7 +479,9 @@ class GameServer:
         ty = msg.get("ty")
         tid = msg.get("tid")
         target = self.state.entities.get(tid) if tid is not None else None
-        if (target is not None) and (target.team != hero.team) and target.alive:
+        # The server decides what is targetable, not the client: a stale or
+        # tampered client that names a wall/tree gets an attack-move instead.
+        if target is not None and is_valid_attack_target(self.state, hero, target):
             hero.forced_target_id = tid
             hero.attack_move = False
             hero.attack_move_x = hero.attack_move_y = None

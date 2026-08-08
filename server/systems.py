@@ -43,7 +43,6 @@ from shared.config import (
     MEET_POINTS,
     SPAWN_ZONE_RADIUS,
     BASE_TOWER_T,
-    TREE_RESPAWN,
     TP_RANGE,
     TP_COOLDOWN,
 )
@@ -53,8 +52,10 @@ from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
     Structure, Projectile, HookProjectile, SplitBody, RuneCreature,
-    SummonedMinion, Wall, Tree, Obstacle
+    SummonedMinion, Obstacle
 )
+from server.targeting import (
+    in_attack_range, is_attackable, is_hostile_team, is_valid_attack_target)
 from server.damage import DamageEvent, apply_defense, resolve
 from server.status import (
     RuneCooldown, RuneDoubleDamage, RuneHaste, RuneRegen, 
@@ -81,15 +82,13 @@ _PRIORITY = {
     "minion": {EntityType.MINION: 0,
                EntityType.HERO: 1,
                EntityType.TOWER: 2,
-               EntityType.BASE: 2,
-               EntityType.TREE: 3},
+               EntityType.BASE: 2},
     "structure": {EntityType.MINION: 0,
                   EntityType.HERO: 1},
     "hero": {EntityType.HERO: 0,
              EntityType.MINION: 1,
              EntityType.TOWER: 2,
-             EntityType.BASE: 2,
-             EntityType.TREE: 3},
+             EntityType.BASE: 2},
 }
 
 
@@ -113,11 +112,6 @@ def find_attack_target(
         return None
     order = _PRIORITY[_attacker_kind(attacker)]
 
-    # Heroes only acquire targets their team can currently see (fog of war).
-    # Minions/structures/neutrals stay ungated: Team.NONE has no vision
-    # sources, and lane units always fight what walks up to them.
-    vis = (state.visible_ids_cached(attacker.team)
-           if isinstance(attacker, Hero) else None)
     best: Hero | Minion | Structure | None = None
     best_key: tuple[int, float] | None = None
 
@@ -127,30 +121,17 @@ def find_attack_target(
     # largest cost by a wide margin.
     reach = attacker.effective_attack_range()
     for e in state.nearby(attacker.x, attacker.y, reach):
-        if e is attacker or not e.alive:
-            continue
-        if e.team == attacker.team:
-            continue
-        # Teamless entities aren't targetable, except neutral jungle monsters.
-        if e.team == Team.NONE and not (isinstance(e, Minion) and e.is_neutral):
-            continue
-        if isinstance(e, Projectile):
+        # Team, terrain, invulnerability, stealth and fog all live in the
+        # shared predicate, so the forced-target paths can apply the exact
+        # same rules instead of re-deriving them (see server/targeting.py).
+        if not is_valid_attack_target(state, attacker, e):
             continue
         prio = order.get(e.entity_type)
         if prio is None:
             continue
-        if isinstance(e, Structure) and not state.is_structure_vulnerable(e):
+        if not in_attack_range(attacker, e):
             continue
-        if isinstance(e, Hero) and e.is_invulnerable():
-            continue  # can't be targeted while invulnerable (e.g. split upper half)
-        if isinstance(e, Hero) and e.is_invisible() and e.reveal_timer <= 0:
-            continue  # stealthed (e.g. in trees/walls) and not currently revealed
-        if vis is not None and e.entity_id not in vis:
-            continue  # fogged: the attacker's team has no line of sight
-        d = attacker.distance_to(e)
-        if d > attacker.effective_attack_range() + e.radius:
-            continue # out of range
-        key = (prio, d)
+        key = (prio, attacker.distance_to(e))
         if best_key is None or key < best_key: 
             # select the nearest of the highest-priority target
             best, best_key = e, key
@@ -556,18 +537,13 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
     target = state.entities.get(hero.forced_target_id)
     # A fogged target drops the order (no live-tracking through the fog of
     # war); the last set target_x/y remains, so the hero walks to the spot
-    # where the enemy was last seen.
-    if (
-        target is None 
-        or not target.alive
-        or target.team == hero.team
-        or (isinstance(target, Structure) and not state.is_structure_vulnerable(target))
-        or target.entity_id not in state.visible_ids_cached(hero.team)
-    ):
+    # where the enemy was last seen. Terrain drops it too — an obstacle's
+    # radius is half its capsule length, so a latched wall/tree read as "in
+    # range" from hundreds of units away and froze the hero mid-lane.
+    if target is None or not is_valid_attack_target(state, hero, target):
         hero.forced_target_id = None
         return
-    in_range = hero.distance_to(target) <= hero.effective_attack_range() + target.radius
-    if in_range:
+    if in_attack_range(hero, target):
         hero.target_x = hero.target_y = None  # stand and attack
     else:
         hero.target_x, hero.target_y = target.x, target.y  # close the gap
@@ -969,7 +945,7 @@ def _advance_homing(state: GameState, proj: Projectile, dt: float, dead: list) -
     Deliberately not fog-gated: an attack already in flight still lands on a
     target that just slipped into the fog of war (standard MOBA behavior)."""
     target = state.entities.get(proj.target_id)
-    if target is None or not target.alive:
+    if not is_attackable(state, target):
         dead.append(proj.entity_id)  # target gone before the shot landed
         return True
     step = proj.speed * dt
@@ -1004,16 +980,11 @@ def _projectile_hit(state: GameState, proj: Projectile, px0=None, py0=None):
         px0, py0 = proj.x, proj.y
     best, best_d = None, None
     for e in state.entities.values():
-        if e is proj or not e.alive:
+        # Team.NONE (neutrals/runes) are valid targets for either team's shots,
+        # but terrain at Team.NONE is not — see server/targeting.py.
+        if e is proj or not is_attackable(state, e):
             continue
-        # Team.NONE (neutrals/runes) are valid targets for either team's shots.
-        if e.team == proj.team:
-            continue
-        if isinstance(e, Projectile):
-            continue
-        if isinstance(e, Structure) and not state.is_structure_vulnerable(e):
-            continue
-        if isinstance(e, Obstacle):
+        if not is_hostile_team(proj.team, e):
             continue
         cx, cy = closest_point_on_segment(e.x, e.y, px0, py0, proj.x, proj.y)
         if math.hypot(e.x - cx, e.y - cy) > proj.radius + e.radius:
@@ -1153,13 +1124,8 @@ def _combat_target(state: GameState, attacker):
     in-range enemy; otherwise fall back to automatic target acquisition."""
     if isinstance(attacker, Hero) and attacker.forced_target_id is not None:
         t = state.entities.get(attacker.forced_target_id)
-        if (t is not None and t.alive and t.team != attacker.team
-                and not isinstance(t, Projectile)
-                and not (isinstance(t, Hero) and t.is_invulnerable())
-                and not (isinstance(t, Hero) and t.is_invisible() and t.reveal_timer <= 0)
-                and not (isinstance(t, Structure) and not state.is_structure_vulnerable(t))
-                and t.entity_id in state.visible_ids_cached(attacker.team)
-                and attacker.distance_to(t) <= attacker.effective_attack_range() + t.radius):
+        if (t is not None and is_valid_attack_target(state, attacker, t)
+                and in_attack_range(attacker, t)):
             return t
     return find_attack_target(state, attacker)
 
@@ -1230,8 +1196,8 @@ def system_damage_death(state: GameState, dt: float) -> None:
         if "heal" in ev:
             tgt.hp = min(tgt.effective_max_hp(), tgt.hp + ev["heal"])
             continue
-        if isinstance(tgt, Wall):
-            continue  # permanent terrain; no damage source can affect it
+        if isinstance(tgt, Obstacle):
+            continue  # permanent terrain (walls and trees); nothing damages it
         if isinstance(tgt, Structure) and not state.is_structure_vulnerable(tgt):
             continue
         src = state.entities.get(ev.get("src"))
@@ -1404,9 +1370,6 @@ def _kill(state: GameState, victim, src_id) -> None:
         if isinstance(killer, Hero):
             killer.gold += STRUCTURE_GOLD
             _reward(state, killer, "gold", STRUCTURE_GOLD, victim.x, victim.y)
-    elif isinstance(victim, Tree):
-        victim.respawn_timer = TREE_RESPAWN
-        state.invalidate_terrain()   # a felled tree stops blocking
 
 
 # ---------------------------------------------------------------------------
@@ -1426,7 +1389,7 @@ def system_summons(state: GameState, dt: float) -> None:
             dead.append(e.entity_id)
             continue
         tgt = state.entities.get(e.forced_target_id) if e.forced_target_id else None
-        if tgt is None or not tgt.alive or tgt.team == e.team:
+        if tgt is None or not is_valid_attack_target(state, e, tgt):
             tgt = find_attack_target(state, e)
         if tgt is not None:
             e.dest_x, e.dest_y = tgt.x, tgt.y
@@ -1526,19 +1489,6 @@ def system_respawn(state: GameState, dt: float) -> None:
             fire_hero_hook(hero, "on_spawn", state, hero)
 
 
-def system_tree_respawn(state: GameState, dt: float) -> None:
-    """Regrow a destroyed tree segment a fixed time after it dies."""
-    for e in state.entities.values():
-        if not isinstance(e, Tree) or e.alive or e.respawn_timer <= 0:
-            continue
-        e.respawn_timer -= dt
-        if e.respawn_timer <= 0:
-            e.alive = True
-            e.hp = e.effective_max_hp()
-            e.respawn_timer = 0.0
-            state.invalidate_terrain()   # it blocks walking and sight again
-
-
 # ---------------------------------------------------------------------------
 # Win check
 # ---------------------------------------------------------------------------
@@ -1589,5 +1539,4 @@ def step(state: GameState, dt: float) -> None:
     system_damage_death(state, dt)
     system_economy(state, dt)
     system_respawn(state, dt)
-    system_tree_respawn(state, dt)
     system_win_check(state, dt)

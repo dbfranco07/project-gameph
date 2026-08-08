@@ -14,7 +14,7 @@ class EntityType(IntEnum):
     BASE = 4
     PROJECTILE = 5
     WALL = 6     # permanent unwalkable + vision-blocking rect
-    TREE = 7     # like a wall but destructible
+    TREE = 7     # like a wall; different art + the tree heroes interact with it
 
 
 class GamePhase(IntEnum):

@@ -3,7 +3,8 @@
 import unittest
 
 from server.game_state import GameState
-from server.entity import Hero, Projectile
+from server import skills
+from server.entity import Hero, Projectile, Tree
 from server.systems import (
     system_ability_cast,
     system_projectiles,
@@ -140,6 +141,20 @@ class TestLeveling(unittest.TestCase):
         self.assertEqual(hero.level, 3)
         self.assertGreater(hero.max_hp, hp0)
         self.assertGreater(hero.attack_damage, dmg0)
+
+
+class TestAoeIgnoresTerrain(unittest.TestCase):
+    def test_aoe_does_not_hit_terrain(self):
+        """An obstacle's radius is half its capsule length, so an unfiltered
+        AoE swept up trees from far outside its stated radius."""
+        state = GameState()
+        tree = Tree(x1=1200, y1=1000, x2=2400, y2=1000, thickness=80)
+        state.entities[tree.entity_id] = tree
+        enemy = state.add_hero(2, "E", Team.TEAM2, hero_id="brawler")
+        enemy.x, enemy.y = 1020, 1000
+        hit = skills.enemies_in_radius(state, Team.TEAM1, 1000, 1000, 200)
+        self.assertIn(enemy, hit)
+        self.assertNotIn(tree, hit)
 
 
 if __name__ == "__main__":

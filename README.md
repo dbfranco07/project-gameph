@@ -93,10 +93,78 @@ on your laptop or a VPS.
 
 - **Same machine / LAN** — nothing special: `--server` and connect to
   `127.0.0.1` or your LAN IP.
-- **Friends elsewhere** — the easiest option that needs no router config and
-  does not expose your IP is **Tailscale**: everyone joins the same tailnet and
-  connects to your Tailscale address. Otherwise forward TCP 7777, or run the
-  server on a small VPS so it stays up without you hosting.
+- **Friends elsewhere** — use a **[playit.gg](https://playit.gg) TCP tunnel**.
+  It needs no router config, does not expose your IP, and — unlike a VPN —
+  requires your friends to install nothing at all:
+
+  1. Install the playit agent on the machine hosting the game and claim a
+     **TCP** tunnel pointing at `127.0.0.1:7777`.
+
+     Installing it depends on the host OS — note that **playit ships no macOS
+     binary**, despite what its download page implies:
+
+     | Host | Install |
+     |---|---|
+     | Windows | `winget install DevelopedMethods.playit` |
+     | Debian/Ubuntu | the apt repo in the [playit README](https://github.com/playit-cloud/playit-agent) |
+     | macOS | build it (see below) |
+     | Any (Docker) | `docker run --rm -it --net=host -e SECRET_KEY=<key> ghcr.io/playit-cloud/playit-agent:latest` — the image is `linux/amd64` + `linux/arm64`. On Docker Desktop for Mac `--net=host` does not reach the host, so point the tunnel's local address at `host.docker.internal:7777` instead. |
+
+     Building on macOS (playit's own README says `cargo run --release`, which
+     fails: the workspace has several binaries, so you must name them). You
+     need two — `playitd` is the daemon that holds the tunnel, `playit-cli`
+     controls it:
+
+     ```sh
+     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+     git clone https://github.com/playit-cloud/playit-agent
+     cd playit-agent
+     cargo build --release -p playitd -p playit-cli   # ~1 min
+     ```
+
+     Then run `playitd` (it stays in the foreground), and in another terminal
+     `playit-cli setup` to claim it against your playit.gg account. Check it
+     with `playit-cli status`.
+
+  2. **Creating the tunnel without paying.** playit's web UI gates the
+     *custom TCP* tunnel form behind Premium ($3/month), but TCP itself is not
+     a paid feature — the free plan includes 4 ports. Create the tunnel from
+     the **"Supported Game"** list instead (Minecraft Java, Terraria and
+     Project Zomboid are all plain TCP) and it costs nothing. The preset only
+     picks a default port and a label; the tunnel just forwards TCP bytes, so
+     it carries this game's protocol fine.
+
+     The least fiddly version: pick the Minecraft Java preset and run the
+     server on its port instead of editing the tunnel —
+     `--server --host 0.0.0.0 --port 25565`.
+
+  3. Otherwise run `uv run python main.py --server --host 0.0.0.0 --port 7777`
+     and point the tunnel's local address at `127.0.0.1:7777`. Allow the
+     firewall prompt on first run.
+  4. Friends type the tunnel address it gives you — a hostname and port, e.g.
+     `abc123.gl.joinmc.link` / `12345` — into the connect screen. Hostnames
+     resolve fine; it does not have to be an IP.
+
+  Alternatives: forward TCP 7777 on your router, join everyone to a
+  **Tailscale** tailnet (great latency, but the free plan caps you at 3 users —
+  awkward for a 5v5), or run the server on an always-on VM so it stays up
+  without you hosting. Oracle Cloud's Always Free ARM instance is enough, and
+  on Linux the playit agent installs from apt in one line (or you can skip the
+  tunnel entirely and use the VM's public IP).
+
+  **Not ngrok:** its free tier allows only 1 GB of transfer per month. At
+  ~45 KB/s per client this game would exhaust that in roughly an hour and a
+  half of 4-player play.
+
+Practical notes when playing over the internet:
+
+- **Everyone must run the same build.** The client sends `PROTOCOL_VERSION` on
+  join and a mismatch is refused, so re-share the executable whenever it is
+  bumped.
+- **Reuse your name.** Reconnecting restores your parked hero only if you join
+  with the same `--name`.
+- **Check your upload.** A 5v5 host pushes ~3.7 Mbps up (see the table below),
+  and a relay adds a hop on top. Start at 3v3 if you are unsure.
 
 What the netcode does for you:
 
@@ -117,16 +185,25 @@ make an older client misbehave.
 Friends who don't have Python/`uv` installed can run a packaged executable instead of
 the `uv run` commands above — same client, just bundled with `pyinstaller.spec`.
 
+Sprites are procedural placeholders and `client/assets/**/*.png` is gitignored, so
+**run `uv run python scripts/gen_all.py` before packaging** on a fresh clone or the
+build ships with no art. The CI workflow does this for you.
+
 - **Mac:** `uv run pyinstaller pyinstaller.spec --noconfirm --clean` produces
   `dist/ProjectGamePH.app` — double-click to run.
 - **Windows:** the same command on a Windows machine produces `dist/ProjectGamePH.exe`.
   PyInstaller can't cross-compile, so the `.exe` must be built on Windows (or via the
   `.github/workflows/build-executables.yml` CI workflow on `windows-latest`, run manually
-  from the Actions tab or by pushing a `v*` tag — download the artifact from there).
+  from the Actions tab). Pushing a `v*` tag additionally publishes both builds to a
+  **GitHub Release**, which is the easiest thing to hand to friends: one link, no
+  GitHub account needed.
 
-The packaged app still needs a server to connect to (it doesn't bundle one) — the host
-runs `uv run python main.py --server ...` as usual, and friends point their executable at
-the host's address from the connect screen.
+Windows will show a SmartScreen warning for an unsigned executable — "More info" →
+"Run anyway". Tell your friends up front so nobody assumes it's malware.
+
+The packaged app bundles the server as well as the client, so a friend can host with
+`--server` if you'd rather not. Note that it is built windowed (`console=False`), so a
+server run from the packaged app prints nothing.
 
 ---
 

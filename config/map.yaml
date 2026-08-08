@@ -76,10 +76,10 @@ river: { p1: [1200, 1200], p2: [4800, 4800], thickness: 540 }
 runes:
   - { zone: [1750, 1750, 300, 300], buff: random, patrol: 100 }   # off-lane jungle (mirrored)
 
-# Walls: permanent, unwalkable, vision-blocking. Trees: like walls but
-# destructible (have hp) and clear when killed. Both are oriented CAPSULES:
-# a centerline p1->p2 plus a thickness (so they can run diagonally). Team 1
-# frame; the mirror builds Team 2's set.
+# Walls and trees are both permanent, unwalkable and vision-blocking; they
+# differ only in art and in which heroes can interact with them (Kapre lives
+# in trees). Both are oriented CAPSULES: a centerline p1->p2 plus a thickness
+# (so they can run diagonally). Team 1 frame; the mirror builds Team 2's set.
 walls:
   # top lane cover
   - { p1: [0, 4350], p2: [200, 4350], thickness: 50 }

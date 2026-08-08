@@ -35,16 +35,30 @@ class TestObstacles(unittest.TestCase):
         self.assertFalse(circle_capsule_overlap(hero.x, hero.y, hero.radius,
                                                 *wall.capsule()))
 
-    def test_tree_destructible_then_walkable(self):
+    def test_tree_is_indestructible(self):
+        """Trees are permanent terrain: no damage source can fell one."""
         state = GameState()
-        tree = Tree(x1=500, y1=460, x2=500, y2=540, thickness=80, hp=30, max_hp=30)
+        tree = Tree(x1=500, y1=460, x2=500, y2=540, thickness=80)
         state.entities[tree.entity_id] = tree
         self.assertEqual(len(state.obstacle_capsules()), 1)
+        hp_before = tree.hp
         state.damage_events.append(
-            {"src": None, "tgt": tree.entity_id, "amt": 50, "dtype": "true"})
+            {"src": None, "tgt": tree.entity_id, "amt": 999999, "dtype": "true"})
         system_damage_death(state, 0.05)
-        self.assertFalse(tree.alive)
-        self.assertEqual(state.obstacle_capsules(), [])  # no longer blocks
+        self.assertTrue(tree.alive)
+        self.assertEqual(tree.hp, hp_before)
+        self.assertEqual(len(state.obstacle_capsules()), 1)  # still blocking
+
+    def test_tree_blocks_walking(self):
+        from shared.geometry import circle_capsule_overlap
+        state = GameState()
+        tree = Tree(x1=200, y1=150, x2=200, y2=350, thickness=100)
+        hero = Hero(team=Team.TEAM1, x=200, y=250, radius=20)
+        state.entities[tree.entity_id] = tree
+        state.entities[hero.entity_id] = hero
+        system_collision(state, 0.05)
+        self.assertFalse(circle_capsule_overlap(hero.x, hero.y, hero.radius,
+                                                *tree.capsule()))
 
     def test_hero_blocked_by_unit_without_pushing_it(self):
         """A hero walking into another unit stops at it but never pushes it."""

@@ -728,13 +728,15 @@ class Wall(Obstacle):
 
 @dataclass
 class Tree(Obstacle):
-    """Like a wall but destructible: takes damage and, when killed, stops
-    blocking walking and vision."""
+    """Permanent and indestructible, exactly like a `Wall`.
+
+    Kept as its own class because trees are not interchangeable with walls
+    elsewhere: the client picks different art for them, and the tree heroes
+    (Kapre's Dwell, and the proximity auras Grove Vigor / Ironbark) query for
+    trees specifically via `server/terrain.py`.
+    """
 
     entity_type: EntityType = EntityType.TREE
-    hp: int = 200
-    max_hp: int = 200
-    respawn_timer: float = 0.0
 
 
 @dataclass

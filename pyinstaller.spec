@@ -4,17 +4,29 @@
 # (PyInstaller cannot cross-compile - build separately on each target OS).
 import sys
 
+from PyInstaller.utils.hooks import collect_submodules
+
 datas = [
     ("config", "config"),
     ("client/assets", "client/assets"),
 ]
+
+# Heroes and items are discovered at runtime with `pkgutil.iter_modules` (drop
+# a file in the package and it exists — see server/heroes/__init__.py). Nothing
+# imports them by name, so PyInstaller's static analysis never sees them and
+# left them out of the bundle entirely: the packaged app started with an empty
+# hero registry and died on `DEFAULT_HERO 'ranger' is not a known hero`.
+# Collecting them as hidden imports bundles them and lets the frozen importer
+# enumerate them.
+hiddenimports = (collect_submodules("server.heroes")
+                 + collect_submodules("server.items"))
 
 a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

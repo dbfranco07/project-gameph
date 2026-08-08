@@ -46,7 +46,11 @@ def unit_under_cursor(entities, my_entity_id, my_team, wx, wy, kind, rng):
     me = my_hero(entities, my_entity_id)
     best, best_d = None, None
     for e in entities:
-        if not e.get("a", True) or e.get("et") == EntityType.PROJECTILE:
+        # Terrain is never a unit target. (The 'obstacle' cast kind aims at it
+        # through `terrain_along_aim` instead, so grapples still work.)
+        if not e.get("a", True) or e.get("et") in (EntityType.PROJECTILE,
+                                                   EntityType.WALL,
+                                                   EntityType.TREE):
             continue
         team = e.get("tm", 0)
         # Team 0 (Team.NONE: neutrals/jungle camps) is hostile to everyone by

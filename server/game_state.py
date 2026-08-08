@@ -501,7 +501,7 @@ class GameState:
             self.entities[core.entity_id] = core
 
     def _spawn_map(self) -> None:
-        """Spawn static obstacles (walls + destructible trees) from the config.
+        """Spawn static obstacles (walls + trees) from the config.
         Each obstacle is an oriented capsule (p1, p2, thickness)."""
         for cap in WALLS:
             p1, p2 = cap["p1"], cap["p2"]

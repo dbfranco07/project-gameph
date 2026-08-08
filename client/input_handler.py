@@ -6,7 +6,7 @@ import math
 import sys
 import pygame
 
-from shared.game_types import MsgType, CastType
+from shared.game_types import MsgType, CastType, EntityType
 from shared.config import ATTACK_CLICK_PIXELS, VIEWPORT_HEIGHT
 from client.camera import Camera
 from client import targeting
@@ -229,7 +229,12 @@ class InputHandler:
         for ent in entities:
             team = ent.get("tm", 0)
             # Team 0 (neutrals/jungle camps) is a valid enemy target, matching
-            # the server's generic "hostile to everyone" treatment of it.
+            # the server's generic "hostile to everyone" treatment of it —
+            # but terrain also sits at team 0 and is never targetable. Its "r"
+            # is half its capsule length, so without this an A-click hundreds
+            # of pixels from a tree would grab the tree instead of the ground.
+            if ent.get("et") in (EntityType.WALL, EntityType.TREE):
+                continue
             if team == my_team:
                 continue
             if not ent.get("a", True):

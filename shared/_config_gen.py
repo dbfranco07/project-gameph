@@ -8,6 +8,7 @@ literal assignment (with a comment naming its YAML file/key) can be navigated to
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import yaml
@@ -64,6 +65,15 @@ def _is_stale() -> bool:
 
 
 def ensure_fresh() -> None:
-    """Generate the constants file if it is missing or stale."""
+    """Generate the constants file if it is missing or stale.
+
+    Skipped in a frozen (PyInstaller) build. There the module's ``__file__``
+    points inside the bundle's extraction directory, where ``shared/`` need not
+    exist as a real directory — so `generate()` could raise at import time and
+    take the whole app down on launch. A packaged build has no editable YAML to
+    track anyway: it ships the already-generated `_config_constants.py`.
+    """
+    if getattr(sys, "frozen", False):
+        return
     if _is_stale():
         generate()

@@ -1019,10 +1019,7 @@ class Renderer:
             corners = _capsule_corners(p1, p2, thpx)
             if corners:
                 pygame.draw.polygon(self.screen, edge, corners, 2)
-        if is_tree:  # show a damage bar on hurt trees, at the capsule midpoint
-            if ent.get("hp", 1) < ent.get("mhp", 1):
-                mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
-                self._draw_hp_bar(ent, mx, my - thpx // 2, thpx // 2)
+        # No health bar: trees are permanent terrain and never take damage.
 
     def _draw_structure(self, ent, sx, sy, radius) -> None:
         eid = ent.get("id")

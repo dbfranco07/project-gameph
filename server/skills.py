@@ -21,6 +21,8 @@ from server.entity import (
     Hero, Projectile, HookProjectile, Structure, Minion, SummonedMinion,
 )
 from server.status import Slow, Silence, Stun, make_status
+from server.targeting import (
+    is_attackable, is_hostile_team, is_valid_attack_target)
 
 
 # ---------------------------------------------------------------------------
@@ -30,11 +32,11 @@ from server.status import Slow, Silence, Stun, make_status
 def enemies_in_radius(state, team, cx, cy, radius):
     out = []
     for e in state.entities.values():
-        # Teamless units (Team.NONE: neutrals/runes) are hostile to everyone, so
-        # only the caster's own team is excluded here.
-        if not e.alive or e.team == team:
-            continue
-        if isinstance(e, Projectile):
+        # Teamless units (Team.NONE: neutrals/runes) are hostile to everyone,
+        # but terrain also sits at Team.NONE and must never be swept up: an
+        # obstacle's radius is half its capsule length, so a tree would be
+        # "in radius" from hundreds of units away.
+        if not is_attackable(state, e) or not is_hostile_team(team, e):
             continue
         if math.hypot(e.x - cx, e.y - cy) <= radius + e.radius:
             out.append(e)
@@ -242,7 +244,10 @@ def area_heal(ctx, heal, radius, fx="") -> list:
 def target_dmg(ctx, dmg, range, dtype="physical") -> object | None:
     """Damage a single targeted enemy if it is valid and within `range`."""
     target = ctx.state.entities.get(ctx.tid) if ctx.tid else None
-    if target is None or not target.alive or target.team == ctx.caster.team:
+    # check_vision=False: abilities are not fog-gated today (only auto-attack
+    # acquisition is), so this only adds the team/terrain/invulnerability rules.
+    if target is None or not is_valid_attack_target(
+            ctx.state, ctx.caster, target, check_vision=False):
         return None
     if ctx.caster.distance_to(target) <= range + target.radius:
         ctx.state.damage_events.append(
@@ -503,7 +508,8 @@ def devour(ctx, range, buff_dur=0.0, hero_bite=0, dtype="physical",
     damage. Returns the target acted on, or None."""
     caster = ctx.caster
     target = ctx.state.entities.get(ctx.tid) if ctx.tid else None
-    if target is None or not target.alive or target.team == caster.team:
+    if target is None or not is_valid_attack_target(
+            ctx.state, caster, target, check_vision=False):
         target = nearest_enemy(ctx.state, caster.team, caster.x, caster.y,
                                range, toward=(ctx.tx, ctx.ty))
     if target is None or caster.distance_to(target) > range + target.radius:

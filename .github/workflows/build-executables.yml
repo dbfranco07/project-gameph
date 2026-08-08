@@ -6,34 +6,66 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write   # needed to publish the release on a v* tag
+
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
             artifact_name: ProjectGamePH-windows
-            dist_path: dist/ProjectGamePH.exe
+            asset: ProjectGamePH-windows.zip
           - os: macos-latest
             artifact_name: ProjectGamePH-macos
-            dist_path: dist/ProjectGamePH.app
+            asset: ProjectGamePH-macos.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
-        with:
-          python-version: "3.11"
+        # No python-version here on purpose: uv reads .python-version, so CI
+        # builds on the same interpreter as local development. Pinning a
+        # different one here is how you get "works locally, breaks in CI".
 
       - name: Install dependencies
         run: uv sync
 
+      # Sprites are generated placeholders and client/assets/**/*.png is
+      # gitignored, so a fresh checkout has none. Without this the packaged
+      # build ships with no art at all. Generation is headless-safe
+      # (scripts/spritelib.py forces the SDL dummy video/audio drivers).
+      - name: Generate sprite assets
+        run: uv run python scripts/gen_all.py
+
       - name: Build executable
         run: uv run pyinstaller pyinstaller.spec --noconfirm --clean
+
+      # Zip both platforms: the macOS build is a .app *directory*, which
+      # upload-artifact would flatten and a release asset cannot hold as-is.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path dist/ProjectGamePH.exe -DestinationPath ${{ matrix.asset }}
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/ProjectGamePH.app ${{ matrix.asset }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.dist_path }}
+          path: ${{ matrix.asset }}
+
+      # On a v* tag, attach the build to a GitHub Release so friends get a
+      # plain download link instead of needing an account to fetch a CI
+      # artifact.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}
+          generate_release_notes: true
