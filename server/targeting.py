@@ -22,7 +22,7 @@ reject an illegal target even when the client never offered it.
 from __future__ import annotations
 
 from shared.game_types import Team
-from server.entity import Hero, Minion, Obstacle, Projectile, Structure
+from server.entity import GroundItem, Hero, Minion, Obstacle, Projectile, Structure
 
 
 def is_terrain(e) -> bool:
@@ -44,7 +44,7 @@ def is_attackable(state, e) -> bool:
     """
     if e is None or not e.alive:
         return False
-    if isinstance(e, (Projectile, Obstacle)):
+    if isinstance(e, (Projectile, Obstacle, GroundItem)):
         return False
     if isinstance(e, Structure) and not state.is_structure_vulnerable(e):
         return False

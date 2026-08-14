@@ -631,6 +631,31 @@ class Structure(Entity):
 
 
 @dataclass
+class GroundItem(Entity):
+    """A pickup lying on the ground (e.g. Panday's summoned sword). Not a combat
+    participant: excluded from the spatial grid and from `is_attackable` just
+    like a `Projectile`/`Obstacle`, so nobody can auto-attack or target-cast it.
+
+    `owner_id` restricts who may claim it (0 = anyone); `kind` names the client
+    sprite; `lifetime` counts down to despawn (<=0 means no timeout — the
+    hero that dropped it is responsible for clearing it itself)."""
+
+    entity_type: EntityType = EntityType.PICKUP
+    radius: float = 24.0
+    hp: int = 1
+    max_hp: int = 1
+    owner_id: int = 0
+    kind: str = ""
+    lifetime: float = 0.0
+
+    def to_snapshot(self) -> dict:
+        d = super().to_snapshot()
+        if self.kind:
+            d["k"] = self.kind
+        return d
+
+
+@dataclass
 class Projectile(Entity):
     entity_type: EntityType = EntityType.PROJECTILE
     radius: float = 18.0

@@ -52,7 +52,7 @@ from shared.game_types import EntityType, Team, GamePhase
 from server.entity import (
     Hero, Minion, MeleeMinion, RangedMinion, CartMinion, NeutralMinion,
     Structure, Projectile, HookProjectile, SplitBody, RuneCreature,
-    SummonedMinion, Obstacle
+    SummonedMinion, Obstacle, GroundItem
 )
 from server.targeting import (
     in_attack_range, is_attackable, is_hostile_team, is_valid_attack_target)
@@ -1423,6 +1423,23 @@ def system_summons(state: GameState, dt: float) -> None:
         state.entities.pop(eid, None)
 
 
+def system_ground_items(state: GameState, dt: float) -> None:
+    """Age out timed `GroundItem` pickups (e.g. Panday's forged sword).
+
+    Runs once per tick rather than per-hero, so heroes don't need to coordinate
+    who decrements a shared item's lifetime. Items dropped with `lifetime<=0`
+    never expire here — the hero that placed them owns their cleanup."""
+    dead: list[int] = []
+    for e in state.entities.values():
+        if not (isinstance(e, GroundItem) and e.alive and e.lifetime > 0):
+            continue
+        e.lifetime -= dt
+        if e.lifetime <= 0:
+            dead.append(e.entity_id)
+    for eid in dead:
+        state.entities.pop(eid, None)
+
+
 def fire_hero_hook(hero, name: str, *args) -> None:
     """Call a hero definition's optional lifecycle hook, if it defines one.
 
@@ -1554,6 +1571,7 @@ def step(state: GameState, dt: float) -> None:
     system_neutral_camps(state, dt)
     system_runes(state, dt)
     system_summons(state, dt)
+    system_ground_items(state, dt)
     system_movement(state, dt)
     system_ability_cast(state, dt)
     system_collision(state, dt)

@@ -297,7 +297,8 @@ class Renderer:
         # Walls/trees under units; structures/minions next; heroes/projectiles on top.
         order = {EntityType.WALL: -1, EntityType.TREE: -1,
                  EntityType.TOWER: 0, EntityType.BASE: 0, EntityType.MINION: 1,
-                 EntityType.HERO: 2, EntityType.PROJECTILE: 3}
+                 EntityType.PICKUP: 1, EntityType.HERO: 2,
+                 EntityType.PROJECTILE: 3}
         for ent in sorted(entities, key=lambda e: order.get(e.get("et"), 2)):
             self._draw_entity(ent, ent["id"] == my_entity_id if my_entity_id else False)
 
@@ -774,6 +775,13 @@ class Renderer:
             return
         if et in (EntityType.TOWER, EntityType.BASE):
             self._draw_structure(ent, sx, sy, radius)
+            return
+        if et == EntityType.PICKUP:
+            eid = ent.get("id")
+            key = ent.get("k", "")
+            if not self._blit_entity(key, "idle", "", sx, sy, radius, None, eid):
+                pygame.draw.circle(self.screen, (230, 210, 120), (sx, sy), radius)
+                pygame.draw.circle(self.screen, (255, 245, 200), (sx, sy), radius, 2)
             return
         if et == EntityType.MINION:
             eid = ent.get("id")

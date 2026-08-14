@@ -33,7 +33,8 @@ from shared.geometry import point_along, segment_capsule_intersect
 from shared.game_types import GamePhase, Team, EntityType
 from server.heroes import get_hero_def, DEFAULT_HERO, list_hero_ids, hero_catalog
 from server.entity import (
-    Entity, Hero, Minion, Projectile, Structure, Wall, Tree, Obstacle)
+    Entity, GroundItem, Hero, Minion, Projectile, Structure, Wall, Tree,
+    Obstacle)
 
 
 def enemy_team(team: Team) -> Team:
@@ -397,8 +398,8 @@ class GameState:
             if isinstance(e, Structure):
                 structures.append(e)
                 continue
-            if isinstance(e, (Projectile, Obstacle)):
-                continue 
+            if isinstance(e, (Projectile, Obstacle, GroundItem)):
+                continue
             grid.setdefault((int(e.x // cell), int(e.y // cell)), []).append(e)
         self._grid = grid
         self._grid_structures = structures

@@ -233,7 +233,8 @@ class InputHandler:
             # but terrain also sits at team 0 and is never targetable. Its "r"
             # is half its capsule length, so without this an A-click hundreds
             # of pixels from a tree would grab the tree instead of the ground.
-            if ent.get("et") in (EntityType.WALL, EntityType.TREE):
+            if ent.get("et") in (EntityType.WALL, EntityType.TREE,
+                                 EntityType.PICKUP):
                 continue
             if team == my_team:
                 continue

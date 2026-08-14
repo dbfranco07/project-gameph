@@ -19,6 +19,7 @@ from shared.config import MAP_WIDTH, MAP_HEIGHT
 from shared.geometry import closest_point_on_segment
 from server.entity import (
     Hero, Projectile, HookProjectile, Structure, Minion, SummonedMinion,
+    GroundItem,
 )
 from server.status import Slow, Silence, Stun, make_status
 from server.targeting import (
@@ -499,6 +500,42 @@ def summon(ctx, count, lifetime, target_id=None, spread=50.0,
         state.entities[worm.entity_id] = worm
         out.append(worm)
     return out
+
+
+def drop_item(ctx, x, y, kind="", radius=24.0, lifetime=0.0,
+             owner_only=True) -> GroundItem:
+    """Place a ground pickup at (x, y) (e.g. Panday's forged sword). Not a
+    combat target (excluded from targeting/the spatial grid like a projectile).
+
+    `owner_only` restricts it to the caster; `lifetime` <= 0 means no
+    timeout — pair that with `system_ground_items` (age it from a hero's own
+    on_tick) or the item lingers until something else clears it. Returns the
+    entity so the hero can remember its id (e.g. to replace it on recast)."""
+    caster = ctx.caster
+    item = GroundItem(team=caster.team, x=x, y=y, radius=radius,
+                      owner_id=caster.entity_id if owner_only else 0,
+                      kind=kind, lifetime=lifetime)
+    ctx.state.entities[item.entity_id] = item
+    return item
+
+
+def nearby_ground_item(state, hero, radius, kind="") -> GroundItem | None:
+    """The closest live `GroundItem` within `radius` of `hero` that it may
+    claim (owned by `hero` or unowned), optionally filtered by `kind`."""
+    best, best_d = None, None
+    for e in state.entities.values():
+        if not isinstance(e, GroundItem) or not e.alive:
+            continue
+        if e.owner_id and e.owner_id != hero.entity_id:
+            continue
+        if kind and e.kind != kind:
+            continue
+        d = hero.distance_to(e)
+        if d > radius + e.radius:
+            continue
+        if best_d is None or d < best_d:
+            best, best_d = e, d
+    return best
 
 
 def devour(ctx, range, buff_dur=0.0, hero_bite=0, dtype="physical",

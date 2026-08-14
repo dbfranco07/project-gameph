@@ -15,6 +15,7 @@ class EntityType(IntEnum):
     PROJECTILE = 5
     WALL = 6     # permanent unwalkable + vision-blocking rect
     TREE = 7     # like a wall; different art + the tree heroes interact with it
+    PICKUP = 8   # a ground item (e.g. Panday's dropped sword); not a combat target
 
 
 class GamePhase(IntEnum):
