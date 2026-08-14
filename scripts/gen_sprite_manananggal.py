@@ -66,7 +66,7 @@ def split_flyer(facing, frame) -> pygame.Surface:
     s = sl.surf()
     back_wings(s, "split_flyer", facing, frame)
     sl.torso(s, PAL["cloth"], PAL["cloth_dk"])
-    sl.arms(s, PAL["skin"], "split_flyer", PAL["claw"])
+    sl.arms(s, PAL["skin"], "split_flyer", PAL["claw"], phase=0.5)
     sl.head(s, PAL["skin"], PAL["hair"], facing, PAL["eye"])
     _entrails(s, 6, frame)
     return sl.oriented(s, facing)

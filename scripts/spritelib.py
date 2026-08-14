@@ -37,6 +37,25 @@ BLACK = (18, 16, 22)
 
 
 # ---------------------------------------------------------------------------
+# Easing (mirrors client/renderer.py's _ease_out so gen-time and runtime
+# motion read the same way).
+# ---------------------------------------------------------------------------
+def ease_out(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return 1.0 - (1.0 - t) * (1.0 - t)
+
+
+def ease_in(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return t * t
+
+
+def ease_in_out(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+# ---------------------------------------------------------------------------
 # Surfaces + saving
 # ---------------------------------------------------------------------------
 def surf(size: int = SIZE) -> pygame.Surface:
@@ -74,27 +93,68 @@ def shadow(s: pygame.Surface) -> None:
     s.blit(sh, (0, 0))
 
 
-def legs(s: pygame.Surface, col, dark) -> None:
-    pygame.draw.rect(s, dark, (CX - 7, 40, 5, 15), border_radius=2)
-    pygame.draw.rect(s, dark, (CX + 2, 40, 5, 15), border_radius=2)
-    pygame.draw.rect(s, col, (CX - 8, 53, 7, 4), border_radius=1)
-    pygame.draw.rect(s, col, (CX + 1, 53, 7, 4), border_radius=1)
+def legs(s: pygame.Surface, col, dark, phase: float = 0.0) -> None:
+    """Two legs; `phase` in [0,1] drives an alternating walk-cycle stride
+    (0 = rest pose, matching the old static legs exactly)."""
+    swing = 3.0 * math.sin(phase * math.tau)
+    for side, off in ((-1, swing), (1, -swing)):
+        lift = max(0.0, off) * 0.6
+        ox = off * 0.6
+        if side == -1:
+            ux, fx = CX - 7 + ox, CX - 8 + ox
+        else:
+            ux, fx = CX + 2 + ox, CX + 1 + ox
+        pygame.draw.rect(s, dark, (int(ux), int(40 - lift), 5, int(15 - lift)),
+                         border_radius=2)
+        pygame.draw.rect(s, col, (int(fx), int(53 - lift), 7, 4),
+                         border_radius=1)
 
 
-def torso(s: pygame.Surface, col, dark, w: int = 18, h: int = 20) -> None:
-    pygame.draw.ellipse(s, col, (CX - w // 2, 24, w, h))
-    pygame.draw.ellipse(s, dark, (CX - w // 2, 24, w, h), 1)
+def torso(s: pygame.Surface, col, dark, w: int = 18, h: int = 20,
+          lean: float = 0.0, bob: float = 0.0) -> None:
+    """`lean` (x) and `bob` (y) nudge the torso for stride/breathing motion;
+    both default to 0, matching the old static torso exactly."""
+    x = int(round(CX - w // 2 + lean))
+    y = int(round(24 + bob))
+    pygame.draw.ellipse(s, col, (x, y, w, h))
+    pygame.draw.ellipse(s, dark, (x, y, w, h), 1)
 
 
-def arms(s: pygame.Surface, skin, action: str, claw=None) -> None:
-    """Two arms whose forward reach depends on the action; `claw` adds talons."""
-    reach = {"attack": 12, "q": 13, "w": 6, "pounce": 4, "scratch": 14,
-             "split_flyer": 9}.get(action, 6)
-    drop = 4 if action in ("attack", "q", "scratch") else 0
+# Peak forward reach per action, used by the windup/strike/recover curve in
+# `arms()` below (same values the old static lookup table used).
+_ARM_PEAK = {"attack": 12, "q": 13, "w": 6, "pounce": 4, "scratch": 14,
+             "split_flyer": 9}
+
+
+def arms(s: pygame.Surface, skin, action: str, claw=None, *,
+         phase: float = 0.0) -> None:
+    """Two arms whose pose depends on the action and animation `phase` in
+    [0,1]. `claw` adds talons. Non-move/idle actions get a windup (pulled
+    back) -> strike (snapped forward, slight overshoot) -> recover curve
+    across phase, sampled at 0/0.5/1.0 for a 3-frame attack/cast; `move` arms
+    counter-swing opposite the legs; `idle` drifts gently for breathing."""
+    base = 6.0
+    drop = 0.0
+    if action == "idle":
+        reach = base + 1.5 * ease_in_out(phase)
+    elif action == "move":
+        reach = base + 3.0 * math.sin(phase * math.tau)
+        drop = 1.5 * math.sin(phase * math.tau + math.pi)
+    else:
+        peak = _ARM_PEAK.get(action, base)
+        windup = base * 0.4
+        strike = peak * 1.2
+        recover = peak * 0.75
+        if phase <= 0.5:
+            reach = windup + (strike - windup) * ease_out(phase / 0.5)
+        else:
+            reach = strike + (recover - strike) * ease_out((phase - 0.5) / 0.5)
+        if action in ("attack", "q", "scratch"):
+            drop = 4.0 * min(1.0, phase / 0.5 + 0.3)
     for side in (-1, 1):
         hx = CX + side * 8
-        ex = CX + side * (6 + reach)
-        ey = 30 + drop
+        ex = int(round(CX + side * (6 + reach)))
+        ey = int(round(30 + drop))
         pygame.draw.line(s, skin, (hx, 28), (ex, ey), 3)
         if claw:
             for k in (-2, 0, 2):
@@ -112,15 +172,37 @@ def head(s: pygame.Surface, skin, hair, facing: str, eye=(40, 30, 30)) -> None:
     pygame.draw.circle(s, eye, (CX + 2, 16), 1)
 
 
+# Frame counts per action, used to turn a frame index into a phase in [0,1]
+# for the animation curves in arms()/legs()/torso(). Anything not idle/move/
+# attack (i.e. a skill-cast key) uses CAST_FRAMES.
+IDLE_FRAMES = 2
+MOVE_FRAMES = 4
+ATTACK_FRAMES = 3
+CAST_FRAMES = 3
+
+
+def _phase_for(action: str, frame: int) -> float:
+    n = {"idle": IDLE_FRAMES, "move": MOVE_FRAMES,
+         "attack": ATTACK_FRAMES}.get(action, CAST_FRAMES)
+    return frame / max(1, n - 1)
+
+
 def body_raw(s: pygame.Surface, pal: dict, action: str, facing: str,
              frame: int, legged: bool = True) -> None:
     """Draw the fighter body onto `s` (no orientation flip). `pal` keys: skin,
     hair, cloth, cloth_dk, claw(optional), eye(optional)."""
+    phase = _phase_for(action, frame)
     shadow(s)
     if legged:
-        legs(s, pal["cloth"], pal["cloth_dk"])
-    torso(s, pal["cloth"], pal["cloth_dk"])
-    arms(s, pal.get("skin", (200, 180, 160)), action, pal.get("claw"))
+        legs(s, pal["cloth"], pal["cloth_dk"], phase if action == "move" else 0.0)
+    lean = bob = 0.0
+    if action == "move":
+        lean = 1.5 * math.sin(phase * math.tau)
+        bob = 1.5 * (1.0 - math.cos(phase * 2 * math.tau)) / 2.0
+    elif action == "idle":
+        bob = -1.0 * ease_in_out(phase)
+    torso(s, pal["cloth"], pal["cloth_dk"], lean=lean, bob=bob)
+    arms(s, pal.get("skin", (200, 180, 160)), action, pal.get("claw"), phase=phase)
     head(s, pal.get("skin", (200, 180, 160)), pal.get("hair", BLACK),
          facing, pal.get("eye", (40, 30, 30)))
 
@@ -129,8 +211,6 @@ def humanoid(pal: dict, action: str, facing: str, frame: int) -> pygame.Surface:
     """A generic recolorable fighter, oriented for `facing`."""
     s = surf()
     body_raw(s, pal, action, facing, frame)
-    if action == "move" and frame == 1:
-        s.scroll(0, -1)
     return oriented(s, facing)
 
 
@@ -161,8 +241,9 @@ def emit_hero(hero_id: str, pal: dict, *, back=None, overlay=None,
               skill_fx=None, face_fx=None,
               skill_keys=("q", "w", "e", "r")) -> int:
     """Write the standard hero set: idle/move/attack (4 facings) + a cast
-    one-shot per skill key (non-directional, 2 frames) + a `face` portrait for
-    hero-select. `skill_keys` defaults to the usual q/w/e/r but a wider kit can
+    one-shot per skill key (non-directional, CAST_FRAMES frames) + a `face`
+    portrait for hero-select. `skill_keys` defaults to the usual q/w/e/r but
+    a wider kit can
     pass more (e.g. Pedro Penduko's q/w/e/r/t/y/u/i). Hooks layer the hero's
     signature:
       back(s, action, facing, frame)   -> behind the body (e.g. wings)
@@ -180,20 +261,21 @@ def emit_hero(hero_id: str, pal: dict, *, back=None, overlay=None,
         body_raw(s, pal, action, facing, frame)
         if overlay:
             overlay(s, action, facing, frame)
-        if action == "move" and frame == 1:
-            s.scroll(0, -1)
         return oriented(s, facing)
 
     for facing in FACINGS:
-        save(compose("idle", facing, 0), "heroes", hero_id, f"idle_{facing}")
-        for fr in (0, 1):
+        for fr in range(IDLE_FRAMES):
+            save(compose("idle", facing, fr),
+                 "heroes", hero_id, f"idle_{facing}_{fr}")
+        for fr in range(MOVE_FRAMES):
             save(compose("move", facing, fr),
                  "heroes", hero_id, f"move_{facing}_{fr}")
-        save(compose("attack", facing, 0), "heroes", hero_id,
-             f"attack_{facing}")
-        count += 4
+        for fr in range(ATTACK_FRAMES):
+            save(compose("attack", facing, fr),
+                 "heroes", hero_id, f"attack_{facing}_{fr}")
+        count += IDLE_FRAMES + MOVE_FRAMES + ATTACK_FRAMES
     for key in skill_keys:
-        for fr in (0, 1):
+        for fr in range(CAST_FRAMES):
             s = compose(key, "s", fr)
             if skill_fx:
                 skill_fx(s, key, fr)

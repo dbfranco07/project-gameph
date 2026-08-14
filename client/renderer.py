@@ -58,6 +58,7 @@ from client import targeting
 
 # Combat-feedback timing (seconds).
 CAST_DUR = 0.4      # how long a one-shot skill-cast pose plays
+ATTACK_DUR = 0.3    # how long the windup/strike/recover attack pose plays
 FLASH_DUR = 0.12    # white/red hit flash on a unit that just took damage
 LUNGE_DUR = 0.14    # attacker lunge + victim recoil duration
 LUNGE_PX = 7.0      # attacker step toward its target on a hit
@@ -166,6 +167,7 @@ class Renderer:
         self._last_hit: dict[int, float] = {}       # eid -> monotonic time of last hit
         self._lunge: dict[int, dict] = {}           # attacker eid -> {t0, tgt}
         self._recoil: dict[int, dict] = {}          # victim eid -> {t0, src}
+        self._attack_pose: dict[int, float] = {}    # attacker eid -> t0 (monotonic)
         self._ground_fx: list[dict] = []            # AoE decals, under units
         self._spark_fx: list[dict] = []             # hit sparks, over units
         # Per-projectile heading memory (id -> (x, y, heading)) for rotation.
@@ -225,6 +227,7 @@ class Renderer:
                         self._recoil[eid] = {"t0": now, "src": src}
                 if src is not None and eid is not None:
                     self._lunge[src] = {"t0": now, "tgt": eid}
+                    self._attack_pose[src] = now
                 spark = ("hit_special" if ev.get("dt") == "special"
                          else "hit_phys")
                 self._spark_fx.append({"name": spark, "wx": ev["x"],
@@ -377,6 +380,8 @@ class Renderer:
                        if now - v["t0"] < LUNGE_DUR}
         self._recoil = {k: v for k, v in self._recoil.items()
                         if now - v["t0"] < LUNGE_DUR}
+        self._attack_pose = {k: t for k, t in self._attack_pose.items()
+                             if now - t < ATTACK_DUR}
 
     def _attack_offset(self, eid) -> tuple[float, float]:
         """Screen-space (ox, oy) lunge+recoil offset for unit `eid` this frame."""
@@ -815,10 +820,13 @@ class Renderer:
         """Derive (action, facing, anim_t) for a unit from its motion + cast signal.
 
         Facing follows movement (kept when standing still); action is move/idle,
-        overridden by a one-shot cast pose (q/w/e/r) for ~CAST_DUR after the server
-        flags a cast, and by the split-flyer pose while detached. `anim_t` is the
-        clock to drive frame cycling: elapsed-since-cast for one-shots (so they
-        play through), else wall-clock for looping idle/move.
+        overridden (in priority order) by the split-flyer pose while detached,
+        a one-shot cast pose (q/w/e/r) for ~CAST_DUR after the server flags a
+        cast, or a one-shot attack pose for ~ATTACK_DUR after a `hit` combat
+        event lands (so the swing plays out alongside the lunge/recoil).
+        `anim_t` is the clock to drive frame cycling: elapsed-since-trigger
+        for one-shots (so they play through), else wall-clock for looping
+        idle/move.
         """
         eid = ent.get("id")
         x, y = ent.get("x", 0.0), ent.get("y", 0.0)
@@ -848,6 +856,9 @@ class Renderer:
         ct0 = mem.get("cast_t0")
         if ct0 is not None and now - ct0 < CAST_DUR:
             return mem["cast_action"], facing, now - ct0
+        at0 = self._attack_pose.get(eid)
+        if at0 is not None and now - at0 < ATTACK_DUR:
+            return "attack", facing, now - at0
         return ("move" if moving else "idle"), facing, time.time()
 
     def _blit_sprite(self, hero_id, action, facing, sx, sy, radius,
