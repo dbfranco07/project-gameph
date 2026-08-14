@@ -118,6 +118,7 @@ class Aswang(HeroDef):
     sp_def_per_level = 2.0
 
     @ability("Q", "Devour", cd=8, mana=60, cast=CastType.UNIT,
+             target="enemy", range=Q_RANGE,
              desc="Eat an enemy minion or neutral whole for a timed buff. Heroes "
                   "take a heavy bite instead, and are slowed.")
     def devour(ctx):
@@ -137,7 +138,7 @@ class Aswang(HeroDef):
                 for form_status in hero.statuses.by_source("aswang:form"):
                     form_status.remaining += R_DEVOUR_EXTEND
 
-    @ability("W", "Shapeshift", cd=20, mana=70, cast=CastType.NONE,
+    @ability("W", "Shapeshift", cd=15, mana=70, cast=CastType.NONE,
              desc="Morph into a random beast: Dog (speed), Pig (tank), or Bat "
                   "(phase through terrain, slow on hit, unobstructed vision).")
     def shapeshift(ctx):

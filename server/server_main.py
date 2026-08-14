@@ -14,7 +14,7 @@ from shared.config import (
     MAP_WIDTH,
     MAP_HEIGHT,
 )
-from shared.game_types import MsgType, GamePhase, Team
+from shared.game_types import MsgType, GamePhase, Team, CastType
 from shared.protocol import PROTOCOL_VERSION
 from shared.config import ITEM_SLOTS, MAX_LEVEL
 from server.heroes import validate_all
@@ -455,6 +455,7 @@ class GameServer:
             hero.forced_target_id = None
             hero.attack_move = False
             hero.attack_move_x = hero.attack_move_y = None
+            hero.pending_ability_key = hero.pending_ability_tid = None
             hero.target_x = max(0, min(MAP_WIDTH, float(tx)))
             hero.target_y = max(0, min(MAP_HEIGHT, float(ty)))
             self._release_self_pull(hero)
@@ -485,6 +486,7 @@ class GameServer:
             hero.forced_target_id = tid
             hero.attack_move = False
             hero.attack_move_x = hero.attack_move_y = None
+            hero.pending_ability_key = hero.pending_ability_tid = None
             hero.target_x = target.x
             hero.target_y = target.y
             self._release_self_pull(hero)
@@ -492,6 +494,7 @@ class GameServer:
             # Attack-move: clear focus, advance to the point but stop to attack
             # any enemy that comes into range (handled in _update_attack_move).
             hero.forced_target_id = None
+            hero.pending_ability_key = hero.pending_ability_tid = None
             if tx is not None and ty is not None:
                 px = max(0, min(MAP_WIDTH, float(tx)))
                 py = max(0, min(MAP_HEIGHT, float(ty)))
@@ -516,6 +519,7 @@ class GameServer:
         hero.target_y = None
         hero.attack_move = False
         hero.attack_move_x = hero.attack_move_y = None
+        hero.pending_ability_key = hero.pending_ability_tid = None
 
     def _handle_use_ability(self, client_id: int, msg: dict) -> None:
         """Queues an ability cast to be resolved by the simulation step.
@@ -523,6 +527,14 @@ class GameServer:
         The cast is appended to ``state.ability_casts`` rather than applied
         immediately, so all casts in a tick are resolved together by the
         systems. Ignored if the hero is missing/dead or no key was supplied.
+
+        A unit-targeted ability that declares a ``range`` (currently just
+        Aswang's Q) and is ordered on a target beyond that range is not
+        queued yet: the hero chases the target instead (see
+        ``systems._update_ability_chase``), and the cast fires — spending its
+        cooldown/mana only then — once actually in range. Every other
+        ability (no declared range, or not unit-targeted) is queued
+        immediately exactly as before.
 
         Args:
             client_id: Server-assigned id of the casting client.
@@ -535,12 +547,30 @@ class GameServer:
         key = msg.get("key")
         if not key:
             return
+        tid = msg.get("tid")
+        adef = hero.hero_def.ability(key) if hero.hero_def else None
+        if (adef is not None and adef.cast_type == CastType.UNIT
+                and adef.range > 0 and tid is not None):
+            target = self.state.entities.get(tid)
+            if target is None or not is_valid_attack_target(
+                    self.state, hero, target, check_vision=False):
+                return  # invalid target: drop the order, same as before
+            if hero.distance_to(target) > adef.range + target.radius:
+                # Out of range: chase instead of instantly whiffing the cast.
+                hero.forced_target_id = None
+                hero.attack_move = False
+                hero.attack_move_x = hero.attack_move_y = None
+                hero.pending_ability_key = key
+                hero.pending_ability_tid = tid
+                hero.target_x, hero.target_y = target.x, target.y
+                self._release_self_pull(hero)
+                return
         self.state.ability_casts.append({
             "caster": hero.entity_id,
             "key": key,
             "tx": float(msg.get("tx", hero.x)),
             "ty": float(msg.get("ty", hero.y)),
-            "tid": msg.get("tid"),
+            "tid": tid,
         })
 
     def _handle_level_ability(self, client_id: int, msg: dict) -> None:

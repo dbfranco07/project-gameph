@@ -41,8 +41,14 @@ def my_hero(entities, my_entity_id):
 
 
 def unit_under_cursor(entities, my_entity_id, my_team, wx, wy, kind, rng):
-    """Closest enemy/ally unit under the cursor (within its radius) and, when
-    `rng` is set, within cast range of my hero."""
+    """Closest enemy/ally unit under the cursor (within its radius).
+
+    Distance to *my hero* (`rng`) is deliberately NOT used to exclude a
+    target here: a unit-targeted ability ordered beyond its range has the
+    caster walk into range and fire automatically (see
+    server systems._update_ability_chase), so an out-of-range enemy is still
+    a perfectly valid thing to click — the cast just won't be instant.
+    """
     me = my_hero(entities, my_entity_id)
     best, best_d = None, None
     for e in entities:
@@ -64,9 +70,6 @@ def unit_under_cursor(entities, my_entity_id, my_team, wx, wy, kind, rng):
         d = math.hypot(e["x"] - wx, e["y"] - wy)
         if d > e.get("r", 20) + ATTACK_CLICK_PIXELS:
             continue
-        if rng and me is not None:
-            if math.hypot(e["x"] - me["x"], e["y"] - me["y"]) > rng + e.get("r", 20):
-                continue
         if best_d is None or d < best_d:
             best, best_d = e, d
     return best

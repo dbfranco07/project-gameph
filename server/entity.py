@@ -182,6 +182,11 @@ class Hero(Entity):
     attack_move_y: float | None = None
     # Focus target from an "A + click enemy" command (chase + attack this entity)
     forced_target_id: int | None = None
+    # A unit-targeted ability cast that was out of range when ordered: chase
+    # this entity, then fire the ability once in range (see
+    # systems._update_ability_chase). None = no pending chase-cast.
+    pending_ability_key: str | None = None
+    pending_ability_tid: int | None = None
 
     # Progression
     level: int = 1
@@ -378,6 +383,16 @@ class Hero(Entity):
         # so the client can swap to the flying-torso sprite. Cheap one-bit flag.
         if self.ability_state.get("split"):
             d["split"] = True
+        # Aswang's Nightstalker (E): a visible tell while the "hunting alone"
+        # bonus-damage state is active, so it isn't a purely invisible buff.
+        night = self.statuses.get("aswang:night")
+        if night is not None and getattr(night, "_alone", False):
+            d["night"] = True
+        # Aswang's active Shapeshift form(s) (e.g. "dog", "pig+bat"), so the
+        # client can render the matching beast sprite instead of the default.
+        form = self.ability_state.get("form")
+        if form:
+            d["form"] = form
         # Transient cast signal for the client's one-shot skill animation.
         if self.cast_timer > 0 and self.cast_key:
             d["cast"] = self.cast_key

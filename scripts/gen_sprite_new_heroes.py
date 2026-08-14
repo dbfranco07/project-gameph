@@ -119,6 +119,90 @@ def aswang_fx(s, key, frame):
                             0.2, 2.9, 3)
 
 
+def aswang_overlay(s, action, facing, frame):
+    """Baseline "more monstrous" juice on the default (unshifted) body: bared
+    fangs on the attack swing, a harder glint in the eye."""
+    if action == "attack":
+        for t in (-3, 3):
+            pygame.draw.polygon(s, sl.WHITE,
+                                [(CX + t - 1, 18), (CX + t + 1, 18), (CX + t, 21)])
+    pygame.draw.circle(s, (255, 230, 120), (CX - 2, 16), 1)
+    pygame.draw.circle(s, (255, 230, 120), (CX + 2, 16), 1)
+
+
+def _dog_features(s, action, facing, frame) -> None:
+    """Pointed ears + a forward muzzle — Dog Shapeshift."""
+    ear_col, ear_dk = (110, 84, 62), (70, 52, 38)
+    for side in (-1, 1):
+        bx = CX + side * 6
+        pygame.draw.polygon(s, ear_col,
+                            [(bx, 12), (bx + side * 5, -1), (bx + side * 2, 13)])
+        pygame.draw.polygon(s, ear_dk,
+                            [(bx, 12), (bx + side * 5, -1), (bx + side * 2, 13)], 1)
+    mx = CX + (10 if facing != "w" else -10)
+    pygame.draw.ellipse(s, (120, 92, 68), (mx - 5, 14, 10, 6))
+    pygame.draw.circle(s, (30, 24, 22), (mx + (3 if facing != "w" else -3), 17), 1)
+
+
+def _boar_features(s, action, facing, frame) -> None:
+    """Curved white tusks + a broad flattened snout — Boar Shapeshift."""
+    snout_x = CX + (9 if facing != "w" else -9)
+    pygame.draw.ellipse(s, (90, 78, 66), (snout_x - 6, 15, 12, 7))
+    for side in (-1, 1):
+        tx = snout_x + side * 4
+        pygame.draw.polygon(s, sl.WHITE,
+                            [(tx, 20), (tx + side * 4, 17), (tx + side * 2, 23)])
+        pygame.draw.polygon(s, (200, 196, 186),
+                            [(tx, 20), (tx + side * 4, 17), (tx + side * 2, 23)], 1)
+
+
+def _bat_wing_features(s, action, facing, frame) -> None:
+    """Leathery wings behind the body + small pointed ears — Bat Shapeshift.
+    A `back` hook: drawn before the body so the wings read as sprouting from
+    behind the shoulders."""
+    spread = 0.5 if action == "idle" else 0.75
+    wing_col, wing_edge = (46, 30, 40), (90, 60, 74)
+    for side in (-1, 1):
+        sl.bat_wing(s, side, spread, wing_col, wing_edge)
+    for side in (-1, 1):
+        bx = CX + side * 5
+        pygame.draw.polygon(s, (40, 30, 36),
+                            [(bx, 12), (bx + side * 4, 2), (bx + side * 1, 13)])
+
+
+_ASWANG_FORM_FEATURES = {"dog": _dog_features, "pig": _boar_features}
+
+
+def _aswang_variant_key(combo: tuple[str, ...]) -> str:
+    return "aswang_" + "+".join(sorted(combo))
+
+
+def _aswang_variant_overlay(combo):
+    def overlay(s, action, facing, frame):
+        aswang_overlay(s, action, facing, frame)
+        for beast in combo:
+            fn = _ASWANG_FORM_FEATURES.get(beast)
+            if fn:
+                fn(s, action, facing, frame)
+    return overlay
+
+
+def _aswang_variant_back(combo):
+    if "bat" not in combo:
+        return None
+
+    def back(s, action, facing, frame):
+        _bat_wing_features(s, action, facing, frame)
+    return back
+
+
+# Every beast combo Shapeshift can roll: 3 singles (rank 1), 3 pairs (R2),
+# and the full trio (R3) — see server/heroes/aswang.py's shapeshift().
+_ASWANG_FORMS = [("dog",), ("pig",), ("bat",),
+                 ("dog", "pig"), ("pig", "bat"), ("bat", "dog"),
+                 ("dog", "pig", "bat")]
+
+
 # ---------------------------------------------------------------------------
 # Jose Rizal — scholar-hero with pen and word
 # ---------------------------------------------------------------------------
@@ -328,7 +412,7 @@ def _projectiles() -> int:
 _HEROES = [
     ("tiyanak", TIYANAK_PAL, {"skill_fx": tiyanak_fx}),
     ("mangkukulam", MANGKUKULAM_PAL, {"skill_fx": mangkukulam_fx}),
-    ("aswang", ASWANG_PAL, {"skill_fx": aswang_fx}),
+    ("aswang", ASWANG_PAL, {"skill_fx": aswang_fx, "overlay": aswang_overlay}),
     ("rizal", RIZAL_PAL, {"skill_fx": rizal_fx}),
     ("mabini", MABINI_PAL,
      {"skill_fx": mabini_fx, "overlay": mabini_overlay}),
@@ -342,6 +426,11 @@ def main() -> int:
     n = 0
     for hero_id, pal, hooks in _HEROES:
         n += sl.emit_hero(hero_id, pal, **hooks)
+    for combo in _ASWANG_FORMS:
+        n += sl.emit_hero(_aswang_variant_key(combo), ASWANG_PAL,
+                          overlay=_aswang_variant_overlay(combo),
+                          back=_aswang_variant_back(combo),
+                          skill_keys=())
     n += _projectiles()
     return n
 

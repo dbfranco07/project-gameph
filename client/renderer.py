@@ -777,14 +777,14 @@ class Renderer:
                     pygame.draw.circle(self.screen, (200, 40, 40), (sx, sy), radius + 3, 3)
                 self._draw_hp_bar(ent, sx, sy, radius)
                 return
-            self._draw_unit(ent, sx, sy, radius, hp_bar=True, name=False, ring=False)
+            self._draw_unit(ent, sx, sy, radius, hp_bar=True, name=False)
             return
         # Hero
         if not ent.get("a", True):
             return  # don't draw dead heroes in-world
-        self._draw_unit(ent, sx, sy, radius, hp_bar=True, name=True, ring=is_me)
+        self._draw_unit(ent, sx, sy, radius, hp_bar=True, name=True)
 
-    def _draw_unit(self, ent, sx, sy, radius, hp_bar, name, ring) -> None:
+    def _draw_unit(self, ent, sx, sy, radius, hp_bar, name) -> None:
         eid = ent.get("id")
         color = _team_color(ent.get("tm", 0))
         action, facing, anim_t = self._resolve_pose(ent)
@@ -792,8 +792,15 @@ class Renderer:
         ox, oy = self._attack_offset(eid)
         bx, by = int(sx + ox), int(sy + oy)
         hid = ent.get("hid", "")
+        sprite_key = hid
+        form = ent.get("form")
+        if hid == "aswang" and form and action in ("idle", "move", "attack"):
+            # Shapeshift is active: use the beast-form sprite set instead of
+            # the default humanoid one. Cast poses (q/w/e/r) always use the
+            # base "aswang" folder regardless of form.
+            sprite_key = "aswang_" + "+".join(sorted(form.split("+")))
         if hid:
-            drew_sprite = self._blit_sprite(hid, action, facing, bx, by,
+            drew_sprite = self._blit_sprite(sprite_key, action, facing, bx, by,
                                             radius, anim_t, eid)
         else:  # minion: pick art by subtype tag
             drew_sprite = self._blit_entity(
@@ -802,8 +809,8 @@ class Renderer:
         if not drew_sprite:
             pygame.draw.circle(self.screen, self._flash_color(color, eid),
                                (bx, by), radius)
-        if ring:
-            pygame.draw.circle(self.screen, (255, 255, 255), (bx, by), radius + 3, 2)
+        if ent.get("night"):
+            self._draw_night_aura(bx, by, radius)
         if hp_bar:
             self._draw_hp_bar(ent, sx, sy, radius)
         # Heroes carry mana; show a thin mana bar directly under the HP bar.
@@ -815,6 +822,17 @@ class Renderer:
             label = self.font.render(label_text, True, COLOR_TEXT)
             self.screen.blit(label, (sx - label.get_width() // 2,
                                      sy - radius - 26))
+
+    def _draw_night_aura(self, bx, by, radius) -> None:
+        """Pulsing dark aura shown while Aswang's Nightstalker "hunting alone"
+        bonus damage is active (see the "night" snapshot flag)."""
+        r = int(radius * 1.6)
+        pulse = 0.5 + 0.5 * math.sin(time.time() * 4.0)
+        a = int(90 + 60 * pulse)
+        aura = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+        pygame.draw.circle(aura, (120, 20, 30, a), (r + 2, r + 2), r, 3)
+        pygame.draw.circle(aura, (60, 10, 20, a // 2), (r + 2, r + 2), r - 3, 1)
+        self.screen.blit(aura, (bx - r - 2, by - r - 2))
 
     def _resolve_pose(self, ent) -> tuple[str, str, float]:
         """Derive (action, facing, anim_t) for a unit from its motion + cast signal.

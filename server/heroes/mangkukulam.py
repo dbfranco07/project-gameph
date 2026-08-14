@@ -64,6 +64,7 @@ class Mangkukulam(HeroDef):
         _evil_eye(ctx, hit)
 
     @ability("W", "Worm Curse", cd=14, mana=80, cast=CastType.UNIT,
+             target="enemy", range=W_RANGE,
              desc="Curse a target: a brood of worms spawns to gnaw it, and it is "
                   "slowed.")
     def worm_curse(ctx):

@@ -113,6 +113,7 @@ class Manananggal(HeroDef):
     sp_def_per_level = 2.5
 
     @ability("Q", "Scratch", cd=7, mana=60, cast=CastType.UNIT,
+             target="enemy", range=Q_RANGE,
              desc="Claw an enemy for damage and a movement slow.")
     def scratch(ctx):
         target = skills.target_dmg(ctx, dmg=Q_DMG, range=Q_RANGE)

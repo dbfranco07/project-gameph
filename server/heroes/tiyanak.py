@@ -101,6 +101,7 @@ class Tiyanak(HeroDef):
     sp_def_per_level = 2.0
 
     @ability("Q", "Cradle Bite", cd=6, mana=45, cast=CastType.UNIT,
+             target="enemy", range=Q_RANGE,
              desc="Bite an enemy for heavy damage. Can crit and heals you for a "
                   "portion of the damage dealt.")
     def cradle_bite(ctx):

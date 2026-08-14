@@ -26,6 +26,7 @@ class Brawler(HeroDef):
     sp_def_per_level = 2.5
 
     @ability("Q", "Crushing Blow", cd=6, mana=35, cast=CastType.UNIT,
+             target="enemy", range=220,
              desc="Strike a single target for heavy physical damage.")
     def crushing_blow(ctx):
         skills.target_dmg(ctx, dmg=130, range=220)

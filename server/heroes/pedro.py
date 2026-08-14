@@ -182,7 +182,7 @@ class Pedro(HeroDef):
 
     # --- White Mutya: the ultimate (max rank 1, level 8) -------------------
     @ability("I", "White Mutya: Puti", cd=WHITE_CD, mana=150,
-             cast=CastType.UNIT, max_rank=1,
+             cast=CastType.UNIT, max_rank=1, target="enemy", range=WHITE_RANGE,
              desc="Only when all four Mutya slots are committed: unleash the "
                   "white gem to tear away a large share of a target's health — "
                   "then the whole Mutya goes dark (all colors hit full cooldown).")

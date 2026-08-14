@@ -442,6 +442,7 @@ def system_movement(state: GameState, dt: float) -> None:
             if entity.is_stunned():
                 continue  # stunned heroes hold position
             _update_focus_chase(state, entity)
+            _update_ability_chase(state, entity)
             _update_attack_move(state, entity)
             entity.move_toward_target(dt)
             _block_hero_against_units(state, entity)
@@ -547,6 +548,30 @@ def _update_focus_chase(state: GameState, hero: Hero) -> None:
         hero.target_x = hero.target_y = None  # stand and attack
     else:
         hero.target_x, hero.target_y = target.x, target.y  # close the gap
+
+
+def _update_ability_chase(state: GameState, hero: Hero) -> None:
+    """If the hero has a queued out-of-range ability cast (see
+    server_main._handle_use_ability), chase the target and fire the cast the
+    moment it's in range, so mana/cooldown are only spent on a real hit
+    instead of instantly whiffing. Clears when the target is invalid."""
+    if hero.pending_ability_key is None:
+        return
+    target = state.entities.get(hero.pending_ability_tid)
+    if target is None or not is_valid_attack_target(
+            state, hero, target, check_vision=False):
+        hero.pending_ability_key = hero.pending_ability_tid = None
+        return
+    adef = hero.hero_def.ability(hero.pending_ability_key) if hero.hero_def else None
+    rng = adef.range if adef is not None else 0.0
+    if hero.distance_to(target) <= rng + target.radius:
+        state.ability_casts.append({
+            "caster": hero.entity_id, "key": hero.pending_ability_key,
+            "tx": target.x, "ty": target.y, "tid": target.entity_id})
+        hero.pending_ability_key = hero.pending_ability_tid = None
+        hero.target_x = hero.target_y = None  # stand and cast
+    else:
+        hero.target_x, hero.target_y = target.x, target.y  # keep closing
 
 
 _ATTACK_MOVE_ARRIVE = 8.0  # distance at which an attack-move goal counts as reached
