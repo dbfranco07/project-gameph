@@ -228,8 +228,8 @@ class Renderer:
                 if src is not None and eid is not None:
                     self._lunge[src] = {"t0": now, "tgt": eid}
                     self._attack_pose[src] = now
-                spark = ("hit_special" if ev.get("dt") == "special"
-                         else "hit_phys")
+                spark = self._hero_spark_name(src) or (
+                    "hit_special" if ev.get("dt") == "special" else "hit_phys")
                 self._spark_fx.append({"name": spark, "wx": ev["x"],
                                        "wy": ev["y"], "r": 22,
                                        "born": now, "dur": 0.3})
@@ -240,6 +240,21 @@ class Renderer:
                     "name": ev.get("name", ""), "wx": ev["x"], "wy": ev["y"],
                     "r": ev.get("r", 0), "born": now,
                     "dur": ev.get("dur", 0.5)})
+
+    def _hero_spark_name(self, src_id) -> str | None:
+        """A per-hero impact spark name (`hit_<hero_id>`) when `src_id` is a
+        hero with dedicated spark art loaded; None to fall back to the
+        generic physical/special spark."""
+        if src_id is None:
+            return None
+        src = self._find(self._frame_entities, src_id)
+        hid = src.get("hid") if src else None
+        if not hid:
+            return None
+        name = f"hit_{hid}"
+        if self.sprites.frame_count("effects", name, "play") > 0:
+            return name
+        return None
 
     def _floater(self, ev, text, color, dur, dy0=0) -> None:
         self.floaters.append({"wx": ev["x"], "wy": ev["y"], "dy0": dy0,
@@ -763,7 +778,8 @@ class Renderer:
         if et == EntityType.MINION:
             eid = ent.get("id")
             if ent.get("rune"):  # a roaming rune neutral
-                if not self._blit_entity("rune", "idle", "", sx, sy, radius,
+                rune_key = f"rune_{ent['rt']}" if ent.get("rt") else "rune"
+                if not self._blit_entity(rune_key, "idle", "", sx, sy, radius,
                                          None, eid):
                     pygame.draw.circle(self.screen, (180, 120, 230), (sx, sy), radius)
                     pygame.draw.circle(self.screen, (250, 230, 255), (sx, sy), radius + 3, 2)
@@ -802,10 +818,13 @@ class Renderer:
         if hid:
             drew_sprite = self._blit_sprite(sprite_key, action, facing, bx, by,
                                             radius, anim_t, eid)
-        else:  # minion: pick art by subtype tag
+        else:  # minion: pick art by subtype tag, human (t1) vs ghoul (t2)
+            sub = ent.get("sub", "melee")
+            tm = ent.get("tm", 0)
+            suffix = {1: "_t1", 2: "_t2"}.get(tm, "")
+            minion_key = f"minion_{sub}{suffix}" if sub in ("melee", "ranged") else f"minion_{sub}"
             drew_sprite = self._blit_entity(
-                f"minion_{ent.get('sub', 'melee')}", action, facing,
-                bx, by, radius, anim_t, eid)
+                minion_key, action, facing, bx, by, radius, anim_t, eid)
         if not drew_sprite:
             pygame.draw.circle(self.screen, self._flash_color(color, eid),
                                (bx, by), radius)
@@ -1308,6 +1327,7 @@ class Renderer:
         slot, gap = 54, 6
         n = min(len(abilities), 8)
         cols = 4
+        hero_id = me.get("hid", "")
         self._skill_rects = []
         for i, ab in enumerate(abilities[:n]):
             col, row = i % cols, i // cols
@@ -1319,8 +1339,18 @@ class Renderer:
             rank = alvl.get(key, 0)
             cd = cds.get(key, 0)
             ready = rank >= 1 and cd <= 0 and me.get("mana", 0) >= ab["mana"]
-            fill = (60, 90, 120) if ready else (45, 45, 55)
-            pygame.draw.rect(self.screen, fill, rect, border_radius=6)
+            icon = self.sprites.skill_icon(hero_id, key.lower()) if hero_id else None
+            if icon is not None:
+                if icon.get_size() != (slot, slot):
+                    icon = self._scaled(icon, (slot, slot))
+                self.screen.blit(icon, rect)
+                if not ready:
+                    dim = pygame.Surface((slot, slot), pygame.SRCALPHA)
+                    dim.fill((15, 15, 20, 150))
+                    self.screen.blit(dim, rect)
+            else:
+                fill = (60, 90, 120) if ready else (45, 45, 55)
+                pygame.draw.rect(self.screen, fill, rect, border_radius=6)
             pending = (key == self.pending_cast)
             border = (240, 220, 120) if pending else (90, 90, 110)
             pygame.draw.rect(self.screen, border, rect, 3 if pending else 2,

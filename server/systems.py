@@ -1171,6 +1171,7 @@ def _spawn_basic_projectile(state: GameState, attacker, target, dmg: int) -> Non
         speed=getattr(attacker, "attack_proj_speed", 1000.0),
         range_left=attacker.effective_attack_range() * 3.0,
         is_basic=True,
+        kind=f"{attacker.hero_id}_atk" if isinstance(attacker, Hero) else "",
     )
     state.entities[proj.entity_id] = proj
 

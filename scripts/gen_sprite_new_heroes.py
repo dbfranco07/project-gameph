@@ -1,13 +1,19 @@
-"""Procedural placeholder sprites for the eight newer heroes:
+"""Procedural sprites for three of the newer heroes, now on the expressive
+sprite_engine.py chibi engine (matching Rizal/Kapre/etc.):
 
-    Tiyanak · Mangkukulam · Aswang · Jose Rizal · Apolinario Mabini ·
-    Melchora Aquino · Andres Bonifacio · Lastikman
+    Apolinario Mabini · Melchora Aquino · Andres Bonifacio
+
+Each gets identity hooks via se's head_fn/hair_fn/face_fn/torso_fn instead of
+the flat default chibi look: Mabini keeps his wheelchair (now se-shaded, not
+raw pygame circles) plus a side-parted hairline and round spectacles;
+Melchora gets a grey hair bun and a draped shawl over the base torso; and
+Bonifacio gets a rebel red bandana and carries a bolo at idle via chibi_prop.
 
 Each gets the standard set (idle/move/attack + Q/W/E/R cast poses + a `face`
-portrait for hero-select) via ``spritelib.emit_hero``, plus the few line/hook
-projectiles their kits fire (rizal_q / mabini_q / lastikman_q). Like the other
-generators these are placeholders — drop real PNGs with the same paths to
-upgrade without code changes.
+portrait for hero-select) via ``sprite_engine.emit_hero``, plus one projectile
+per kit that fires something: Mabini's Constitution Bolt (Q, distinct from
+his ranged basic attack) and both Mabini's and Melchora's plain ranged basic
+attack bolt (Bonifacio is melee, no projectile).
 
     uv run python scripts/gen_sprite_new_heroes.py
 """
@@ -16,226 +22,13 @@ from __future__ import annotations
 
 import math
 
-import spritelib as sl
 import pygame
 
-CX = sl.CX
+import spritelib as sl
+import sprite_engine as se
 
-
-# ---------------------------------------------------------------------------
-# Tiyanak — blood-hungry demon-infant assassin
-# ---------------------------------------------------------------------------
-TIYANAK_PAL = {
-    "skin": (172, 166, 170), "hair": (30, 24, 28),
-    "cloth": (124, 40, 46), "cloth_dk": (84, 26, 32),
-    "eye": (236, 60, 55), "claw": sl.WHITE,
-}
-
-
-def tiyanak_fx(s, key, frame):
-    if key == "q":  # Cradle Bite: bared fangs lunging forward
-        mx = CX + 12 + 2 * frame
-        pygame.draw.circle(s, (150, 24, 36), (mx, 18), 4)
-        for fx in (mx - 2, mx + 2):
-            pygame.draw.polygon(s, sl.WHITE,
-                                [(fx - 2, 15), (fx + 2, 15), (fx, 21)])
-    elif key == "w":  # Tantrum: frenzied red aura
-        sl.glow(s, CX, 30, 18, (230, 60, 60), alpha=130)
-    elif key == "e":  # Feral Hunger: raking claw marks
-        for dx in (-3, 1, 5):
-            pygame.draw.line(s, (235, 235, 235),
-                             (CX + 10 + dx, 22), (CX + 16 + dx, 38), 2)
-    else:  # r Umbilical Cord: a fleshy tether snaking down
-        pts = [(CX, 40), (CX - 5, 46), (CX + 4, 52), (CX - 3, 58)]
-        pygame.draw.lines(s, (170, 90, 96), False, pts, 4)
-        pygame.draw.circle(s, (120, 40, 46), (CX - 3, 58), 4)
-
-
-# ---------------------------------------------------------------------------
-# Mangkukulam — curse-weaving witch
-# ---------------------------------------------------------------------------
-MANGKUKULAM_PAL = {
-    "skin": (202, 182, 172), "hair": (40, 30, 46),
-    "cloth": (104, 64, 150), "cloth_dk": (66, 40, 98),
-    "eye": (120, 230, 140),
-}
-
-
-def mangkukulam_fx(s, key, frame):
-    if key == "q":  # Hex Aura: a swirling violet ring + motes
-        sl.ring(s, CX, 32, 16 + 2 * frame, (180, 120, 230), width=3, alpha=200)
-        for ang in range(0, 360, 60):
-            a = math.radians(ang + frame * 20)
-            pygame.draw.circle(s, (210, 160, 250),
-                               (CX + int(math.cos(a) * 18),
-                                32 + int(math.sin(a) * 18)), 2)
-    elif key == "w":  # Worm Curse: a wriggling green worm
-        pts = [(CX + 10, 26), (CX + 15, 22), (CX + 19, 28), (CX + 24, 24)]
-        pygame.draw.lines(s, (150, 190, 90), False, pts, 4)
-        pygame.draw.circle(s, (90, 130, 60), (CX + 24, 24), 3)
-    elif key == "e":  # Evil Eye: a watching eye glyph
-        pygame.draw.ellipse(s, sl.WHITE, (CX - 7, 6, 14, 9))
-        pygame.draw.circle(s, (140, 60, 200), (CX, 11), 3)
-        pygame.draw.circle(s, sl.BLACK, (CX, 11), 1)
-    else:  # r Pangkukulam: a great curse, rings bursting outward
-        for i, r in enumerate((10, 17, 24)):
-            sl.ring(s, CX, 30, r + 3 * frame, (150, 70, 200),
-                    width=2, alpha=200 - i * 50)
-
-
-# ---------------------------------------------------------------------------
-# Aswang — shapeshifting devourer
-# ---------------------------------------------------------------------------
-ASWANG_PAL = {
-    "skin": (150, 140, 130), "hair": (24, 20, 24),
-    "cloth": (72, 40, 46), "cloth_dk": (48, 28, 32),
-    "eye": (240, 200, 80), "claw": (232, 230, 224),
-}
-
-
-def aswang_fx(s, key, frame):
-    if key == "q":  # Devour: gaping toothed maw
-        mx = CX + 13
-        pygame.draw.circle(s, (40, 16, 18), (mx, 18), 6)
-        for t in range(-4, 5, 4):
-            pygame.draw.polygon(s, sl.WHITE,
-                                [(mx + t - 2, 13), (mx + t + 2, 13), (mx + t, 18)])
-            pygame.draw.polygon(s, sl.WHITE,
-                                [(mx + t - 2, 23), (mx + t + 2, 23), (mx + t, 18)])
-    elif key == "w":  # Shapeshift: morphing swirl
-        for i, col in enumerate(((220, 200, 120), (160, 120, 90),
-                                 (110, 150, 110))):
-            a = math.radians(frame * 40 + i * 120)
-            pygame.draw.arc(s, col, (CX - 16, 14, 32, 32), a, a + 2.0, 3)
-    elif key == "e":  # Nightstalker: fang + a blood drop
-        pygame.draw.polygon(s, sl.WHITE,
-                            [(CX + 8, 16), (CX + 12, 16), (CX + 10, 23)])
-        pygame.draw.circle(s, (170, 30, 36), (CX + 10, 27 + frame), 2)
-    else:  # r True Aswang: dark winged terror
-        sl.glow(s, CX, 30, 18, (120, 30, 40), alpha=130)
-        for side in (-1, 1):
-            pygame.draw.arc(s, (30, 20, 26),
-                            (CX + side * 4 - 14, 18, 28, 22),
-                            0.2, 2.9, 3)
-
-
-def aswang_overlay(s, action, facing, frame):
-    """Baseline "more monstrous" juice on the default (unshifted) body: bared
-    fangs on the attack swing, a harder glint in the eye."""
-    if action == "attack":
-        for t in (-3, 3):
-            pygame.draw.polygon(s, sl.WHITE,
-                                [(CX + t - 1, 18), (CX + t + 1, 18), (CX + t, 21)])
-    pygame.draw.circle(s, (255, 230, 120), (CX - 2, 16), 1)
-    pygame.draw.circle(s, (255, 230, 120), (CX + 2, 16), 1)
-
-
-def _dog_features(s, action, facing, frame) -> None:
-    """Pointed ears + a forward muzzle — Dog Shapeshift."""
-    ear_col, ear_dk = (110, 84, 62), (70, 52, 38)
-    for side in (-1, 1):
-        bx = CX + side * 6
-        pygame.draw.polygon(s, ear_col,
-                            [(bx, 12), (bx + side * 5, -1), (bx + side * 2, 13)])
-        pygame.draw.polygon(s, ear_dk,
-                            [(bx, 12), (bx + side * 5, -1), (bx + side * 2, 13)], 1)
-    mx = CX + (10 if facing != "w" else -10)
-    pygame.draw.ellipse(s, (120, 92, 68), (mx - 5, 14, 10, 6))
-    pygame.draw.circle(s, (30, 24, 22), (mx + (3 if facing != "w" else -3), 17), 1)
-
-
-def _boar_features(s, action, facing, frame) -> None:
-    """Curved white tusks + a broad flattened snout — Boar Shapeshift."""
-    snout_x = CX + (9 if facing != "w" else -9)
-    pygame.draw.ellipse(s, (90, 78, 66), (snout_x - 6, 15, 12, 7))
-    for side in (-1, 1):
-        tx = snout_x + side * 4
-        pygame.draw.polygon(s, sl.WHITE,
-                            [(tx, 20), (tx + side * 4, 17), (tx + side * 2, 23)])
-        pygame.draw.polygon(s, (200, 196, 186),
-                            [(tx, 20), (tx + side * 4, 17), (tx + side * 2, 23)], 1)
-
-
-def _bat_wing_features(s, action, facing, frame) -> None:
-    """Leathery wings behind the body + small pointed ears — Bat Shapeshift.
-    A `back` hook: drawn before the body so the wings read as sprouting from
-    behind the shoulders."""
-    spread = 0.5 if action == "idle" else 0.75
-    wing_col, wing_edge = (46, 30, 40), (90, 60, 74)
-    for side in (-1, 1):
-        sl.bat_wing(s, side, spread, wing_col, wing_edge)
-    for side in (-1, 1):
-        bx = CX + side * 5
-        pygame.draw.polygon(s, (40, 30, 36),
-                            [(bx, 12), (bx + side * 4, 2), (bx + side * 1, 13)])
-
-
-_ASWANG_FORM_FEATURES = {"dog": _dog_features, "pig": _boar_features}
-
-
-def _aswang_variant_key(combo: tuple[str, ...]) -> str:
-    return "aswang_" + "+".join(sorted(combo))
-
-
-def _aswang_variant_overlay(combo):
-    def overlay(s, action, facing, frame):
-        aswang_overlay(s, action, facing, frame)
-        for beast in combo:
-            fn = _ASWANG_FORM_FEATURES.get(beast)
-            if fn:
-                fn(s, action, facing, frame)
-    return overlay
-
-
-def _aswang_variant_back(combo):
-    if "bat" not in combo:
-        return None
-
-    def back(s, action, facing, frame):
-        _bat_wing_features(s, action, facing, frame)
-    return back
-
-
-# Every beast combo Shapeshift can roll: 3 singles (rank 1), 3 pairs (R2),
-# and the full trio (R3) — see server/heroes/aswang.py's shapeshift().
-_ASWANG_FORMS = [("dog",), ("pig",), ("bat",),
-                 ("dog", "pig"), ("pig", "bat"), ("bat", "dog"),
-                 ("dog", "pig", "bat")]
-
-
-# ---------------------------------------------------------------------------
-# Jose Rizal — scholar-hero with pen and word
-# ---------------------------------------------------------------------------
-RIZAL_PAL = {
-    "skin": (214, 184, 150), "hair": (28, 22, 20),
-    "cloth": (40, 46, 78), "cloth_dk": (26, 30, 54),
-    "eye": (60, 44, 30),
-}
-
-
-def rizal_fx(s, key, frame):
-    if key == "q":  # Pluma Throw: a quill pen cast forward
-        _quill(s, CX + 8, 30, CX + 26, 22)
-    elif key == "w":  # Words of Reform: hypnotic sound rings from the head
-        for i, r in enumerate((6, 11, 16)):
-            sl.ring(s, CX + 8, 14, r + frame, (190, 200, 240),
-                    width=1, alpha=200 - i * 55)
-    elif key == "e":  # Polymath: an open book glowing with insight
-        pygame.draw.polygon(s, (235, 230, 215),
-                            [(CX - 7, 30), (CX, 28), (CX + 7, 30),
-                             (CX + 7, 36), (CX, 34), (CX - 7, 36)])
-        pygame.draw.line(s, (120, 120, 130), (CX, 28), (CX, 34), 1)
-    else:  # r Mi Ultimo Adios: a golden halo of inspiration
-        sl.glow(s, CX, 14, 14, (245, 220, 120), alpha=130)
-        sl.ring(s, CX, 14, 12, (255, 240, 180), width=2, alpha=210)
-
-
-def _quill(s, x0, y0, x1, y1):
-    pygame.draw.line(s, (40, 40, 48), (x0, y0), (x1, y1), 2)     # shaft
-    pygame.draw.polygon(s, (235, 235, 240),                      # feather
-                        [(x1, y1), (x1 - 6, y1 - 2), (x1 - 4, y1 - 7),
-                         (x1 + 1, y1 - 3)])
-    pygame.draw.circle(s, (30, 30, 40), (x0, y0), 2)             # nib end
+CX = se.CX
+_INK = (30, 26, 24)
 
 
 # ---------------------------------------------------------------------------
@@ -248,13 +41,37 @@ MABINI_PAL = {
 }
 
 
+def mabini_hair(s, skin, hair, facing):
+    cx, cy = CX, 15.0
+    pts = [(cx - 12, cy - 2), (cx - 11, cy - 11), (cx - 1, cy - 15),
+           (cx + 3, cy - 14), (cx + 12, cy - 9), (cx + 12, cy - 2)]
+    se.poly(s, hair, pts, hi=se.lighten(hair, 0.3))
+
+
+def mabini_face(s, skin, facing):
+    cx, cy = CX, 15.0
+    for side in (-1, 1):
+        se.circle(s, (205, 210, 220), (cx + side * 4.5, cy), 3.0,
+                  outline=_INK, ow=0.8, highlight=False, shadow=False)
+    se.line(s, _INK, (cx - 1.5, cy), (cx + 1.5, cy), 0.8)
+
+
+def mabini_head(s, pal, facing):
+    se.chibi_head(s, pal.get("skin", (200, 180, 160)), pal.get("hair", sl.BLACK),
+                 facing, pal.get("eye", (40, 30, 30)),
+                 hair_fn=mabini_hair, face_fn=mabini_face)
+
+
+def mabini_body(s, pal, action, facing, frame):
+    se.chibi_body_raw(s, pal, action, facing, frame, head_fn=mabini_head)
+
+
 def mabini_overlay(s, action, facing, frame):
-    # His wheelchair: a pair of wheels flanking the lower body.
+    # His wheelchair: a pair of shaded wheels flanking the lower body.
     for side in (-1, 1):
         wx = CX + side * 9
-        pygame.draw.circle(s, (40, 36, 40), (wx, 50), 6)
-        pygame.draw.circle(s, (90, 84, 90), (wx, 50), 6, 2)
-        pygame.draw.circle(s, (120, 114, 120), (wx, 50), 1)
+        se.circle(s, (40, 36, 40), (wx, 50), 6, outline=(20, 18, 20), ow=1.2)
+        se.dot(s, (150, 144, 150), (wx, 50), 1.1)
 
 
 def mabini_fx(s, key, frame):
@@ -283,6 +100,34 @@ MELCHORA_PAL = {
     "cloth": (178, 142, 88), "cloth_dk": (132, 102, 58),
     "eye": (90, 70, 50),
 }
+
+
+def melchora_hair(s, skin, hair, facing):
+    cx, cy = CX, 15.0
+    se.circle(s, hair, (cx, cy - 2), 10.5, hi=se.lighten(hair, 0.3))
+    se.circle(s, hair, (cx, cy - 11), 3.2, outline=_INK, ow=1.0,
+             hi=se.lighten(hair, 0.35))
+
+
+def melchora_head(s, pal, facing):
+    se.chibi_head(s, pal.get("skin", (200, 180, 160)), pal.get("hair", sl.BLACK),
+                 facing, pal.get("eye", (40, 30, 30)), hair_fn=melchora_hair)
+
+
+def melchora_torso(s, pal, action, facing, frame, lean, bob):
+    se.chibi_torso(s, pal["cloth"], pal["cloth_dk"], lean=lean, bob=bob)
+    x = CX + lean
+    y = 24 + bob
+    # a shawl draped over the shoulders
+    shawl = se.darken(pal["cloth"], 0.12)
+    se.poly(s, shawl,
+           [(x - 9, y - 2), (x + 9, y - 2), (x + 6, y + 9), (x - 6, y + 9)],
+           sh=se.darken(shawl, 0.3), outline=_INK, ow=1.0)
+
+
+def melchora_body(s, pal, action, facing, frame):
+    se.chibi_body_raw(s, pal, action, facing, frame,
+                      head_fn=melchora_head, torso_fn=melchora_torso)
 
 
 def melchora_fx(s, key, frame):
@@ -319,6 +164,43 @@ BONIFACIO_PAL = {
 }
 
 
+def bonifacio_hair(s, skin, hair, facing):
+    cx, cy = CX, 15.0
+    spikes = [(cx + dx, cy + dy) for dx, dy in
+             ((-11, -1), (-11, -10), (-4, -13), (0, -6), (4, -13),
+              (11, -10), (11, -1))]
+    se.poly(s, hair, spikes, hi=se.lighten(hair, 0.3))
+    # red Katipunan bandana knotted at the brow
+    band = (210, 40, 34)
+    se.rect(s, band, (cx - 12, cy - 3, 24, 4.5), outline=_INK, ow=1.0,
+           hi=se.lighten(band, 0.3))
+
+
+def bonifacio_head(s, pal, facing):
+    se.chibi_head(s, pal.get("skin", (200, 180, 160)), pal.get("hair", sl.BLACK),
+                 facing, pal.get("eye", (40, 30, 30)), hair_fn=bonifacio_hair)
+
+
+def _bolo(s, x, y, angle):
+    dx, dy = math.cos(angle), math.sin(angle)
+    nx, ny = -dy, dx
+    tip = (x + dx * 13, y + dy * 13)
+    base_l = (x - nx * 2, y - ny * 2)
+    base_r = (x + nx * 2, y + ny * 2)
+    se.poly(s, (215, 220, 228), [base_l, tip, base_r], outline=_INK, ow=1.0,
+           hi=(245, 248, 252))
+    se.line(s, (70, 44, 30), (x - dx * 3, y - dy * 3), (x, y), 2.0)
+
+
+def bonifacio_overlay(s, action, facing, frame):
+    phase = se._phase_for(action, frame)
+    se.chibi_prop(s, action, facing, phase, 1, _bolo)
+
+
+def bonifacio_body(s, pal, action, facing, frame):
+    se.chibi_body_raw(s, pal, action, facing, frame, head_fn=bonifacio_head)
+
+
 def bonifacio_fx(s, key, frame):
     if key == "q":  # Bolo Cleave: a sweeping steel arc
         pygame.draw.arc(s, (220, 225, 235), (CX - 2, 16, 30, 30),
@@ -340,68 +222,28 @@ def bonifacio_fx(s, key, frame):
 
 
 # ---------------------------------------------------------------------------
-# Lastikman — elastic stretch-fighter
-# ---------------------------------------------------------------------------
-LASTIKMAN_PAL = {
-    "skin": (212, 178, 150), "hair": (30, 26, 40),
-    "cloth": (60, 110, 200), "cloth_dk": (40, 76, 150),
-    "eye": (40, 60, 110),
-}
-
-
-def lastikman_fx(s, key, frame):
-    if key == "q":  # Stretch Punch: a fist flung out on a rubbery arm
-        reach = 22 + 4 * frame
-        pygame.draw.line(s, (212, 178, 150), (CX + 6, 30), (CX + reach, 28), 4)
-        pygame.draw.circle(s, (60, 110, 200), (CX + reach, 28), 5)
-        pygame.draw.circle(s, (40, 76, 150), (CX + reach, 28), 5, 2)
-    elif key == "w":  # Grapple: an elastic hook-line to the side
-        pygame.draw.line(s, (90, 140, 220), (CX + 6, 28), (CX + 22, 16), 2)
-        pygame.draw.circle(s, (200, 210, 230), (CX + 22, 16), 3)
-    elif key == "e":  # Elastic Body: bouncy resilience rings
-        for i, r in enumerate((10, 15, 20)):
-            sl.ring(s, CX, 32, r, (120, 170, 240), width=2, alpha=170 - i * 45)
-    else:  # r Rubber Storm: flailing stretched limbs all around
-        for ang in range(0, 360, 60):
-            a = math.radians(ang + frame * 25)
-            ex, ey = CX + math.cos(a) * 20, 32 + math.sin(a) * 18
-            pygame.draw.line(s, (212, 178, 150), (CX, 32), (ex, ey), 3)
-            pygame.draw.circle(s, (60, 110, 200), (int(ex), int(ey)), 3)
-
-
-# ---------------------------------------------------------------------------
-# Projectiles (only the kits that fire one)
+# Projectiles (skillshot + ranged basic attacks — kept visually distinct)
 # ---------------------------------------------------------------------------
 def _projectiles() -> int:
     n = 0
-    # Rizal's pen boomerang.
-    s = sl.surf(40)
-    _quill(s, 8, 28, 32, 14)
-    sl.save(s, "projectiles", "rizal_q", "fly")
-    n += 1
-    # Mabini's Constitution Bolt: a glowing special bolt.
+    # Mabini's Constitution Bolt (Q): a charged, ringed special bolt.
     s = sl.surf(40)
     sl.glow(s, 20, 20, 12, (130, 180, 255), alpha=160)
     pygame.draw.circle(s, (225, 238, 255), (20, 20), 6)
     pygame.draw.circle(s, (150, 195, 255), (20, 20), 6, 2)
     sl.save(s, "projectiles", "mabini_q", "fly")
     n += 1
-    # Lastikman's Stretch Punch: a flying fist trailing a rubbery band.
+    # Mabini's plain ranged basic attack: a small unadorned magic dart.
     s = sl.surf(40)
-    pygame.draw.line(s, (212, 178, 150), (4, 22), (24, 20), 4)
-    pygame.draw.circle(s, (60, 110, 200), (28, 20), 8)
-    pygame.draw.circle(s, (40, 76, 150), (28, 20), 8, 2)
-    pygame.draw.line(s, (90, 130, 180), (25, 16), (31, 16), 2)
-    sl.save(s, "projectiles", "lastikman_q", "fly")
+    pygame.draw.circle(s, (170, 205, 255), (20, 20), 4)
+    pygame.draw.circle(s, (225, 238, 255), (20, 20), 2)
+    sl.save(s, "projectiles", "mabini_atk", "fly")
     n += 1
-    # Lastikman's Grapple (W): a hooked anchor on a taut band.
+    # Melchora's ranged basic attack: a warm tossed ember of light.
     s = sl.surf(40)
-    pygame.draw.line(s, (150, 120, 100), (4, 24), (22, 18), 3)
-    pygame.draw.circle(s, (170, 175, 185), (26, 18), 7)
-    pygame.draw.circle(s, (110, 115, 125), (26, 18), 7, 2)
-    pygame.draw.line(s, (200, 205, 215), (26, 11), (33, 16), 3)
-    pygame.draw.line(s, (200, 205, 215), (26, 25), (33, 20), 3)
-    sl.save(s, "projectiles", "lastikman_w", "fly")
+    sl.glow(s, 20, 20, 7, (250, 220, 150), alpha=130)
+    pygame.draw.circle(s, (255, 240, 195), (20, 20), 3)
+    sl.save(s, "projectiles", "melchora_atk", "fly")
     n += 1
     return n
 
@@ -409,28 +251,14 @@ def _projectiles() -> int:
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
-_HEROES = [
-    ("tiyanak", TIYANAK_PAL, {"skill_fx": tiyanak_fx}),
-    ("mangkukulam", MANGKUKULAM_PAL, {"skill_fx": mangkukulam_fx}),
-    ("aswang", ASWANG_PAL, {"skill_fx": aswang_fx, "overlay": aswang_overlay}),
-    ("rizal", RIZAL_PAL, {"skill_fx": rizal_fx}),
-    ("mabini", MABINI_PAL,
-     {"skill_fx": mabini_fx, "overlay": mabini_overlay}),
-    ("melchora", MELCHORA_PAL, {"skill_fx": melchora_fx}),
-    ("bonifacio", BONIFACIO_PAL, {"skill_fx": bonifacio_fx}),
-    ("lastikman", LASTIKMAN_PAL, {"skill_fx": lastikman_fx}),
-]
-
-
 def main() -> int:
     n = 0
-    for hero_id, pal, hooks in _HEROES:
-        n += sl.emit_hero(hero_id, pal, **hooks)
-    for combo in _ASWANG_FORMS:
-        n += sl.emit_hero(_aswang_variant_key(combo), ASWANG_PAL,
-                          overlay=_aswang_variant_overlay(combo),
-                          back=_aswang_variant_back(combo),
-                          skill_keys=())
+    n += se.emit_hero("mabini", MABINI_PAL, body_fn=mabini_body,
+                      overlay=mabini_overlay, skill_fx=mabini_fx)
+    n += se.emit_hero("melchora", MELCHORA_PAL, body_fn=melchora_body,
+                      skill_fx=melchora_fx)
+    n += se.emit_hero("bonifacio", BONIFACIO_PAL, body_fn=bonifacio_body,
+                      overlay=bonifacio_overlay, skill_fx=bonifacio_fx)
     n += _projectiles()
     return n
 

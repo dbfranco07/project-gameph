@@ -770,6 +770,7 @@ class RuneCreature(NeutralMinion):
     def to_snapshot(self) -> dict:
         d = super().to_snapshot()
         d["rune"] = True  # let the client tint/label it
+        d["rt"] = self.rune_buff  # buff type, so the client can show distinct art
         return d
 
 

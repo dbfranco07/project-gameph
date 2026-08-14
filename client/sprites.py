@@ -130,6 +130,10 @@ class SpriteManager:
         """A single (non-directional, non-animated) item icon, or None."""
         return self.frame("items", item_id, "icon", "", 0)
 
+    def skill_icon(self, hero_id: str, key: str) -> pygame.Surface | None:
+        """A single (non-directional, non-animated) skill-bar icon, or None."""
+        return self.frame("skills", f"{hero_id}_{key}", "icon", "", 0)
+
     def terrain_tile(self, name: str) -> pygame.Surface | None:
         """A single (non-animated) terrain tile, cached. None if missing."""
         if name in self._tiles:
