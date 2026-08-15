@@ -401,6 +401,34 @@ def _g_umbilical(s, col=sl.WHITE):
     pygame.draw.lines(s, col, False, pts, 2)
 
 
+def _g_anvil(s, col=sl.WHITE):
+    pygame.draw.polygon(s, col, [(CX - 13, CX + 8), (CX + 13, CX + 8),
+                                 (CX + 8, CX), (CX + 3, CX), (CX + 3, CX - 6),
+                                 (CX - 3, CX - 6), (CX - 3, CX), (CX - 8, CX)], 2)
+    for dx in (-3, 3):
+        pygame.draw.line(s, col, (CX + dx, CX - 10), (CX + dx * 2, CX - 15), 1)
+
+
+def _g_wrench(s, col=sl.WHITE):
+    pygame.draw.line(s, col, (CX - 9, CX + 9), (CX + 6, CX - 6), 3)
+    pygame.draw.circle(s, col, (CX - 11, CX + 11), 5, 2)
+    pygame.draw.circle(s, col, (CX + 9, CX - 9), 4, 2)
+
+
+def _g_throw(s, col=sl.WHITE):
+    pygame.draw.polygon(s, col, [(CX - 8, CX + 10), (CX + 5, CX - 6),
+                                 (CX + 11, CX - 13), (CX + 6, CX - 3)])
+    for i in range(3):
+        o = i * 3
+        pygame.draw.line(s, col, (CX - 14 - o, CX + 6 - o),
+                         (CX - 9 - o, CX + 3 - o), 1)
+
+
+def _g_doubleslash(s, col=sl.WHITE):
+    pygame.draw.arc(s, col, (CX - 15, CX - 13, 22, 22), -0.9, 1.1, 2)
+    pygame.draw.arc(s, col, (CX - 7, CX - 5, 22, 22), -0.9, 1.1, 2)
+
+
 def _g_mutya(s, col=sl.WHITE):
     pygame.draw.polygon(s, col, [(CX, CX - 13), (CX + 7, CX - 3),
                                  (CX + 4, CX + 11), (CX - 4, CX + 11),
@@ -490,6 +518,11 @@ SKILLS = [
     ("pedro", "y", "Indigo Mutya: Mata", (85, 70, 175), _g_mutya),
     ("pedro", "u", "Violet Mutya: Ilag", (150, 70, 190), _g_mutya),
     ("pedro", "i", "White Mutya: Puti", (225, 225, 230), _g_mutya),
+
+    ("panday", "q", "Sword of Panday", (150, 110, 60), _g_anvil),
+    ("panday", "w", "Weakness Reader", (110, 95, 75), _g_wrench),
+    ("panday", "e", "Panday's Throw", (180, 150, 90), _g_throw),
+    ("panday", "r", "Master's Slash", (195, 198, 210), _g_doubleslash),
 ]
 
 
