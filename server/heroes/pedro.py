@@ -36,13 +36,15 @@ from server import skills
 RED_CD, ORANGE_CD, YELLOW_CD, GREEN_CD = 12.0, 12.0, 13.0, 12.0
 BLUE_CD, INDIGO_CD, VIOLET_CD = 10.0, 14.0, 12.0
 
-RED_DMG = 45                 # Lakas: bonus attack damage
-ORANGE_PDEF, ORANGE_SDEF = 34, 34
-YELLOW_RADIUS, YELLOW_SILENCE = 360, 1.6
-GREEN_SPEED, GREEN_HEAL = 130, 200
+RED_BASE_DMG, RED_DMG_PER_RANK = 38, 14                 # Lakas: bonus attack damage
+ORANGE_BASE_DEF, ORANGE_DEF_PER_RANK = 28, 10
+YELLOW_RADIUS = 360
+YELLOW_BASE_SILENCE, YELLOW_SILENCE_PER_RANK = 1.3, 0.5
+GREEN_BASE_SPEED, GREEN_SPEED_PER_RANK = 108, 38
+GREEN_BASE_HEAL, GREEN_HEAL_PER_RANK = 166, 58
 BLUE_DIST, BLUE_PHASE = 460, 0.45
-INDIGO_VISION = 520
-VIOLET_EVASION = 0.30
+INDIGO_BASE_VISION, INDIGO_VISION_PER_RANK = 430, 150
+VIOLET_BASE_EVASION, VIOLET_EVASION_PER_RANK = 0.25, 0.09
 
 WHITE_CD = 60.0
 WHITE_RANGE = 320
@@ -83,13 +85,13 @@ class Pedro(HeroDef):
 
     # The Mutya makes him a versatile bruiser; Red supplies his burst strength.
     hp = 680
-    mana = 340
-    move_speed = 270
+    mana = 320
+    move_speed = 268
     atk_dmg = 60
     sp_atk = 10
     phys_def = 22
     sp_def = 20
-    atk_range = 170
+    atk_range = 160
     atk_interval = 1.0
     atk_type = "melee"
     hp_regen = 3.5
@@ -108,8 +110,10 @@ class Pedro(HeroDef):
     def red(ctx):
         if not _gated(ctx, "Q"):
             return
+        rank = ctx.caster.ability_rank("Q")
+        dmg = RED_BASE_DMG + RED_DMG_PER_RANK * (rank - 1)
         ctx.caster.statuses.add(make_status(RED_CD, source="pedro:red",
-                                            dmg_bonus=RED_DMG), ctx.state)
+                                            dmg_bonus=dmg), ctx.state)
 
     @ability("W", "Orange Mutya: Tibay", cd=ORANGE_CD, mana=55,
              cast=CastType.NONE, max_rank=2,
@@ -118,9 +122,11 @@ class Pedro(HeroDef):
     def orange(ctx):
         if not _gated(ctx, "W"):
             return
+        rank = ctx.caster.ability_rank("W")
+        defense = ORANGE_BASE_DEF + ORANGE_DEF_PER_RANK * (rank - 1)
         ctx.caster.statuses.add(make_status(ORANGE_CD, source="pedro:orange",
-                                            phys_def=ORANGE_PDEF,
-                                            sp_def=ORANGE_SDEF), ctx.state)
+                                            phys_def=defense,
+                                            sp_def=defense), ctx.state)
 
     @ability("E", "Yellow Mutya: Awit", cd=YELLOW_CD, mana=60,
              cast=CastType.NONE, max_rank=2,
@@ -131,10 +137,12 @@ class Pedro(HeroDef):
             return
         # Self-centred AoE (aim the shared block at the caster, like Kapre Smash).
         ctx.tx, ctx.ty = ctx.caster.x, ctx.caster.y
+        rank = ctx.caster.ability_rank("E")
+        silence = YELLOW_BASE_SILENCE + YELLOW_SILENCE_PER_RANK * (rank - 1)
         hit = skills.area_dmg(ctx, dmg=0, radius=YELLOW_RADIUS, dtype="special",
                               fx="awit")
         for e in hit:
-            skills.silence(ctx, e, YELLOW_SILENCE)
+            skills.silence(ctx, e, silence)
 
     @ability("R", "Green Mutya: Bilis", cd=GREEN_CD, mana=55,
              cast=CastType.NONE, max_rank=2,
@@ -143,10 +151,13 @@ class Pedro(HeroDef):
     def green(ctx):
         if not _gated(ctx, "R"):
             return
+        rank = ctx.caster.ability_rank("R")
+        speed = GREEN_BASE_SPEED + GREEN_SPEED_PER_RANK * (rank - 1)
+        heal = GREEN_BASE_HEAL + GREEN_HEAL_PER_RANK * (rank - 1)
         ctx.caster.statuses.add(make_status(GREEN_CD, source="pedro:green",
-                                            speed_bonus=GREEN_SPEED), ctx.state)
+                                            speed_bonus=speed), ctx.state)
         ctx.state.damage_events.append(
-            {"tgt": ctx.caster.entity_id, "heal": GREEN_HEAL})
+            {"tgt": ctx.caster.entity_id, "heal": heal})
 
     @ability("T", "Blue Mutya: Lukso", cd=BLUE_CD, mana=50,
              cast=CastType.POINT, max_rank=2,
@@ -166,8 +177,10 @@ class Pedro(HeroDef):
     def indigo(ctx):
         if not _gated(ctx, "Y"):
             return
+        rank = ctx.caster.ability_rank("Y")
+        vision = INDIGO_BASE_VISION + INDIGO_VISION_PER_RANK * (rank - 1)
         ctx.caster.statuses.add(make_status(INDIGO_CD, source="pedro:indigo",
-                                            vision_bonus=INDIGO_VISION,
+                                            vision_bonus=vision,
                                             unobstructed_vision=True), ctx.state)
 
     @ability("U", "Violet Mutya: Ilag", cd=VIOLET_CD, mana=55,
@@ -177,8 +190,10 @@ class Pedro(HeroDef):
     def violet(ctx):
         if not _gated(ctx, "U"):
             return
+        rank = ctx.caster.ability_rank("U")
+        evasion = VIOLET_BASE_EVASION + VIOLET_EVASION_PER_RANK * (rank - 1)
         ctx.caster.statuses.add(make_status(VIOLET_CD, source="pedro:violet",
-                                            evasion=VIOLET_EVASION), ctx.state)
+                                            evasion=evasion), ctx.state)
 
     # --- White Mutya: the ultimate (max rank 1, level 8) -------------------
     @ability("I", "White Mutya: Puti", cd=WHITE_CD, mana=150,

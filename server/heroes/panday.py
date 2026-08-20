@@ -30,26 +30,30 @@ from server.status import Aura, Disarm, Stun
 from server import skills, terrain
 
 # --- Tuning ----------------------------------------------------------------
-Q_DMG, Q_RADIUS, Q_STUN = 130, 210, 0.9
+Q_BASE_DMG, Q_DMG_PER_RANK = 101, 18
+Q_RADIUS, Q_STUN = 210, 0.9
 Q_WALL_GRAB = 110          # how close a click must be to a wall to count
 Q_ITEM_RADIUS = 26         # the dropped sword's pickup collision size
 Q_SWORD_KIND = "panday_sword_ground"
 Q_SWORD_LIFETIME = 20.0    # seconds an unclaimed sword lasts on the ground
 PICKUP_RADIUS = 110        # how close Panday must walk to claim it
 
-CARRY_RANGE_BONUS, CARRY_DMG_BONUS = 45, 30   # bonus while the sword is held
+CARRY_BASE_RANGE_BONUS, CARRY_RANGE_BONUS_PER_RANK = 30, 5   # scale with Q rank
+CARRY_BASE_DMG_BONUS, CARRY_DMG_BONUS_PER_RANK = 20, 3        # (the sword's own skill)
 
 W_RADIUS, W_DISARM_DUR = 260, 2.6
 
 E_NO_SWORD_SPEED, E_NO_SWORD_DUR = 45, 3.0
-E_THROW_DMG, E_THROW_RANGE = 150, 700
+E_BASE_THROW_DMG, E_THROW_DMG_PER_RANK = 117, 21
+E_THROW_RANGE = 700
 E_PIN_CHECK = 90    # how far past the enemy to look for a wall
 E_PIN_GRAB = 70
 E_PIN_STUN = 1.3
 E_BLINK_MAX = 700
 
 # Two windup slashes 0.2s apart, each dealing its own damage + slow.
-R_DMG, R_WIDTH, R_SLOW_PCT, R_SLOW_DUR = 130, 170, 0.35, 2.0
+R_BASE_DMG, R_DMG_PER_RANK = 101, 18
+R_WIDTH, R_SLOW_PCT, R_SLOW_DUR = 170, 0.35, 2.0
 R_SLASH_INTERVAL = 0.2
 
 
@@ -60,10 +64,21 @@ class SwordCarry(Aura):
 
     status_id = "panday:sword"
     __slots__ = ()
-    modifiers = {"range_bonus": CARRY_RANGE_BONUS, "dmg_bonus": CARRY_DMG_BONUS}
+    dynamic = True
 
     def condition(self, bearer, state) -> bool:
         return bool(bearer.alive and bearer.ability_state.get("carries_sword"))
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        rank = hero.ability_rank("Q") if hero else 0
+        if rank <= 0:
+            return {}
+        return {"range_bonus": CARRY_BASE_RANGE_BONUS
+                              + CARRY_RANGE_BONUS_PER_RANK * (rank - 1),
+                "dmg_bonus": CARRY_BASE_DMG_BONUS
+                            + CARRY_DMG_BONUS_PER_RANK * (rank - 1)}
 
 
 def _replace_sword(ctx, x, y) -> None:
@@ -82,17 +97,17 @@ class Panday(HeroDef):
     hero_id = "panday"
     name = "Panday"
 
-    hp = 700
-    mana = 260
-    move_speed = 260
-    atk_dmg = 68
+    hp = 710
+    mana = 250
+    move_speed = 258
+    atk_dmg = 70
     sp_atk = 0
-    phys_def = 26
-    sp_def = 20
+    phys_def = 27
+    sp_def = 19
     atk_range = 155
     atk_interval = 0.95
     atk_type = "melee"
-    hp_regen = 4.0
+    hp_regen = 3.8
     phys_def_per_level = 3.5
     sp_def_per_level = 2.0
 
@@ -111,7 +126,9 @@ class Panday(HeroDef):
         capsules = [w.capsule() for w in cluster]
         px, py = terrain.clamp_to_cluster(ctx.tx, ctx.ty, capsules)
         ctx.tx, ctx.ty = px, py
-        hit = skills.area_dmg(ctx, dmg=Q_DMG, radius=Q_RADIUS, fx="smash")
+        rank = hero.ability_rank("Q")
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (rank - 1)
+        hit = skills.area_dmg(ctx, dmg=dmg, radius=Q_RADIUS, fx="smash")
         for e in hit:
             skills.apply_status(e, Stun(Q_STUN), state)
         _replace_sword(ctx, px, py)
@@ -138,7 +155,9 @@ class Panday(HeroDef):
             skills.buff(ctx, E_NO_SWORD_DUR, speed_bonus=E_NO_SWORD_SPEED,
                        source="panday:step")
             return
-        target = skills.target_dmg(ctx, dmg=E_THROW_DMG, range=E_THROW_RANGE,
+        rank = hero.ability_rank("E")
+        throw_dmg = E_BASE_THROW_DMG + E_THROW_DMG_PER_RANK * (rank - 1)
+        target = skills.target_dmg(ctx, dmg=throw_dmg, range=E_THROW_RANGE,
                                    dtype="physical")
         if target is None:
             hero.cooldowns["E"] = 0.0  # no legal target: refund
@@ -169,11 +188,12 @@ class Panday(HeroDef):
     def masters_slash(ctx):
         hero, state = ctx.caster, ctx.state
         tx, ty, rank = ctx.tx, ctx.ty, ctx.rank
+        dmg = R_BASE_DMG + R_DMG_PER_RANK * (rank - 1)
 
         def _slash(state, hero):
             slash_ctx = CastContext(state, hero, tx, ty, None, rank)
             length = hero.effective_attack_range() * 2.0
-            hit = skills.line_aoe(slash_ctx, dmg=R_DMG, length=length,
+            hit = skills.line_aoe(slash_ctx, dmg=dmg, length=length,
                                   width=R_WIDTH, fx="bolocleave")
             for e in hit:
                 skills.slow(slash_ctx, e, R_SLOW_PCT, R_SLOW_DUR)

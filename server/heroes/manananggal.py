@@ -23,19 +23,22 @@ from server.status import DamageAmplify, Split, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
-Q_RANGE, Q_DMG = 450, 110
+Q_RANGE = 450
+Q_BASE_DMG, Q_DMG_PER_RANK = 86, 15
 Q_SLOW, Q_SLOW_DUR = 0.35, 2.0
 
 POUNCE_DIST = 650
 
-BLOODLUST_SPEED, BLOODLUST_ATKSPD, BLOODLUST_DUR = 35, 0.18, 4.0
+BLOODLUST_BASE_SPEED, BLOODLUST_SPEED_PER_RANK = 27, 5
+BLOODLUST_BASE_ATKSPD, BLOODLUST_ATKSPD_PER_RANK = 0.14, 0.03
+BLOODLUST_DUR = 4.0
 
 SPLIT_TOGGLE_CD = 0.75     # min time between split <-> recombine presses
 SPLIT_REAL_CD = 55.0       # cooldown applied once you recombine
 SPLIT_MANA = 100
 SPLIT_DURATION = 8.0       # timed auto-recombine
-SPLIT_DMG_BONUS = 45
-SPLIT_RANGE_BONUS = 220
+SPLIT_BASE_DMG_BONUS, SPLIT_DMG_BONUS_PER_RANK = 35, 6
+SPLIT_BASE_RANGE_BONUS, SPLIT_RANGE_BONUS_PER_RANK = 172, 30
 SPLIT_VISION_BONUS = 400    # extra sight radius while the upper half is flying
 SPLIT_LEASH = 900          # max distance the upper half may roam from the body
 RECOMBINE_RANGE = 260      # must be this close to the body to recombine
@@ -80,11 +83,14 @@ def _begin_split(ctx) -> None:
     # The body is deliberately fragile; the amplification rides on it as a
     # status instead of being a field the damage pipeline checks for by type.
     body.statuses.add(DamageAmplify(multiplier=BODY_DMG_MULT), state)
+    rank = hero.ability_rank("R")
+    dmg_bonus = SPLIT_BASE_DMG_BONUS + SPLIT_DMG_BONUS_PER_RANK * (rank - 1)
+    range_bonus = SPLIT_BASE_RANGE_BONUS + SPLIT_RANGE_BONUS_PER_RANK * (rank - 1)
     hero.statuses.add(_Split(
         SPLIT_DURATION, body_id=body.entity_id,
         flags=Split.flags | frozenset({"invuln"}),
-        modifiers={"dmg_bonus": SPLIT_DMG_BONUS,
-                   "range_bonus": SPLIT_RANGE_BONUS,
+        modifiers={"dmg_bonus": dmg_bonus,
+                   "range_bonus": range_bonus,
                    "vision_bonus": SPLIT_VISION_BONUS}), state)
 
 
@@ -98,17 +104,17 @@ class Manananggal(HeroDef):
     hero_id = "manananggal"
     name = "Manananggal"
 
-    hp = 620
-    mana = 350
-    move_speed = 270
-    atk_dmg = 58
-    sp_atk = 20
-    phys_def = 22
-    sp_def = 22
-    atk_range = 160
+    hp = 600
+    mana = 330
+    move_speed = 278
+    atk_dmg = 60
+    sp_atk = 22
+    phys_def = 19
+    sp_def = 19
+    atk_range = 158
     atk_interval = 0.95
     atk_type = "melee"
-    hp_regen = 3.0
+    hp_regen = 2.8
     phys_def_per_level = 3.0
     sp_def_per_level = 2.5
 
@@ -116,7 +122,9 @@ class Manananggal(HeroDef):
              target="enemy", range=Q_RANGE,
              desc="Claw an enemy for damage and a movement slow.")
     def scratch(ctx):
-        target = skills.target_dmg(ctx, dmg=Q_DMG, range=Q_RANGE)
+        rank = ctx.caster.ability_rank("Q")
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (rank - 1)
+        target = skills.target_dmg(ctx, dmg=dmg, range=Q_RANGE)
         if target is None:
             # No valid unit was clicked (near-miss): claw the enemy nearest the
             # cursor that is within range, so Scratch reliably connects.
@@ -126,7 +134,7 @@ class Manananggal(HeroDef):
             if target is not None:
                 ctx.state.damage_events.append(
                     {"src": ctx.caster.entity_id, "tgt": target.entity_id,
-                     "amt": Q_DMG, "dtype": "physical"})
+                     "amt": dmg, "dtype": "physical"})
         if target is not None:
             skills.slow(ctx, target, pct=Q_SLOW, duration=Q_SLOW_DUR)
 
@@ -158,10 +166,14 @@ class Manananggal(HeroDef):
     @staticmethod
     def on_ability_cast(ctx, key):
         # Bloodlust: every skill cast adds a short, stacking haste.
-        ctx.caster.statuses.add(make_status(
+        hero = ctx.caster
+        rank = max(hero.ability_rank("E"), 1)
+        speed = BLOODLUST_BASE_SPEED + BLOODLUST_SPEED_PER_RANK * (rank - 1)
+        atkspd = BLOODLUST_BASE_ATKSPD + BLOODLUST_ATKSPD_PER_RANK * (rank - 1)
+        hero.statuses.add(make_status(
             BLOODLUST_DUR, source="manananggal:bloodlust",
-            speed_bonus=BLOODLUST_SPEED,
-            atkspd_pct=BLOODLUST_ATKSPD), ctx.state)
+            speed_bonus=speed,
+            atkspd_pct=atkspd), ctx.state)
 
     @staticmethod
     def on_tick(state, hero, dt):

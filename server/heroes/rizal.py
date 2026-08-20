@@ -23,7 +23,8 @@ from server import skills
 from shared.config import MAP_WIDTH, MAP_HEIGHT
 
 # --- Tuning ----------------------------------------------------------------
-Q_DMG, Q_SPEED, Q_RANGE = 95, 950, 700
+Q_BASE_DMG, Q_DMG_PER_RANK = 74, 13
+Q_SPEED, Q_RANGE = 950, 700
 
 W_RADIUS, W_SILENCE = 320, 1.8
 W_STUN_RANK, W_STUN = 3, 0.7   # at rank >= 3 the silence also briefly stuns
@@ -32,7 +33,9 @@ E_SPATK_PER_RANK = 6
 E_CDR_PER_RANK = 0.04          # rank 1..4 -> 4%..16% cooldown reduction
 
 R_DUR = 8.0
-R_SPATK, R_SPEED, R_HEAL = 45, 70, 120
+R_BASE_SPATK, R_SPATK_PER_RANK = 35, 6
+R_BASE_SPEED, R_SPEED_PER_RANK = 55, 10
+R_BASE_HEAL, R_HEAL_PER_RANK = 94, 17
 _MAP_DIAG = math.hypot(MAP_WIDTH, MAP_HEIGHT)
 
 
@@ -60,17 +63,17 @@ class Rizal(HeroDef):
     hero_id = "rizal"
     name = "Jose Rizal"
 
-    hp = 540
-    mana = 380
-    move_speed = 250
-    atk_dmg = 46
-    sp_atk = 52
+    hp = 550
+    mana = 370
+    move_speed = 253
+    atk_dmg = 42
+    sp_atk = 50
     phys_def = 16
-    sp_def = 22
-    atk_range = 520
+    sp_def = 21
+    atk_range = 315
     atk_interval = 1.0
     atk_type = "ranged"
-    hp_regen = 2.5
+    hp_regen = 2.4
     sp_atk_per_level = 6.0
     phys_def_per_level = 2.0
     sp_def_per_level = 3.0
@@ -80,8 +83,9 @@ class Rizal(HeroDef):
                   "enemies along its path out and back.")
     def pluma_throw(ctx):
         caster = ctx.caster
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (ctx.rank - 1)
         # Outward throw.
-        skills.projectile(ctx, dmg=Q_DMG, speed=Q_SPEED, range=Q_RANGE,
+        skills.projectile(ctx, dmg=dmg, speed=Q_SPEED, range=Q_RANGE,
                           radius=20, dtype="special", kind="rizal_q")
         # Return pass: spawn a second bolt from the far end back toward the caster.
         dx, dy = ctx.tx - caster.x, ctx.ty - caster.y
@@ -89,7 +93,7 @@ class Rizal(HeroDef):
         reach = min(Q_RANGE, dist)
         far_x = caster.x + dx / dist * reach
         far_y = caster.y + dy / dist * reach
-        ret = skills.projectile(ctx, dmg=Q_DMG, speed=Q_SPEED, range=reach,
+        ret = skills.projectile(ctx, dmg=dmg, speed=Q_SPEED, range=reach,
                                 radius=20, dtype="special", kind="rizal_q")
         ret.x, ret.y = far_x, far_y
         rdx, rdy = caster.x - far_x, caster.y - far_y
@@ -118,14 +122,18 @@ class Rizal(HeroDef):
              desc="Inspire every ally: bonus special attack and move speed, plus "
                   "an immediate heal.")
     def mi_ultimo_adios(ctx):
+        rank = ctx.caster.ability_rank("R")
+        spatk = R_BASE_SPATK + R_SPATK_PER_RANK * (rank - 1)
+        speed = R_BASE_SPEED + R_SPEED_PER_RANK * (rank - 1)
+        heal = R_BASE_HEAL + R_HEAL_PER_RANK * (rank - 1)
         allies = skills.allies_in_radius(ctx.state, ctx.caster.team,
                                          ctx.caster.x, ctx.caster.y, _MAP_DIAG)
         for e in allies:
             if isinstance(e, Hero):
                 e.statuses.add(make_status(R_DUR, source="rizal:adios",
-                                           sp_atk=R_SPATK,
-                                           speed_bonus=R_SPEED), ctx.state)
-                ctx.state.damage_events.append({"tgt": e.entity_id, "heal": R_HEAL})
+                                           sp_atk=spatk,
+                                           speed_bonus=speed), ctx.state)
+                ctx.state.damage_events.append({"tgt": e.entity_id, "heal": heal})
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod

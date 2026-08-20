@@ -24,11 +24,13 @@ from server.status import Aura, make_status
 from server import skills, terrain, bind
 
 # --- Tuning ----------------------------------------------------------------
-Q_RADIUS, Q_DMG, Q_STUN = 320, 120, 0.8
+Q_RADIUS, Q_STUN = 320, 0.8
+Q_BASE_DMG, Q_DMG_PER_RANK = 94, 17
 
-W_BOLT_DMG, W_BOLT_STUN = 80, 1.0
+W_BASE_BOLT_DMG, W_BOLT_DMG_PER_RANK = 62, 11
+W_BOLT_STUN = 1.0
 W_BOLT_SPEED, W_BOLT_RANGE = 900, 750
-W_REGEN = 9.0              # bonus hp/sec while near trees (passive)
+W_BASE_REGEN, W_REGEN_PER_RANK = 7.0, 1.0   # bonus hp/sec while near trees (passive)
 W_ACTIVE_REGEN_DUR = 4.0   # the active stacks a second, equal regen (doubled)
 
 NEAR_PAD = 140             # how close counts as "near" a tree
@@ -74,11 +76,19 @@ class _TreeAura(Aura):
 
 
 class GroveVigor(_TreeAura):
-    """W passive: faster health regeneration near trees."""
+    """W passive: faster health regeneration near trees, scaling with rank."""
 
     status_id = "kapre:vigor"
     __slots__ = ()
-    modifiers = {"hp_regen_bonus": W_REGEN}
+    dynamic = True
+
+    @property
+    def active_modifiers(self) -> dict:
+        hero = self._bearer
+        rank = hero.ability_rank("W") if hero else 0
+        if rank <= 0:
+            return {}
+        return {"hp_regen_bonus": W_BASE_REGEN + W_REGEN_PER_RANK * (rank - 1)}
 
 
 class Ironbark(_TreeAura):
@@ -108,17 +118,17 @@ class Kapre(HeroDef):
     hero_id = "kapre"
     name = "Kapre"
 
-    hp = 780
-    mana = 300
-    move_speed = 250
-    atk_dmg = 66
-    sp_atk = 10
-    phys_def = 30
-    sp_def = 24
-    atk_range = 150
+    hp = 820
+    mana = 260
+    move_speed = 235
+    atk_dmg = 60
+    sp_atk = 8
+    phys_def = 34
+    sp_def = 26
+    atk_range = 148
     atk_interval = 1.05
     atk_type = "melee"
-    hp_regen = 5.0
+    hp_regen = 5.5
     phys_def_per_level = 4.0
     sp_def_per_level = 2.5
 
@@ -127,7 +137,9 @@ class Kapre(HeroDef):
     def smash(ctx):
         # Self-centred AoE: aim the shared blocks at the caster's own position.
         ctx.tx, ctx.ty = ctx.caster.x, ctx.caster.y
-        skills.area_dmg(ctx, dmg=Q_DMG, radius=Q_RADIUS, fx="smash")
+        rank = ctx.caster.ability_rank("Q")
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (rank - 1)
+        skills.area_dmg(ctx, dmg=dmg, radius=Q_RADIUS, fx="smash")
         skills.stun_nearby(ctx, radius=Q_RADIUS, duration=Q_STUN)
 
     @ability("W", "Grove's Vigor", cd=10, mana=0, cast=CastType.POINT,
@@ -138,12 +150,15 @@ class Kapre(HeroDef):
         if not _in_tree(ctx.state, hero):
             hero.cooldowns["W"] = 0.0  # passive-only outside trees: no penalty
             return
-        skills.hook(ctx, dmg=W_BOLT_DMG, speed=W_BOLT_SPEED, range=W_BOLT_RANGE,
+        rank = hero.ability_rank("W")
+        bolt_dmg = W_BASE_BOLT_DMG + W_BOLT_DMG_PER_RANK * (rank - 1)
+        regen = W_BASE_REGEN + W_REGEN_PER_RANK * (rank - 1)
+        skills.hook(ctx, dmg=bolt_dmg, speed=W_BOLT_SPEED, range=W_BOLT_RANGE,
                     pull=False, stun_dur=W_BOLT_STUN, kind="kapre_w")
         # Stacks a second regen aura → doubled while it lasts.
         hero.statuses.add(make_status(W_ACTIVE_REGEN_DUR,
                                       source="kapre:vigor_active",
-                                      hp_regen_bonus=W_REGEN), ctx.state)
+                                      hp_regen_bonus=regen), ctx.state)
 
     @ability("E", "Ironbark", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive: more attack damage near/inside trees (and bonus range "

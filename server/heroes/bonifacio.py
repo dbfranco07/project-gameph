@@ -21,17 +21,25 @@ from server.entity import Hero
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
-Q_DMG, Q_RADIUS, Q_OFFSET = 110, 220, 180
+Q_BASE_DMG, Q_DMG_PER_RANK = 86, 15
+Q_RADIUS, Q_OFFSET = 220, 180
 
 W_DUR = 6.0
-W_DMG, W_LIFESTEAL, W_PDEF, W_SDEF = 40, 0.2, 16, 16
+W_BASE_DMG, W_DMG_PER_RANK = 31, 6
+W_BASE_LIFESTEAL, W_LIFESTEAL_PER_RANK = 0.16, 0.03
+W_BASE_PDEF, W_PDEF_PER_RANK = 12, 2
+W_BASE_SDEF, W_SDEF_PER_RANK = 12, 2
 
 E_RADIUS = 600
-E_DMG_PER_ALLY, E_PDEF_PER_ALLY, E_MAX_ALLIES = 14, 6, 3
+E_DMG_PER_ALLY_PER_RANK, E_PDEF_PER_ALLY_PER_RANK, E_MAX_ALLIES = 4, 1.5, 3
 
 R_RADIUS, R_DUR = 700, 7.0
-R_DMG, R_SPEED, R_PDEF, R_SDEF = 45, 70, 16, 16
-R_SOLO_DMG, R_SOLO_SPEED = 20, 35   # weaker buff when you rally alone
+R_BASE_DMG, R_DMG_PER_RANK = 35, 6
+R_BASE_SPEED, R_SPEED_PER_RANK = 55, 10
+R_BASE_PDEF, R_PDEF_PER_RANK = 12, 2
+R_BASE_SDEF, R_SDEF_PER_RANK = 12, 2
+R_SOLO_BASE_DMG, R_SOLO_DMG_PER_RANK = 16, 3
+R_SOLO_BASE_SPEED, R_SOLO_SPEED_PER_RANK = 27, 5   # weaker buff when you rally alone
 
 
 class Katipunero(Aura):
@@ -61,25 +69,29 @@ class Katipunero(Aura):
         n = self._allies
         if n <= 0:
             return {}
-        return {"dmg_bonus": E_DMG_PER_ALLY * n,
-                "phys_def": E_PDEF_PER_ALLY * n}
+        hero = self._bearer
+        rank = hero.ability_rank("E") if hero else 0
+        if rank <= 0:
+            return {}
+        return {"dmg_bonus": E_DMG_PER_ALLY_PER_RANK * n * rank,
+                "phys_def": E_PDEF_PER_ALLY_PER_RANK * n * rank}
 
 
 class Bonifacio(HeroDef):
     hero_id = "bonifacio"
     name = "Andres Bonifacio"
 
-    hp = 720
-    mana = 280
-    move_speed = 265
-    atk_dmg = 66
+    hp = 760
+    mana = 260
+    move_speed = 255
+    atk_dmg = 64
     sp_atk = 5
-    phys_def = 24
-    sp_def = 20
-    atk_range = 165
+    phys_def = 28
+    sp_def = 22
+    atk_range = 162
     atk_interval = 0.95
     atk_type = "melee"
-    hp_regen = 3.5
+    hp_regen = 4.0
     phys_def_per_level = 3.5
     sp_def_per_level = 2.5
 
@@ -93,14 +105,21 @@ class Bonifacio(HeroDef):
         d = math.hypot(dx, dy) or 1.0
         ctx.tx = caster.x + dx / d * Q_OFFSET
         ctx.ty = caster.y + dy / d * Q_OFFSET
-        skills.area_dmg(ctx, dmg=Q_DMG, radius=Q_RADIUS, fx="bolocleave")
+        rank = caster.ability_rank("Q")
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (rank - 1)
+        skills.area_dmg(ctx, dmg=dmg, radius=Q_RADIUS, fx="bolocleave")
 
     @ability("W", "Rip the Cedula", cd=14, mana=55, cast=CastType.NONE,
              desc="Tear the cedula: gain bonus damage, lifesteal, and defenses.")
     def rip_the_cedula(ctx):
+        rank = ctx.caster.ability_rank("W")
+        dmg = W_BASE_DMG + W_DMG_PER_RANK * (rank - 1)
+        lifesteal = W_BASE_LIFESTEAL + W_LIFESTEAL_PER_RANK * (rank - 1)
+        pdef = W_BASE_PDEF + W_PDEF_PER_RANK * (rank - 1)
+        sdef = W_BASE_SDEF + W_SDEF_PER_RANK * (rank - 1)
         ctx.caster.statuses.add(make_status(
-            W_DUR, source="bonifacio:cedula", dmg_bonus=W_DMG,
-            lifesteal=W_LIFESTEAL, phys_def=W_PDEF, sp_def=W_SDEF), ctx.state)
+            W_DUR, source="bonifacio:cedula", dmg_bonus=dmg,
+            lifesteal=lifesteal, phys_def=pdef, sp_def=sdef), ctx.state)
 
     @ability("E", "Katipunero", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive: gain bonus damage and defense for each nearby allied "
@@ -118,16 +137,23 @@ class Bonifacio(HeroDef):
             if isinstance(e, Hero)]
         others = [e for e in allies if e is not caster]
         skills._emit_fx(ctx, "warcry", caster.x, caster.y, R_RADIUS)
+        rank = caster.ability_rank("R")
         if len(others) >= 2:
+            dmg = R_BASE_DMG + R_DMG_PER_RANK * (rank - 1)
+            speed = R_BASE_SPEED + R_SPEED_PER_RANK * (rank - 1)
+            pdef = R_BASE_PDEF + R_PDEF_PER_RANK * (rank - 1)
+            sdef = R_BASE_SDEF + R_SDEF_PER_RANK * (rank - 1)
             for e in allies:
                 e.statuses.add(make_status(
-                    R_DUR, source="bonifacio:warcry", dmg_bonus=R_DMG,
-                    speed_bonus=R_SPEED, phys_def=R_PDEF, sp_def=R_SDEF),
+                    R_DUR, source="bonifacio:warcry", dmg_bonus=dmg,
+                    speed_bonus=speed, phys_def=pdef, sp_def=sdef),
                     ctx.state)
         else:
+            dmg = R_SOLO_BASE_DMG + R_SOLO_DMG_PER_RANK * (rank - 1)
+            speed = R_SOLO_BASE_SPEED + R_SOLO_SPEED_PER_RANK * (rank - 1)
             caster.statuses.add(make_status(
-                R_DUR, source="bonifacio:warcry", dmg_bonus=R_SOLO_DMG,
-                speed_bonus=R_SOLO_SPEED), ctx.state)
+                R_DUR, source="bonifacio:warcry", dmg_bonus=dmg,
+                speed_bonus=speed), ctx.state)
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod

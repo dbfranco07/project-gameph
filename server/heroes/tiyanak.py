@@ -18,9 +18,11 @@ from server.status import Aura, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
-Q_RANGE, Q_DMG = 360, 130
+Q_RANGE = 360
+Q_BASE_DMG, Q_DMG_PER_RANK = 100, 18
 
-TANTRUM_DUR, TANTRUM_ATKSPD = 4.0, 0.6
+TANTRUM_BASE_DUR, TANTRUM_DUR_PER_RANK = 3.0, 0.5
+TANTRUM_BASE_ATKSPD, TANTRUM_ATKSPD_PER_RANK = 0.45, 0.08
 
 E_CRIT_PER_RANK = 0.06      # rank 1..4 -> 6%..24% crit
 E_LIFESTEAL_PER_RANK = 0.05 # rank 1..4 -> 5%..20% lifesteal
@@ -84,17 +86,17 @@ class Tiyanak(HeroDef):
     hero_id = "tiyanak"
     name = "Tiyanak"
 
-    hp = 560
-    mana = 300
-    move_speed = 290
-    atk_dmg = 60
-    sp_atk = 10
-    phys_def = 18
-    sp_def = 18
-    atk_range = 150
+    hp = 540
+    mana = 290
+    move_speed = 295
+    atk_dmg = 62
+    sp_atk = 9
+    phys_def = 15
+    sp_def = 15
+    atk_range = 152
     atk_interval = 0.85
     atk_type = "melee"
-    hp_regen = 2.5
+    hp_regen = 2.2
     crit_chance = 0.05
     crit_mult = 2.0
     phys_def_per_level = 2.5
@@ -112,19 +114,24 @@ class Tiyanak(HeroDef):
                                           caster.y, Q_RANGE, toward=(ctx.tx, ctx.ty))
         if target is None or caster.distance_to(target) > Q_RANGE + target.radius:
             return
+        rank = caster.ability_rank("Q")
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (rank - 1)
         # crit_ok lets this ability roll the caster's crit; lifesteal applies via
         # the resolver because the source hero carries lifesteal.
         ctx.state.damage_events.append(
-            {"src": caster.entity_id, "tgt": target.entity_id, "amt": Q_DMG,
+            {"src": caster.entity_id, "tgt": target.entity_id, "amt": dmg,
              "dtype": "physical", "crit_ok": True})
 
     @ability("W", "Tantrum", cd=16, mana=60, cast=CastType.NONE,
              desc="Fly into a frenzy: bonus attack speed and guaranteed critical "
                   "strikes for a few seconds.")
     def tantrum(ctx):
+        rank = ctx.caster.ability_rank("W")
+        dur = TANTRUM_BASE_DUR + TANTRUM_DUR_PER_RANK * (rank - 1)
+        atkspd = TANTRUM_BASE_ATKSPD + TANTRUM_ATKSPD_PER_RANK * (rank - 1)
         ctx.caster.statuses.add(
-            make_status(TANTRUM_DUR, source="tiyanak:tantrum",
-                        atkspd_pct=TANTRUM_ATKSPD, guaranteed_crit=True),
+            make_status(dur, source="tiyanak:tantrum",
+                        atkspd_pct=atkspd, guaranteed_crit=True),
             ctx.state)
 
     @ability("E", "Feral Hunger", cd=0, mana=0, cast=CastType.PASSIVE,

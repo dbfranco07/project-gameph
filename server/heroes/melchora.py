@@ -18,33 +18,39 @@ from server.entity import Hero
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
-Q_RANGE, Q_SHIELD, Q_SHIELD_DUR = 600, 180, 6.0
+Q_RANGE = 600
+Q_BASE_SHIELD, Q_SHIELD_PER_RANK = 140, 25
+Q_SHIELD_DUR = 6.0
 
 W_RADIUS, W_DUR = 360, 5.0
-W_SPEED, W_PDEF, W_SDEF = 60, 18, 18
+W_BASE_SPEED, W_SPEED_PER_RANK = 47, 8
+W_BASE_PDEF, W_PDEF_PER_RANK = 14, 2
+W_BASE_SDEF, W_SDEF_PER_RANK = 14, 2
 
-E_RADIUS, E_REDUCE = 450, 0.12
+E_RADIUS = 450
+E_REDUCE_PER_RANK = 0.03
 E_AURA_LINGER = 0.4         # how long the projected aura outlives leaving range
 
 R_RADIUS, R_DUR = 400, 5.0
-R_HEAL, R_REDUCE, R_INVULN = 160, 0.5, 0.8
+R_BASE_HEAL, R_HEAL_PER_RANK = 125, 22
+R_REDUCE, R_INVULN = 0.5, 0.8
 
 
 class Melchora(HeroDef):
     hero_id = "melchora"
     name = "Melchora Aquino"
 
-    hp = 620
-    mana = 380
-    move_speed = 245
-    atk_dmg = 42
-    sp_atk = 40
-    phys_def = 22
-    sp_def = 26
-    atk_range = 460
+    hp = 640
+    mana = 360
+    move_speed = 250
+    atk_dmg = 38
+    sp_atk = 36
+    phys_def = 24
+    sp_def = 28
+    atk_range = 300
     atk_interval = 1.1
     atk_type = "ranged"
-    hp_regen = 3.5
+    hp_regen = 3.8
     sp_atk_per_level = 4.0
     phys_def_per_level = 3.0
     sp_def_per_level = 3.0
@@ -58,19 +64,25 @@ class Melchora(HeroDef):
                 and target.team == caster.team
                 and caster.distance_to(target) <= Q_RANGE + target.radius):
             target = caster  # default to self if no valid ally was clicked
+        rank = caster.ability_rank("Q")
+        shield = Q_BASE_SHIELD + Q_SHIELD_PER_RANK * (rank - 1)
         target.statuses.add(make_status(Q_SHIELD_DUR, source="melchora:shield",
-                                        shield=Q_SHIELD), ctx.state)
+                                        shield=shield), ctx.state)
 
     @ability("W", "Rallying Words", cd=12, mana=70, cast=CastType.POINT,
              desc="Embolden nearby allies with bonus move speed and defenses.")
     def rallying_words(ctx):
+        rank = ctx.caster.ability_rank("W")
+        speed = W_BASE_SPEED + W_SPEED_PER_RANK * (rank - 1)
+        pdef = W_BASE_PDEF + W_PDEF_PER_RANK * (rank - 1)
+        sdef = W_BASE_SDEF + W_SDEF_PER_RANK * (rank - 1)
         allies = skills.allies_in_radius(ctx.state, ctx.caster.team,
                                          ctx.caster.x, ctx.caster.y, W_RADIUS)
         for e in allies:
             if isinstance(e, Hero):
                 e.statuses.add(make_status(W_DUR, source="melchora:rally",
-                                           speed_bonus=W_SPEED, phys_def=W_PDEF,
-                                           sp_def=W_SDEF), ctx.state)
+                                           speed_bonus=speed, phys_def=pdef,
+                                           sp_def=sdef), ctx.state)
 
     @ability("E", "Matriarch", cd=0, mana=0, cast=CastType.PASSIVE,
              desc="Passive aura: nearby allies take reduced damage.")
@@ -81,6 +93,8 @@ class Melchora(HeroDef):
              desc="Raise a sanctuary: allies within are healed, heavily mitigated, "
                   "and briefly made invulnerable.")
     def refuge(ctx):
+        rank = ctx.caster.ability_rank("R")
+        heal = R_BASE_HEAL + R_HEAL_PER_RANK * (rank - 1)
         allies = skills.allies_in_radius(ctx.state, ctx.caster.team,
                                          ctx.tx, ctx.ty, R_RADIUS)
         skills._emit_fx(ctx, "refuge", ctx.tx, ctx.ty, R_RADIUS)
@@ -90,7 +104,7 @@ class Melchora(HeroDef):
                                            dmg_reduction=R_REDUCE), ctx.state)
                 e.statuses.add(make_status(R_INVULN, source="melchora:refuge",
                                            invuln=True), ctx.state)
-                ctx.state.damage_events.append({"tgt": e.entity_id, "heal": R_HEAL})
+                ctx.state.damage_events.append({"tgt": e.entity_id, "heal": heal})
 
     # ----- lifecycle hooks --------------------------------------------------
     @staticmethod
@@ -98,8 +112,10 @@ class Melchora(HeroDef):
         # A projected aura: it lives on each *ally* in range, not on Melchora,
         # so it is refreshed outward rather than attached once. Allies who walk
         # out keep it only until it lapses.
-        if not hero.alive or hero.ability_rank("E") <= 0:
+        rank = hero.ability_rank("E")
+        if not hero.alive or rank <= 0:
             return
+        reduce = E_REDUCE_PER_RANK * rank
         for e in skills.allies_in_radius(state, hero.team, hero.x, hero.y,
                                          E_RADIUS):
             if not isinstance(e, Hero):
@@ -111,4 +127,4 @@ class Melchora(HeroDef):
                 e.statuses.add(make_status(E_AURA_LINGER,
                                            source="melchora:matriarch",
                                            nohud=True,
-                                           dmg_reduction=E_REDUCE), state)
+                                           dmg_reduction=reduce), state)

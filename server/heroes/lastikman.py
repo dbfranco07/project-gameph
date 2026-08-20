@@ -17,7 +17,8 @@ from server.status import Aura, make_status
 from server import skills
 
 # --- Tuning ----------------------------------------------------------------
-Q_DMG, Q_SPEED, Q_RANGE = 120, 1400, 780
+Q_BASE_DMG, Q_DMG_PER_RANK = 94, 17
+Q_SPEED, Q_RANGE = 1400, 780
 Q_SLOW, Q_SLOW_DUR = 0.25, 1.2
 
 # Grapple: a hook that reels the caster to the first wall/tree/structure it hits.
@@ -31,7 +32,8 @@ E_EVASION_PER_RANK = 0.05      # rank 1..4 -> 5%..20% dodge
 E_REDUCE_PER_RANK = 0.03       # rank 1..4 -> 3%..12% mitigation
 
 R_DUR, R_INTERVAL = 6.0, 0.5
-R_TICK_DMG, R_RADIUS = 45, 280
+R_BASE_TICK_DMG, R_TICK_DMG_PER_RANK = 35, 6
+R_RADIUS = 280
 
 
 class ElasticBody(Aura):
@@ -58,14 +60,14 @@ class Lastikman(HeroDef):
     hero_id = "lastikman"
     name = "Lastikman"
 
-    hp = 640
-    mana = 300
-    move_speed = 270
-    atk_dmg = 60
-    sp_atk = 10
-    phys_def = 20
+    hp = 650
+    mana = 290
+    move_speed = 275
+    atk_dmg = 58
+    sp_atk = 12
+    phys_def = 19
     sp_def = 20
-    atk_range = 180
+    atk_range = 165
     atk_interval = 0.95
     atk_type = "melee"
     hp_regen = 3.0
@@ -76,7 +78,9 @@ class Lastikman(HeroDef):
              desc="Stretch a fist in a line, damaging and slowing the first enemy "
                   "it strikes.")
     def stretch_punch(ctx):
-        skills.hook(ctx, dmg=Q_DMG, speed=Q_SPEED, range=Q_RANGE, radius=22,
+        rank = ctx.caster.ability_rank("Q")
+        dmg = Q_BASE_DMG + Q_DMG_PER_RANK * (rank - 1)
+        skills.hook(ctx, dmg=dmg, speed=Q_SPEED, range=Q_RANGE, radius=22,
                     pull=False, slow_dur=Q_SLOW_DUR, slow_pct=Q_SLOW,
                     kind="lastikman_q")
 
@@ -116,12 +120,14 @@ class Lastikman(HeroDef):
             return
         storm["t"] -= dt
         storm["acc"] += dt
+        rank = hero.ability_rank("R")
+        tick_dmg = R_BASE_TICK_DMG + R_TICK_DMG_PER_RANK * (rank - 1)
         while storm["acc"] >= R_INTERVAL:
             storm["acc"] -= R_INTERVAL
             for e in skills.enemies_in_radius(state, hero.team, hero.x, hero.y,
                                               R_RADIUS):
                 state.damage_events.append(
                     {"src": hero.entity_id, "tgt": e.entity_id,
-                     "amt": R_TICK_DMG, "dtype": "physical"})
+                     "amt": tick_dmg, "dtype": "physical"})
         if storm["t"] <= 0:
             hero.ability_state.pop("storm", None)

@@ -23,7 +23,7 @@ from server.status import Frenzy
 from server import skills, terrain, bind
 
 # --- Tuning ----------------------------------------------------------------
-HOOK_DMG = 95
+HOOK_BASE_DMG, HOOK_DMG_PER_RANK = 74, 13
 HOOK_SPEED = 1250
 HOOK_RANGE = 800
 HOOK_RADIUS = 24
@@ -32,12 +32,12 @@ HOOK_PULL_SPEED = 1150
 
 E_STUN_BASE = 0.4
 E_STUN_PER_RANK = 0.2   # stun seconds (rank 1..4 -> 0.6..1.2)
-E_SLOW_PCT = 0.4 
+E_SLOW_PCT = 0.4
 E_SLOW_DUR = 1.6          # lingering slow after the stun
 
-FRENZY_DUR = 9.0
-FRENZY_HOOK_DMG = 135 
-FRENZY_HOOK_RANGE = 1100 
+FRENZY_BASE_DUR, FRENZY_DUR_PER_RANK = 7.0, 1.0
+FRENZY_HOOK_DMG = 135
+FRENZY_HOOK_RANGE = 1100
 FRENZY_HOOK_CD = 1.5
 
 W_TOGGLE_CD = 1.0
@@ -56,17 +56,17 @@ class Tiktik(HeroDef):
     hero_id = "tiktik"
     name = "Tiktik"
 
-    hp = 620
-    mana = 340
-    move_speed = 275
-    atk_dmg = 62
-    sp_atk = 15
-    phys_def = 20
-    sp_def = 20
-    atk_range = 170
+    hp = 590
+    mana = 320
+    move_speed = 285
+    atk_dmg = 64
+    sp_atk = 14
+    phys_def = 17
+    sp_def = 17
+    atk_range = 165
     atk_interval = 0.9
     atk_type = "melee"
-    hp_regen = 3.0
+    hp_regen = 2.7
     phys_def_per_level = 3.0
     sp_def_per_level = 2.5
 
@@ -76,7 +76,9 @@ class Tiktik(HeroDef):
     def tongue_hook(ctx):
         hero = ctx.caster
         frenzy = _frenzied(hero)
-        dmg = FRENZY_HOOK_DMG if frenzy else HOOK_DMG
+        qrank = hero.ability_rank("Q")
+        hook_dmg = HOOK_BASE_DMG + HOOK_DMG_PER_RANK * (qrank - 1)
+        dmg = FRENZY_HOOK_DMG if frenzy else hook_dmg
         rng = FRENZY_HOOK_RANGE if frenzy else HOOK_RANGE
         erank = hero.ability_rank("E")
         stun = (E_STUN_BASE + erank * E_STUN_PER_RANK) if erank > 0 else 0.0
@@ -127,7 +129,9 @@ class Tiktik(HeroDef):
              desc="For a few seconds the hook is spammable and hits harder and "
                   "farther.")
     def frenzy(ctx):
-        ctx.caster.statuses.add(Frenzy(FRENZY_DUR, source="tiktik:frenzy"),
+        rank = ctx.caster.ability_rank("R")
+        dur = FRENZY_BASE_DUR + FRENZY_DUR_PER_RANK * (rank - 1)
+        ctx.caster.statuses.add(Frenzy(dur, source="tiktik:frenzy"),
                                 ctx.state)
 
     # ----- lifecycle hooks --------------------------------------------------

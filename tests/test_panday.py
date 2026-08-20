@@ -6,7 +6,7 @@ import unittest
 from server.entity import Wall, GroundItem
 from server.systems import system_ground_items
 from server.heroes.panday import (
-    Q_SWORD_LIFETIME, CARRY_RANGE_BONUS, CARRY_DMG_BONUS,
+    Q_SWORD_LIFETIME, CARRY_BASE_RANGE_BONUS, CARRY_BASE_DMG_BONUS,
 )
 from tests.herotest import HeroTestCase
 
@@ -73,8 +73,8 @@ class TestPanday(HeroTestCase):
         self.assertTrue(self.hero.ability_state.get("carries_sword"))
         self.assertNotIn("sword_id", self.hero.ability_state)
         self.assertEqual(self.hero.effective_attack_range() - rng0,
-                         CARRY_RANGE_BONUS)
-        self.assertEqual(self.hero.effective_damage() - dmg0, CARRY_DMG_BONUS)
+                         CARRY_BASE_RANGE_BONUS)
+        self.assertEqual(self.hero.effective_damage() - dmg0, CARRY_BASE_DMG_BONUS)
 
     def test_far_from_the_sword_does_not_claim_it(self):
         self._add_wall(self.hero.x + 400, self.hero.y - 200,

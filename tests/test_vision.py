@@ -56,7 +56,7 @@ class TestFogGatesCombat(unittest.TestCase):
         self.me = self.state.add_hero(1, "Me", Team.TEAM1, hero_id="ranger")
         self.enemy = self.state.add_hero(2, "En", Team.TEAM2, hero_id="brawler")
         self.me.x, self.me.y = 1000, 1000
-        self.enemy.x, self.enemy.y = 1400, 1000  # inside ranger attack range
+        self.enemy.x, self.enemy.y = 1300, 1000  # inside ranger attack range
 
     def _wall_between(self):
         wall = Wall(x1=1200, y1=800, x2=1200, y2=1200, thickness=60)
