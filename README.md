@@ -198,6 +198,17 @@ build ships with no art. The CI workflow does this for you.
   **GitHub Release**, which is the easiest thing to hand to friends: one link, no
   GitHub account needed.
 
+  **To cut a new release build (updates the `.exe` and `.app` for friends):**
+
+  ```bash
+  git tag v0.1.3          # bump past the latest tag (`git tag -l` to check)
+  git push origin v0.1.3
+  ```
+
+  That's it — the tag push triggers `build-executables.yml`, which builds both
+  platforms and attaches `ProjectGamePH-windows.zip` / `ProjectGamePH-macos.zip` to a new
+  GitHub Release under that tag. Watch progress in the repo's **Actions** tab.
+
 Windows will show a SmartScreen warning for an unsigned executable — "More info" →
 "Run anyway". Tell your friends up front so nobody assumes it's malware.
 
